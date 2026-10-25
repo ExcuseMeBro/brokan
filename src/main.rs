@@ -1,4 +1,5 @@
 mod home;
+mod mcp;
 mod store;
 mod web;
 
@@ -11,7 +12,7 @@ use crate::home::Home;
 
 /// A local kanban board for you and your agents.
 ///
-/// Run `kanzo` to open the board.
+/// Run `kanzo` to open the board. Agents connect with `kanzo mcp`.
 #[derive(Parser)]
 #[command(name = "kanzo", version)]
 struct Cli {
@@ -33,6 +34,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the MCP server on stdio (agents launch this, not you)
+    Mcp,
     /// Create the data folder; the first run does this too
     Init {
         /// Folder to create [default: the data folder]
@@ -60,6 +63,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let home = Home::open(dir)?;
     match cli.command {
         None => web::serve(home, cli.port, !cli.no_open).await,
+        Some(Command::Mcp) => mcp::serve(home).await,
         Some(Command::Init { .. }) => {
             println!("Kanzo data folder ready at {}", home.dir.display());
             Ok(())
