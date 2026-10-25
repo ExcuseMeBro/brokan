@@ -1,6 +1,7 @@
 mod home;
 mod mcp;
 mod store;
+mod sync;
 mod web;
 
 use std::path::PathBuf;
@@ -41,6 +42,15 @@ enum Command {
         /// Folder to create [default: the data folder]
         folder: Option<PathBuf>,
     },
+    /// Commit the data folder and pull or push it with its git remote
+    Sync {
+        /// When both sides changed, keep this machine's board and overwrite the remote
+        #[arg(long, conflicts_with = "keep_remote")]
+        keep_local: bool,
+        /// When both sides changed, take the remote board and drop this machine's changes
+        #[arg(long)]
+        keep_remote: bool,
+    },
 }
 
 #[tokio::main]
@@ -67,6 +77,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Init { .. }) => {
             println!("Kanzo data folder ready at {}", home.dir.display());
             Ok(())
+        }
+        Some(Command::Sync { keep_local, keep_remote }) => {
+            let keep = match (keep_local, keep_remote) {
+                (true, _) => Some(sync::Keep::Local),
+                (_, true) => Some(sync::Keep::Remote),
+                _ => None,
+            };
+            sync::sync(&home, keep)
         }
     }
 }
