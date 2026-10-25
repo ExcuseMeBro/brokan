@@ -1,0 +1,23 @@
+[package]
+name = "kanzo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "A local kanban board for you and your agents, with an MCP server"
+license = "MIT"
+repository = "https://github.com/emanuele-em/kanzo"
+readme = "README.md"
+keywords = ["kanban", "mcp", "agents", "todo", "board"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+rusqlite = { version = "0.41.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
