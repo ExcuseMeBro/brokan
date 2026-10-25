@@ -1,4 +1,4 @@
-//! `kanzo`: the board page and the small JSON API behind it.
+//! `kanzo`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
 use crate::store::{self, Error, Store, TaskPatch};
@@ -37,20 +38,29 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
         Err(e) => return Err(e).context(format!("cannot listen on port {port}")),
     };
     println!("Kanzo board at {url}, data in {}", home.dir.display());
+    if home.config.mcp_http {
+        println!("MCP over HTTP at {url}/mcp");
+    }
     if open {
         open_browser(&url);
     }
-    axum::serve(listener, router(home, port))
-        .with_graceful_shutdown(async {
+    // Cancelling this also ends open MCP streams, which would otherwise hold up shutdown.
+    let shutdown = CancellationToken::new();
+    axum::serve(listener, router(home, port, shutdown.clone()))
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            shutdown.cancel();
         })
         .await?;
     Ok(())
 }
 
-fn router(home: Home, port: u16) -> Router {
-    Router::new()
-        .route("/", get(|| async { Html(INDEX) }))
+fn router(home: Home, port: u16, shutdown: CancellationToken) -> Router {
+    let mut app = Router::new();
+    if home.config.mcp_http {
+        app = app.nest_service("/mcp", crate::mcp::http_service(home.clone(), port, shutdown));
+    }
+    app.route("/", get(|| async { Html(INDEX) }))
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))

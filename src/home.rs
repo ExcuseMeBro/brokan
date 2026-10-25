@@ -18,6 +18,10 @@ port = 4242
 # Board columns, left to right. New tasks go in the first one;
 # tasks in the last one count as done.
 statuses = ["todo", "doing", "review", "done"]
+
+# Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
+# that cannot start `kanzo mcp` themselves.
+mcp_http = true
 "#;
 
 const GITIGNORE: &str = "\
@@ -35,11 +39,16 @@ kanzo.lock
 pub struct Config {
     pub port: u16,
     pub statuses: Vec<String>,
+    pub mcp_http: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: DEFAULT_PORT, statuses: ["todo", "doing", "review", "done"].map(String::from).to_vec() }
+        Self {
+            port: DEFAULT_PORT,
+            statuses: ["todo", "doing", "review", "done"].map(String::from).to_vec(),
+            mcp_http: true,
+        }
     }
 }
 
@@ -150,6 +159,7 @@ mod tests {
         assert!(dir.join("kanzo.db").exists());
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert_eq!(home.config.statuses, ["todo", "doing", "review", "done"]);
+        assert!(home.config.mcp_http);
     }
 
     #[test]

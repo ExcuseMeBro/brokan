@@ -1,4 +1,5 @@
-//! `kanzo mcp`: the board as MCP tools over stdio. Replies are short plain text to save agents' tokens.
+//! The board as MCP tools: over stdio for `kanzo mcp`, and over HTTP at `/mcp` of the board.
+//! Replies are short plain text to save agents' tokens.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -8,9 +9,12 @@ use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
 use crate::store::{self, Comment, Error, Project, Store, Task, TaskPatch};
@@ -20,18 +24,43 @@ Tasks are written project#id, like api#12. When you leave out `project`, Kanzo u
 linked to the GitHub repo of the folder you are working in. A good loop: next_task to pick up work, \
 add_comment to report what you did, then update_task to move it to review.";
 
+const HTTP_INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
+Tasks are written project#id, like api#12. Over HTTP Kanzo cannot see which folder you work in, so \
+pass `project` (see list_projects). A good loop: next_task to pick up work, add_comment to report \
+what you did, then update_task to move it to review.";
+
+/// `kanzo mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let repos = git_repos(&cwd);
-    let server = Kanzo { ctx: Arc::new(Ctx { home, cwd, repos }), tool_router: Kanzo::tool_router() };
+    let server = Kanzo { ctx: Arc::new(Ctx { home, cwd: Some(cwd), repos }), tool_router: Kanzo::tool_router() };
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
 
+/// MCP over HTTP, mounted at `/mcp` by the board. Only browsers on the board's own origin may call it.
+pub fn http_service(
+    home: Home,
+    port: u16,
+    shutdown: CancellationToken,
+) -> StreamableHttpService<Kanzo, LocalSessionManager> {
+    let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new() });
+    let config = StreamableHttpServerConfig::default()
+        .with_allowed_hosts(["localhost", "127.0.0.1"])
+        .with_allowed_origins([format!("http://localhost:{port}"), format!("http://127.0.0.1:{port}")])
+        .with_cancellation_token(shutdown);
+    StreamableHttpService::new(
+        move || Ok(Kanzo { ctx: ctx.clone(), tool_router: Kanzo::tool_router() }),
+        Default::default(),
+        config,
+    )
+}
+
 struct Ctx {
     home: Home,
-    cwd: PathBuf,
+    /// The agent's working folder; `None` over HTTP, where we cannot know it.
+    cwd: Option<PathBuf>,
     /// GitHub repos (`owner/repo`) of the git remotes of `cwd`.
     repos: Vec<String>,
 }
@@ -49,7 +78,15 @@ impl Ctx {
         }
         let known: Vec<String> = store.list_projects()?.into_iter().map(|p| p.slug).collect();
         let known = known.join(", ");
-        let cwd = self.cwd.display();
+        let Some(cwd) = &self.cwd else {
+            let msg = if known.is_empty() {
+                "There are no projects yet. Create one with create_project.".to_string()
+            } else {
+                format!("Pass `project` (one of: {known}); over HTTP Kanzo cannot see which folder you work in.")
+            };
+            return Err(Error::NotFound(msg));
+        };
+        let cwd = cwd.display();
         let msg = match (self.repos.first(), known.is_empty()) {
             (Some(repo), false) => format!(
                 "No project is linked to {repo} (the git remote of {cwd}). Pass `project` (one of: {known}), \
@@ -367,7 +404,7 @@ impl ServerHandler for Kanzo {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("kanzo", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(if self.ctx.cwd.is_some() { INSTRUCTIONS } else { HTTP_INSTRUCTIONS })
     }
 }
 

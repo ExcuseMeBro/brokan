@@ -44,6 +44,14 @@ codex mcp add kanzo -- kanzo mcp                  # Codex
 
 Any other MCP client works too: the command is `kanzo` with the argument `mcp`. GUI apps such as Raycast may not see Homebrew's `PATH`, so give them the full path from `which kanzo`.
 
+**Over HTTP.** Clients that can't start a local program can use the running board instead, at `http://localhost:4242/mcp`:
+
+```sh
+claude mcp add --transport http kanzo http://localhost:4242/mcp
+```
+
+Over HTTP Kanzo can't see which folder the agent works in, so the agent has to name the project. The endpoint answers only on localhost; turn it off with `mcp_http = false` in `config.toml`.
+
 Then ask your agent things like *"take the next task from kanzo and do it"*, or *"add a kanzo task for the flaky login test"*.
 
 ### Tools agents get
@@ -77,6 +85,7 @@ Everything is in `~/kanzo`. Use another folder with `--home <dir>` or `KANZO_HOM
 ```toml
 port = 4242
 statuses = ["todo", "doing", "review", "done"]
+mcp_http = true
 ```
 
 New tasks go in the first column; tasks in the last one count as done.
@@ -129,8 +138,8 @@ The code is small on purpose:
 | `src/home.rs` | Data folder and `config.toml` |
 | `src/schema.sql` | The database schema |
 | `src/store.rs` | All SQL |
-| `src/mcp.rs` | The MCP tools (`rmcp`, pinned on purpose: it still changes often) |
-| `src/web.rs` | The board's HTTP API |
+| `src/mcp.rs` | The MCP tools, over stdio and HTTP (`rmcp`, pinned on purpose: it still changes often) |
+| `src/web.rs` | The board's HTTP API, and `/mcp` |
 | `src/index.html` | The whole board UI: plain HTML, CSS and JavaScript, built into the binary |
 | `src/sync.rs` | `kanzo sync` |
 | `src/export.rs` | `kanzo export` |
