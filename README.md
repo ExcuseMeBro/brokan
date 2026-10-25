@@ -25,7 +25,7 @@ kanzo
 
 The board opens at http://localhost:4242. The first run creates `~/kanzo`.
 
-Press `n` to add a task.
+Press `n` to add a task and `/` to search. Search matches every word you type against task ids, titles, descriptions and project names.
 
 To keep the board running in the background and start it at login:
 

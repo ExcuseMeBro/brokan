@@ -73,8 +73,12 @@ input.field, textarea.field, select.field {
 /* Main board */
 main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 header {
-  display: flex; align-items: baseline; gap: 12px; padding: 16px 20px 12px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 12px; padding: 14px 20px 12px; flex-wrap: wrap;
 }
+header .info { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.search { display: flex; align-items: center; gap: 10px; }
+.search .note { color: var(--faint); font-size: 12px; white-space: nowrap; }
+.search input { width: 220px; padding: 5px 10px; }
 header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
 header .sub { color: var(--muted); }
 header .sub a { color: inherit; }
@@ -184,6 +188,7 @@ header .sub a { color: inherit; }
   #new-project-toggle, form.new-project { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
   header { padding: 12px; }
+  .search, .search input { width: 100%; }
 }
 </style>
 </head>
@@ -207,7 +212,13 @@ header .sub a { color: inherit; }
 </aside>
 
 <main>
-  <header id="header"></header>
+  <header>
+    <div class="info" id="header"></div>
+    <div class="search" id="search-box" hidden>
+      <span class="note" id="search-note"></span>
+      <input class="field" id="search" type="search" placeholder="Search tasks   /" autocomplete="off" spellcheck="false" aria-label="Search tasks">
+    </div>
+  </header>
   <div class="columns" id="columns"></div>
 </main>
 
@@ -264,6 +275,7 @@ const state = {
   dragging: null,        // id of the card being dragged
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
+  query: "",             // search box text
 };
 
 // ---------- helpers ----------
@@ -469,6 +481,7 @@ function renderHeader() {
   const p = currentProject();
   const { projects, tasks } = state.board;
   const header = $("#header");
+  $("#search-box").hidden = !projects.length;
   if (!projects.length) { header.replaceChildren(); return; }
   if (!p) {
     header.replaceChildren(el("h1", {}, "All projects"),
@@ -515,14 +528,25 @@ function renderColumns() {
   // During a drag the DOM is being moved by hand; refresh once it ends.
   if (state.dragging) return;
   const all = state.project === "all";
+  const shown = tasks.filter(matches);
+  $("#search-note").textContent = !state.query.trim() ? ""
+    : shown.length ? `${shown.length} of ${tasks.length}` : "No matches";
   for (const status of statuses) {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
-    const mine = tasks.filter((t) => t.status === status);
+    const mine = shown.filter((t) => t.status === status);
     col.querySelector("h2 .count").textContent = mine.length ? String(mine.length) : "";
     col.querySelector(".cards").replaceChildren(...mine.map((t) => card(t, all)));
   }
   const select = columns.querySelector(".add select");
   if (select) fillProjectSelect(select);
+}
+
+// Every word of the search must appear in the task's id, title, description or project.
+function matches(t) {
+  const words = state.query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const text = `${key(t)} ${t.title} ${t.description} ${t.project}`.toLowerCase();
+  return words.every((w) => text.includes(w));
 }
 
 function card(t, showProject) {
@@ -807,11 +831,30 @@ $("#p-delete").addEventListener("click", async () => {
   } catch (err) { toast(err.message); }
 });
 
+// ---------- search ----------
+
+$("#search").addEventListener("input", (e) => {
+  state.query = e.target.value;
+  if (state.board) renderColumns();
+});
+$("#search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    e.target.value = "";
+    e.target.dispatchEvent(new Event("input"));
+    e.target.blur();
+  }
+});
+
 // ---------- keyboard, polling, start ----------
 
 document.addEventListener("keydown", (e) => {
   const typing = e.target.closest("input, textarea, select");
   if (e.key === "Escape" && state.task && !typing) closeTask();
+  if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault();
+    $("#search").focus();
+  }
   if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
     const add = $("#columns .add");
     if (add) { e.preventDefault(); add.open(); }
