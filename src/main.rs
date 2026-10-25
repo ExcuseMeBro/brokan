@@ -1,5 +1,6 @@
 mod home;
 mod mcp;
+mod service;
 mod store;
 mod sync;
 mod web;
@@ -51,6 +52,19 @@ enum Command {
         #[arg(long)]
         keep_remote: bool,
     },
+    /// Start the board automatically at login (macOS)
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install and start a LaunchAgent that runs the board at login
+    Install,
+    /// Stop and remove the LaunchAgent
+    Uninstall,
 }
 
 #[tokio::main]
@@ -86,5 +100,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             };
             sync::sync(&home, keep)
         }
+        Some(Command::Service { action: ServiceAction::Install }) => service::install(&home),
+        Some(Command::Service { action: ServiceAction::Uninstall }) => service::uninstall(),
     }
 }
