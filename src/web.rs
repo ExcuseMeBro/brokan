@@ -64,12 +64,19 @@ fn router(home: Home, port: u16) -> Router {
 }
 
 /// Rejects requests whose Host is not this machine, so a web page on another
-/// domain cannot reach the board through DNS rebinding.
+/// domain cannot reach the board through DNS rebinding, and requests that a
+/// browser sends from any page other than the board itself.
 async fn local_only(State(port): State<u16>, req: Request, next: Next) -> Response {
-    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-    let ok = ["localhost", "127.0.0.1"].iter().any(|h| host == *h || host == format!("{h}:{port}"));
+    let ok = {
+        let header = |name| req.headers().get(name).and_then(|h: &header::HeaderValue| h.to_str().ok());
+        let host = header(header::HOST).unwrap_or("");
+        let host_ok = ["localhost", "127.0.0.1"].iter().any(|h| host == *h || host == format!("{h}:{port}"));
+        let origin_ok = header(header::ORIGIN)
+            .is_none_or(|o| o == format!("http://localhost:{port}") || o == format!("http://127.0.0.1:{port}"));
+        host_ok && origin_ok
+    };
     if !ok {
-        return (StatusCode::FORBIDDEN, "kanzo only answers on localhost").into_response();
+        return (StatusCode::FORBIDDEN, "kanzo only answers its own board on localhost").into_response();
     }
     next.run(req).await
 }
