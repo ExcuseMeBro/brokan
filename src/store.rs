@@ -164,6 +164,11 @@ impl Store {
         Ok(self.conn.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'changes'", [], |r| r.get(0))?)
     }
 
+    /// The current time, in the same format as the stored timestamps.
+    pub fn now(&self) -> Result<String> {
+        Ok(self.conn.query_row(&format!("SELECT {NOW}"), [], |r| r.get(0))?)
+    }
+
     /// Moves everything from the WAL into `kanzo.db`, so the file alone is complete.
     pub fn checkpoint(&self) -> Result<()> {
         let busy: i64 = self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;

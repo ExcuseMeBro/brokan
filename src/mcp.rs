@@ -372,7 +372,7 @@ impl ServerHandler for Kanzo {
 }
 
 /// `2026-10-25T09:30:00Z` -> `2026-10-25 09:30 UTC`.
-fn short_time(ts: &str) -> String {
+pub(crate) fn short_time(ts: &str) -> String {
     match (ts.get(..10), ts.get(11..16)) {
         (Some(d), Some(t)) => format!("{d} {t} UTC"),
         _ => ts.to_string(),

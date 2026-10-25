@@ -81,6 +81,16 @@ statuses = ["todo", "doing", "review", "done"]
 
 New tasks go in the first column; tasks in the last one count as done.
 
+### Export
+
+Read the board without Kanzo, or keep a plain-text copy:
+
+```sh
+kanzo export                       # Markdown, to the terminal
+kanzo export -f json -o board.json # JSON, to a file
+kanzo export -p api                # one project
+```
+
 ## Sync between laptops
 
 The data folder can be a private GitHub repo. `kanzo sync` commits the board and pulls or pushes it.
@@ -106,7 +116,7 @@ kanzo sync --keep-remote   # take GitHub's board; this laptop's is kept in kanzo
 ## Development
 
 ```sh
-cargo test               # store, config and service tests
+cargo test               # store, config, export and service tests
 cargo run                # the board, with data in ~/kanzo
 cargo run -- --home /tmp/k --port 4300   # a throwaway board
 ```
@@ -123,6 +133,7 @@ The code is small on purpose:
 | `src/web.rs` | The board's HTTP API |
 | `src/index.html` | The whole board UI: plain HTML, CSS and JavaScript, built into the binary |
 | `src/sync.rs` | `kanzo sync` |
+| `src/export.rs` | `kanzo export` |
 | `src/service.rs` | `kanzo service` |
 
 Every operation opens its own short-lived SQLite connection, in WAL mode with a 5-second busy timeout, so the board and any number of agents can write at once. The board polls a change counter every 2 seconds, which database triggers bump on every write.

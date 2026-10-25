@@ -1,3 +1,4 @@
+mod export;
 mod home;
 mod mcp;
 mod service;
@@ -52,6 +53,18 @@ enum Command {
         #[arg(long)]
         keep_remote: bool,
     },
+    /// Write the whole board as Markdown or JSON
+    Export {
+        /// Output format
+        #[arg(long, short, value_enum, default_value = "markdown")]
+        format: export::Format,
+        /// Only this project
+        #[arg(long, short)]
+        project: Option<String>,
+        /// Write to this file instead of the terminal
+        #[arg(long, short, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Start the board automatically at login (macOS)
     Service {
         #[command(subcommand)]
@@ -99,6 +112,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 _ => None,
             };
             sync::sync(&home, keep)
+        }
+        Some(Command::Export { format, project, output }) => {
+            export::export(&home, format, project.as_deref(), output.as_deref())
         }
         Some(Command::Service { action: ServiceAction::Install }) => service::install(&home),
         Some(Command::Service { action: ServiceAction::Uninstall }) => service::uninstall(),

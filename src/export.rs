@@ -1,0 +1,182 @@
+//! `kanzo export`: the whole board as Markdown or JSON, readable without Kanzo.
+
+use std::fmt::Write as _;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use serde::Serialize;
+
+use crate::home::Home;
+use crate::mcp::short_time;
+use crate::store::{Comment, Project, Store, Task};
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum Format {
+    Markdown,
+    Json,
+}
+
+#[derive(Serialize)]
+struct Board {
+    exported_at: String,
+    statuses: Vec<String>,
+    projects: Vec<ProjectOut>,
+}
+
+#[derive(Serialize)]
+struct ProjectOut {
+    #[serde(flatten)]
+    project: Project,
+    tasks: Vec<TaskOut>,
+}
+
+#[derive(Serialize)]
+struct TaskOut {
+    id: i64,
+    key: String,
+    title: String,
+    description: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    comments: Vec<Comment>,
+}
+
+impl TaskOut {
+    fn new(task: Task, comments: Vec<Comment>) -> Self {
+        Self {
+            key: task.key(),
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+            comments,
+        }
+    }
+}
+
+pub fn export(home: &Home, format: Format, project: Option<&str>, output: Option<&Path>) -> Result<()> {
+    let store = home.store()?;
+    let board = collect(&store, project)?;
+    let text = match format {
+        Format::Json => serde_json::to_string_pretty(&board)? + "\n",
+        Format::Markdown => markdown(&board),
+    };
+    match output {
+        Some(path) => {
+            std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+            let tasks: usize = board.projects.iter().map(|p| p.tasks.len()).sum();
+            eprintln!("Exported {} projects and {tasks} tasks to {}", board.projects.len(), path.display());
+        }
+        None => print!("{text}"),
+    }
+    Ok(())
+}
+
+fn collect(store: &Store, only: Option<&str>) -> Result<Board> {
+    let projects = match only {
+        Some(slug) => vec![store.find_project(slug)?],
+        None => store.list_projects()?,
+    };
+    let mut out = Vec::new();
+    for project in projects {
+        let mut tasks = Vec::new();
+        for task in store.list_tasks(Some(project.id), None)? {
+            let comments = store.list_comments(task.id)?;
+            tasks.push(TaskOut::new(task, comments));
+        }
+        out.push(ProjectOut { project, tasks });
+    }
+    Ok(Board { exported_at: store.now()?, statuses: store.statuses().to_vec(), projects: out })
+}
+
+fn markdown(board: &Board) -> String {
+    let mut md = format!("# Kanzo board\n\nExported {}.\n", short_time(&board.exported_at));
+    for p in &board.projects {
+        let repo = p.project.repo.as_deref().map(|r| format!(" ([{r}](https://github.com/{r}))")).unwrap_or_default();
+        let _ = write!(
+            md,
+            "\n## {} `{}`{repo}\n\n{} open of {} {}.\n",
+            p.project.name,
+            p.project.slug,
+            p.project.open,
+            p.project.total,
+            if p.project.total == 1 { "task" } else { "tasks" }
+        );
+        // Columns in board order, then any status no longer in the config.
+        let mut statuses = board.statuses.clone();
+        for t in &p.tasks {
+            if !statuses.contains(&t.status) {
+                statuses.push(t.status.clone());
+            }
+        }
+        for status in &statuses {
+            let tasks: Vec<_> = p.tasks.iter().filter(|t| t.status == *status).collect();
+            if tasks.is_empty() {
+                continue;
+            }
+            let _ = write!(md, "\n### {status}\n");
+            for t in tasks {
+                let _ = write!(
+                    md,
+                    "\n#### {} {}\n\nCreated {}, updated {}.\n",
+                    t.key,
+                    t.title,
+                    short_time(&t.created_at),
+                    short_time(&t.updated_at)
+                );
+                if !t.description.is_empty() {
+                    let _ = write!(md, "\n{}\n", t.description);
+                }
+                if !t.comments.is_empty() {
+                    md.push_str("\nComments:\n\n");
+                    for c in &t.comments {
+                        // Indent follow-on lines so a multi-line comment stays inside its list item.
+                        let body = c.body.replace('\n', "\n  ");
+                        let _ = writeln!(md, "- **{}**, {}: {body}", c.author, short_time(&c.created_at));
+                    }
+                }
+            }
+        }
+    }
+    md
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exports_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        let store = home.store().unwrap();
+        let api = store.create_project("api", "API", Some("me/api")).unwrap();
+        store.create_project("web", "Web", None).unwrap();
+        let t = store.create_task(api.id, "Fix login", "Steps:\n1. log in").unwrap();
+        store.add_comment(t.id, "claude-code", "Found it\nin auth.rs").unwrap();
+        let done = store.create_task(api.id, "Old work", "").unwrap();
+        store.move_task(done.id, "done", None).unwrap();
+
+        let board = collect(&store, None).unwrap();
+        let md = markdown(&board);
+        assert!(md.contains("## API `api` ([me/api](https://github.com/me/api))"), "{md}");
+        assert!(md.contains("### todo\n\n#### api#1 Fix login"), "{md}");
+        assert!(md.contains("Steps:\n1. log in"), "{md}");
+        assert!(md.contains("- **claude-code**, ") && md.contains("Found it\n  in auth.rs"), "{md}");
+        assert!(md.contains("### done\n\n#### api#2 Old work"), "{md}");
+        assert!(md.contains("## Web `web`"), "{md}");
+
+        let json: serde_json::Value = serde_json::to_value(&board).unwrap();
+        assert_eq!(json["statuses"][0], "todo");
+        assert_eq!(json["projects"][0]["slug"], "api");
+        assert_eq!(json["projects"][0]["tasks"][0]["key"], "api#1");
+        assert_eq!(json["projects"][0]["tasks"][0]["comments"][0]["author"], "claude-code");
+
+        let only = collect(&store, Some("web")).unwrap();
+        assert_eq!(only.projects.len(), 1);
+        assert!(collect(&store, Some("nope")).is_err());
+    }
+}
