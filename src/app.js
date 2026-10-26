@@ -16,7 +16,6 @@ if (!HTMLFormElement.prototype.requestSubmit) {
 }
 
 const $ = (sel, root = document) => root.querySelector(sel);
-const DONE_SHOWN = 50;
 const STATUS_COLORS = ["#8a8a83", "#3b82f6", "#e8a317", "#2f9e44", "#ae3ec9", "#e8590c"];
 
 const state = {
@@ -224,7 +223,10 @@ let boardRequest = 0;
 async function loadBoard() {
   const request = ++boardRequest;
   try {
-    const board = await api("GET", "/board?project=" + encodeURIComponent(state.project));
+    // The server leaves out older done tasks unless asked: the board does not show
+    // them, and the done column only grows. Search needs them all.
+    const done = fullDone() ? "&done=all" : "";
+    const board = await api("GET", "/board?project=" + encodeURIComponent(state.project) + done);
     if (request !== boardRequest) return;
     state.board = board;
     state.changes = board.changes;
@@ -238,6 +240,10 @@ async function loadBoard() {
       toast(e.message);
     }
   }
+}
+
+function fullDone() {
+  return state.allDone || state.query.trim() !== "";
 }
 
 // The address is #project or #project/task-id, so a task can be linked to.
@@ -357,7 +363,7 @@ function renderHeader() {
   if (!projects.length) { header.replaceChildren(); return; }
   if (!p) {
     header.replaceChildren(el("h1", {}, "All projects"),
-      el("span", { class: "sub" }, `${tasks.length} tasks across ${projects.length} projects`));
+      el("span", { class: "sub" }, `${projects.reduce((n, p) => n + p.total, 0)} tasks across ${projects.length} projects`));
     return;
   }
   header.replaceChildren(
@@ -416,15 +422,15 @@ function renderColumns() {
   for (const status of statuses) {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
     const mine = shown.filter((t) => t.status === status);
-    col.querySelector("h2 .count").textContent = mine.length ? String(mine.length) : "";
-    // The done column only grows; draw its newest cards (at the bottom) unless asked,
-    // so a long-lived board stays quick on old machines.
+    // Older done tasks the server left out (see loadBoard).
     const last = status === statuses[statuses.length - 1];
-    const hidden = last && !state.allDone && !state.query.trim() ? Math.max(0, mine.length - DONE_SHOWN) : 0;
+    const hidden = last && !fullDone() ? state.board.done_hidden || 0 : 0;
+    const count = mine.length + hidden;
+    col.querySelector("h2 .count").textContent = count ? String(count) : "";
     const more = hidden
-      ? el("button", { class: "ghost more", onclick: () => { state.allDone = true; renderColumns(); } }, `Show ${hidden} older`)
+      ? el("button", { class: "ghost more", onclick: () => { state.allDone = true; loadBoard(); } }, `Show ${hidden} older`)
       : null;
-    col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.slice(hidden).map((t) => card(t, all)));
+    col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.map((t) => card(t, all)));
   }
 }
 
@@ -762,8 +768,11 @@ $("#p-delete").addEventListener("click", async () => {
 // ---------- search ----------
 
 $("#search").addEventListener("input", (e) => {
+  const wasFull = fullDone();
   state.query = e.target.value;
-  if (state.board) renderColumns();
+  // Searching needs every done task; load them when a search starts.
+  if (fullDone() !== wasFull) loadBoard();
+  else if (state.board) renderColumns();
 });
 $("#search").addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

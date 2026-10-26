@@ -245,9 +245,15 @@ async fn changes(State(home): Shared) -> Response {
     with_store(home, |h, s| Ok(json!({ "changes": change_token(h, s)? }))).await
 }
 
+/// Done tasks the board gets unless it asks for all: the newest, which are all it shows.
+/// The done column only grows, and every change reloads the board.
+const DONE_SHOWN: usize = 50;
+
 #[derive(Deserialize)]
 struct BoardQuery {
     project: Option<String>,
+    /// "all" for every done task.
+    done: Option<String>,
 }
 
 async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
@@ -256,10 +262,24 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
             Some(slug) => Some(s.find_project(slug)?),
             None => None,
         };
+        let mut tasks = s.list_tasks(project.map(|p| p.id), None)?;
+        let done = s.statuses().last().expect("config has at least two statuses");
+        let mut done_hidden = 0;
+        if q.done.as_deref() != Some("all") {
+            // Done tasks run oldest to newest; drop the oldest.
+            done_hidden = tasks.iter().filter(|t| t.status == *done).count().saturating_sub(DONE_SHOWN);
+            let mut drop = done_hidden;
+            tasks.retain(|t| {
+                let old = drop > 0 && t.status == *done;
+                drop -= usize::from(old);
+                !old
+            });
+        }
         Ok(json!({
             "statuses": s.statuses(),
             "projects": s.list_projects()?,
-            "tasks": s.list_tasks(project.map(|p| p.id), None)?,
+            "tasks": tasks,
+            "done_hidden": done_hidden,
             "changes": change_token(h, s)?,
         }))
     })
