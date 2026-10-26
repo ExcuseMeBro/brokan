@@ -322,11 +322,22 @@ async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Respo
 
 #[derive(Deserialize)]
 struct ProjectPatch {
-    color: String,
+    name: Option<String>,
+    color: Option<String>,
 }
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
-    with_store(home, move |_, s| s.set_project_color(&slug, &p.color)).await
+    with_store(home, move |_, s| {
+        let mut project = s.find_project(&slug)?;
+        if let Some(name) = &p.name {
+            project = s.rename_project(&slug, name)?;
+        }
+        if let Some(color) = &p.color {
+            project = s.set_project_color(&slug, color)?;
+        }
+        Ok(project)
+    })
+    .await
 }
 
 #[derive(Deserialize)]

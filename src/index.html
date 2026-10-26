@@ -69,6 +69,8 @@ aside {
 .nav .item:hover .more, .nav .item:focus-within .more, .nav .item.menu-open .more { display: block; }
 .nav .item:hover .count, .nav .item:focus-within .count, .nav .item.menu-open .count { visibility: hidden; }
 .nav .item.menu-open a { background: var(--hover); }
+.nav .item.renaming { display: flex; align-items: center; gap: 10px; padding: 3px 6px 3px 10px; }
+.nav .item.renaming .field { padding: 5px 8px; border-radius: 8px; }
 @media (hover: none) { .nav .more { display: block; } .nav .item .count { visibility: hidden; } }
 .menu {
   position: fixed; z-index: 30; min-width: 190px; padding: 6px; background: var(--menu);

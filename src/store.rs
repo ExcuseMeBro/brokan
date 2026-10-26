@@ -399,6 +399,17 @@ impl Store {
         }
     }
 
+    /// Renames a project. Its slug, and so its task keys like api#12, stay.
+    pub fn rename_project(&self, slug: &str, name: &str) -> Result<Project> {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if name.is_empty() {
+            return Err(Error::Invalid("project name is empty".into()));
+        }
+        let project = self.find_project(slug)?;
+        self.conn.execute("UPDATE projects SET name = ?1 WHERE id = ?2", params![name, project.id])?;
+        self.find_project(&project.slug)
+    }
+
     pub fn set_project_color(&self, slug: &str, color: &str) -> Result<Project> {
         if !PROJECT_COLORS.contains(&color) {
             return Err(Error::Invalid(format!("unknown color {color:?}; use one of: {}", PROJECT_COLORS.join(", "))));
@@ -922,6 +933,9 @@ mod tests {
         assert_eq!((web.name.as_str(), web.color.as_deref()), ("web", None));
         assert_eq!(s.set_project_color("web", "teal").unwrap().color.as_deref(), Some("teal"));
         assert!(s.set_project_color("web", "#ff0000").is_err());
+        let renamed = s.rename_project("web", "  Web   site ").unwrap();
+        assert_eq!((renamed.slug.as_str(), renamed.name.as_str()), ("web", "Web site"));
+        assert!(s.rename_project("web", "  ").is_err());
         assert!(s.find_project("nope").unwrap_err().to_string().contains("api, web"));
     }
 

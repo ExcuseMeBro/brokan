@@ -66,6 +66,7 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
 };
@@ -286,6 +287,8 @@ function render() {
 }
 
 function renderNav() {
+  // Redrawing would take the field away from someone renaming a project.
+  if (renaming && document.contains(renaming.input)) return;
   const { projects } = state.board;
   const open = projects.reduce((n, p) => n + p.open, 0);
   const link = (slug, name, count, glyph) =>
@@ -294,7 +297,9 @@ function renderNav() {
       glyph,
       el("span", { class: "name" }, name),
       el("span", { class: "count" }, String(count)));
-  const item = (p) => el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
+  const item = (p) => renaming && renaming.slug === p.slug
+    ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
+    : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
     link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
     el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
@@ -340,11 +345,12 @@ function toggleProjectMenu(p, button) {
     if (focus) input.focus();
   };
   drawRepos(p.repos);
+  const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), "Rename");
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), "Delete project");
   const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
     el("div", { class: "label" }, "Color"), swatches, el("div", { class: "label" }, "Repos"), repos,
-    el("div", { class: "sep" }), remove);
+    el("div", { class: "sep" }), rename, remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
@@ -352,6 +358,36 @@ function toggleProjectMenu(p, button) {
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   // Focus the menu itself, so Tab reaches its buttons without one looking selected.
   menu.focus();
+}
+
+// Renaming a project, as in ChatGPT: its sidebar row becomes a field. Enter or leaving it
+// saves, Esc cancels. The slug, and so the task keys, stay.
+let renaming = null; // { slug, input }
+
+function startRename(p) {
+  closeMenu();
+  const input = el("input", { class: "field", "aria-label": `Rename ${p.name}`, spellcheck: "false", autocomplete: "off" });
+  input.value = p.name;
+  renaming = { slug: p.slug, input };
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    const name = input.value.trim();
+    renaming = null;
+    if (save && name && name !== p.name) {
+      try { await api("PATCH", `/projects/${encodeURIComponent(p.slug)}`, { name }); } catch (err) { toast(err.message); }
+    }
+    loadBoard();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  renderNav();
+  input.focus();
+  input.select();
 }
 
 // Links (POST) or unlinks (DELETE) a repo; returns the project, or null after showing the error.
