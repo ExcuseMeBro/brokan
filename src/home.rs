@@ -118,6 +118,21 @@ impl Home {
         self.dir.join("kanzo.db")
     }
 
+    /// Changes when the database file itself is replaced, as `kanzo sync` does
+    /// when it pulls, so the board reloads even if the pulled change counter
+    /// happens to equal the old one.
+    pub fn db_identity(&self) -> u64 {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(self.db_path()).map(|m| m.ino()).unwrap_or(0)
+        }
+        #[cfg(not(unix))]
+        {
+            0
+        }
+    }
+
     /// Opens a fresh connection. Callers keep it for one operation only, so a
     /// database replaced by `kanzo sync` is picked up on the next one. It holds
     /// a shared lock on `kanzo.lock`, so sync can wait for it to finish; while

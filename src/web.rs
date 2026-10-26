@@ -96,11 +96,11 @@ type Shared = State<Arc<Home>>;
 /// Runs `f` with a fresh connection on a blocking thread and answers with JSON.
 async fn with_store<T: Serialize + Send + 'static>(
     home: Arc<Home>,
-    f: impl FnOnce(&Store) -> store::Result<T> + Send + 'static,
+    f: impl FnOnce(&Home, &Store) -> store::Result<T> + Send + 'static,
 ) -> Response {
     let outcome = tokio::task::spawn_blocking(move || {
         let store = home.store()?;
-        f(&store)
+        f(&home, &store)
     })
     .await;
     let error = match outcome {
@@ -117,8 +117,14 @@ async fn with_store<T: Serialize + Send + 'static>(
     (code, Json(json!({ "error": error.to_string() }))).into_response()
 }
 
+/// What the page compares to see if anything changed: the change counter, plus
+/// the database file's identity so a board pulled by `kanzo sync` always reloads.
+fn change_token(home: &Home, s: &Store) -> store::Result<String> {
+    Ok(format!("{}-{}", s.changes()?, home.db_identity()))
+}
+
 async fn changes(State(home): Shared) -> Response {
-    with_store(home, |s| Ok(json!({ "changes": s.changes()? }))).await
+    with_store(home, |h, s| Ok(json!({ "changes": change_token(h, s)? }))).await
 }
 
 #[derive(Deserialize)]
@@ -127,7 +133,7 @@ struct BoardQuery {
 }
 
 async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
-    with_store(home, move |s| {
+    with_store(home, move |h, s| {
         let project = match q.project.as_deref().filter(|p| !p.is_empty() && *p != "all") {
             Some(slug) => Some(s.find_project(slug)?),
             None => None,
@@ -136,7 +142,7 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
             "statuses": s.statuses(),
             "projects": s.list_projects()?,
             "tasks": s.list_tasks(project.map(|p| p.id), None)?,
-            "changes": s.changes()?,
+            "changes": change_token(h, s)?,
         }))
     })
     .await
@@ -151,7 +157,7 @@ struct NewProject {
 }
 
 async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Response {
-    with_store(home, move |s| s.create_project(&p.slug, &p.name, p.repo.as_deref())).await
+    with_store(home, move |_, s| s.create_project(&p.slug, &p.name, p.repo.as_deref())).await
 }
 
 #[derive(Deserialize)]
@@ -163,7 +169,7 @@ struct NewTask {
 }
 
 async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
-    with_store(home, move |s| {
+    with_store(home, move |_, s| {
         let project = s.find_project(&t.project)?;
         s.create_task(project.id, &t.title, &t.description)
     })
@@ -171,7 +177,7 @@ async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
 }
 
 async fn get_task(State(home): Shared, Path(id): Path<i64>) -> Response {
-    with_store(home, move |s| {
+    with_store(home, move |_, s| {
         let task = s.get_task(id)?;
         let comments = s.list_comments(id)?;
         Ok(json!({ "task": task, "comments": comments }))
@@ -187,7 +193,7 @@ struct Patch {
 }
 
 async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Patch>) -> Response {
-    with_store(home, move |s| {
+    with_store(home, move |_, s| {
         s.update_task(id, TaskPatch { title: p.title, description: p.description, status: p.status })
     })
     .await
@@ -200,11 +206,11 @@ struct Move {
 }
 
 async fn move_task(State(home): Shared, Path(id): Path<i64>, Json(m): Json<Move>) -> Response {
-    with_store(home, move |s| s.move_task(id, &m.status, m.before)).await
+    with_store(home, move |_, s| s.move_task(id, &m.status, m.before)).await
 }
 
 async fn delete_task(State(home): Shared, Path(id): Path<i64>) -> Response {
-    with_store(home, move |s| s.delete_task(id)).await
+    with_store(home, move |_, s| s.delete_task(id)).await
 }
 
 #[derive(Deserialize)]
@@ -213,7 +219,7 @@ struct NewComment {
 }
 
 async fn add_comment(State(home): Shared, Path(id): Path<i64>, Json(c): Json<NewComment>) -> Response {
-    with_store(home, move |s| s.add_comment(id, "me", &c.body)).await
+    with_store(home, move |_, s| s.add_comment(id, "me", &c.body)).await
 }
 
 /// True when the program on `port` answers like a Kanzo board.
