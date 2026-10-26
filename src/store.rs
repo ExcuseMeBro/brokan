@@ -292,7 +292,16 @@ impl Store {
         {
             return Err(Error::Invalid(format!("repo {r} is already linked to project {}", other.slug)));
         }
-        self.conn.execute("INSERT INTO projects (slug, name, repo) VALUES (?1, ?2, ?3)", params![slug, name, repo])?;
+        match self
+            .conn
+            .execute("INSERT INTO projects (slug, name, repo) VALUES (?1, ?2, ?3)", params![slug, name, repo])
+        {
+            // Someone created the same project between our check and the insert.
+            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {
+                return Err(Error::Invalid(format!("project {slug} or its repo already exists")));
+            }
+            other => other?,
+        };
         self.find_project(&slug)
     }
 
