@@ -80,10 +80,18 @@ enum ServiceAction {
     Uninstall,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli).await {
+    // One thread runs all the async work: the board serves one person, and each
+    // agent starts its own `kanzo mcp`. Database calls run on a few blocking
+    // threads that exit when idle. This keeps kanzo light on small boards.
+    let outcome = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(8)
+        .build()
+        .map_err(anyhow::Error::from)
+        .and_then(|rt| rt.block_on(run(cli)));
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("kanzo: {e:#}");
