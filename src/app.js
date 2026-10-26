@@ -132,6 +132,27 @@ function statusColor(status) {
   return STATUS_COLORS[Math.max(i, 0) % STATUS_COLORS.length];
 }
 
+// A column's status as a small progress circle, as in Linear: empty for the first column,
+// filling up across the board, a check for the last. A shape, so it can't be taken for a
+// project's colour dot.
+function statusIcon(status) {
+  const { statuses } = state.board;
+  const f = statuses.length > 1 ? Math.max(statuses.indexOf(status), 0) / (statuses.length - 1) : 0;
+  const color = statusColor(status);
+  let inside = "";
+  if (f >= 1) {
+    inside = `<circle cx="7" cy="7" r="6" fill="${color}"/>` +
+      '<path d="m4.4 7.2 1.8 1.8 3.4-3.6" fill="none" stroke="var(--bg)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (f > 0) {
+    const r = 3.4, a = f * 2 * Math.PI;
+    const x = (7 + r * Math.sin(a)).toFixed(2), y = (7 - r * Math.cos(a)).toFixed(2);
+    inside = `<path d="M7 7L7 ${7 - r}A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${x} ${y}Z" fill="${color}"/>`;
+  }
+  const span = el("span", { class: "status-icon" });
+  span.innerHTML = `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="${color}" stroke-width="1.5"/>${inside}</svg>`;
+  return span;
+}
+
 const key = (t) => `${t.project}#${t.id}`;
 
 function parseTime(ts) {
@@ -482,7 +503,8 @@ function renderColumns() {
     columns.replaceChildren(...statuses.map((status, i) => {
       const last = i === statuses.length - 1;
       const col = el("section", { class: "column", "data-status": status },
-        el("h2", {}, el("span", { class: "dot", style: `background:${statusColor(status)}` }), status,
+        el("h2", {},
+          statusIcon(status), status,
           el("span", { class: "count" }),
           // At the top, so a long column never hides it.
           i === 0 ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null,
