@@ -19,6 +19,7 @@ use crate::home::Home;
 use crate::store::{self, Error, Store, TaskPatch};
 
 const INDEX: &str = include_str!("index.html");
+const APP_JS: &str = include_str!("app.js");
 
 pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let port = port.unwrap_or(home.config.port);
@@ -109,6 +110,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         app = app.nest_service("/mcp", crate::mcp::http_service(home.clone(), shutdown));
     }
     app.route("/", get(|| async { Html(INDEX) }))
+        .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
