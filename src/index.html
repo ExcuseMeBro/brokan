@@ -155,8 +155,10 @@ header .sub a:hover { color: var(--text); }
 .card .title { overflow-wrap: anywhere; flex: 1; min-width: 0; }
 .card .num {
   display: inline-flex; align-items: center; gap: 5px; flex: none; margin-top: 2px;
-  color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums;
+  color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; cursor: copy;
 }
+.card .num:hover, #p-key:hover { color: var(--text); }
+#p-key { cursor: copy; }
 .card .num .dot { width: 6px; height: 6px; }
 .card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .card .desc {

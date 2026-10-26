@@ -79,6 +79,22 @@ function icon(name, color) {
 document.querySelectorAll("[data-icon]").forEach((n) => n.replaceWith(icon(n.dataset.icon)));
 
 let toastTimer;
+// Copies a task's key, like api#12, to paste to an agent. The clipboard API needs a
+// secure page; a board opened from another device over plain HTTP falls back.
+async function copyKey(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = el("textarea", { style: "position:fixed;opacity:0" });
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  toast(`Copied ${text}`);
+}
+
 function toast(message) {
   document.querySelector(".toast")?.remove();
   const t = el("div", { class: "toast" }, message);
@@ -471,7 +487,7 @@ function card(t, showProject) {
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       // On "All projects" a dot in the project's colour tells the projects apart.
-      el("span", { class: "num", title: key(t) },
+      el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
     t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("span", { class: "tag" }, tag))) : null);
@@ -647,6 +663,7 @@ async function refreshTask() {
   const { task, comments, images } = data;
   panelTask = task;
   $("#p-key").textContent = key(task);
+  $("#p-key").title = `Copy ${key(task)}`;
   // Never overwrite what is being typed or picked.
   if (!$("#p-project").contains(document.activeElement)) renderProjectPick(task);
   for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description], [$("#p-tags"), task.tags.join(", ")]]) {
@@ -728,6 +745,7 @@ function cancelField(e, saved) {
 }
 
 $("#p-close").addEventListener("click", closeTask);
+$("#p-key").addEventListener("click", () => { if (panelTask) copyKey(key(panelTask)); });
 for (const field of [$("#p-title"), $("#p-desc")]) field.addEventListener("input", () => fit(field));
 
 // ⌘↵ in the title or description saves and closes.
