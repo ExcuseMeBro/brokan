@@ -56,11 +56,32 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let shutdown = CancellationToken::new();
     axum::serve(listener, router(home, guard, shutdown.clone()))
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            stop_signal().await;
             shutdown.cancel();
         })
         .await?;
     Ok(())
+}
+
+/// Ctrl-C, or SIGTERM from launchd or systemd stopping the service.
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            },
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
