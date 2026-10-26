@@ -31,13 +31,13 @@ pub fn sync(home: &Home, keep: Option<Keep>) -> Result<()> {
     git(dir, &["fetch", "--quiet", &remote])?;
 
     // Wait for open connections to finish and keep new ones out while the
-    // database file is committed or replaced.
-    let lock = home.lock_exclusive()?;
+    // database is staged. The lock is held only while git reads or replaces
+    // kanzo.db, never across a commit (hooks, signing prompts) or the network.
     {
-        let store = crate::store::Store::open(&home.db_path(), home.config.statuses.clone(), None)?;
-        store.settle()?;
+        let _lock = home.lock_exclusive()?;
+        crate::store::Store::open(&home.db_path(), home.config.statuses.clone(), None)?.settle()?;
+        git(dir, &["add", "--all"])?;
     }
-    git(dir, &["add", "--all"])?;
     if !git_ok(dir, &["diff", "--cached", "--quiet"]) {
         git(dir, &["commit", "--quiet", "--message", &format!("kanzo sync from {}", hostname())])?;
     }
@@ -59,7 +59,6 @@ pub fn sync(home: &Home, keep: Option<Keep>) -> Result<()> {
                 others.join(", ")
             );
         }
-        drop(lock);
         git(dir, &["push", "--quiet", "--set-upstream", &remote, &branch])?;
         println!("Pushed the board to {upstream} for the first time.");
         return Ok(());
@@ -77,13 +76,14 @@ pub fn sync(home: &Home, keep: Option<Keep>) -> Result<()> {
     match (ahead, behind, keep) {
         (0, 0, _) => println!("Already in sync with {upstream}."),
         (_, 0, _) => {
-            drop(lock);
             git(dir, &["push", "--quiet"])?;
             println!("Pushed this machine's changes to {upstream}.");
         }
         (0, _, _) => {
-            git(dir, &["merge", "--quiet", "--ff-only", "@{upstream}"])?;
-            drop(lock);
+            {
+                let _lock = home.lock_exclusive()?;
+                git(dir, &["merge", "--quiet", "--ff-only", "@{upstream}"])?;
+            }
             home.store()?.migrate()?;
             println!("Pulled the latest board from {upstream}.");
         }
@@ -94,14 +94,15 @@ pub fn sync(home: &Home, keep: Option<Keep>) -> Result<()> {
              kanzo sync --keep-remote  replace this machine's board with {upstream} (a copy is kept in kanzo.db.bak)"
         ),
         (_, _, Some(Keep::Local)) => {
-            drop(lock);
             git(dir, &["push", "--quiet", "--force-with-lease"])?;
             println!("Overwrote {upstream} with this machine's board.");
         }
         (_, _, Some(Keep::Remote)) => {
-            std::fs::copy(home.db_path(), dir.join("kanzo.db.bak")).context("cannot back up kanzo.db")?;
-            git(dir, &["reset", "--quiet", "--hard", "@{upstream}"])?;
-            drop(lock);
+            {
+                let _lock = home.lock_exclusive()?;
+                std::fs::copy(home.db_path(), dir.join("kanzo.db.bak")).context("cannot back up kanzo.db")?;
+                git(dir, &["reset", "--quiet", "--hard", "@{upstream}"])?;
+            }
             home.store()?.migrate()?;
             println!("Took the board from {upstream}; this machine's old board is in kanzo.db.bak.");
         }
