@@ -34,6 +34,8 @@ kanzo service install    # keep it running and start it at login
 
 `n` adds a task, `/` searches, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
 
+Paste an image into a task and Kanzo saves it in `~/kanzo/images` and types its path, like a terminal does, so your agents can open it.
+
 ## Connect your agents
 
 ```sh

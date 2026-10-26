@@ -763,6 +763,34 @@ $("#p-desc").addEventListener("blur", (e) => {
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 
+// Pasting an image saves it in the data folder and types its path, the way a terminal
+// does, so agents can open it. Text pastes are left alone.
+async function pasteImages(e) {
+  const data = e.clipboardData;
+  const fromItems = data && data.items ? [...data.items].filter((i) => i.kind === "file").map((i) => i.getAsFile()) : [];
+  const images = (fromItems.length ? fromItems : [...((data && data.files) || [])]).filter((f) => f && f.type.startsWith("image/"));
+  if (!images.length) return;
+  e.preventDefault();
+  const field = e.target;
+  try {
+    const paths = [];
+    for (const image of images) {
+      const res = await fetch("/api/images", { method: "POST", headers: { "Content-Type": image.type }, body: image });
+      const reply = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(reply.error || res.statusText);
+      paths.push(reply.path);
+    }
+    field.focus();
+    // Keep the path apart from the words around it.
+    const { value, selectionStart: start, selectionEnd: end } = field;
+    const before = start > 0 && !/\s/.test(value[start - 1]) ? " " : "";
+    const after = end < value.length && !/\s/.test(value[end]) ? " " : "";
+    field.setRangeText(before + paths.join(" ") + after, start, end, "end");
+    field.dispatchEvent(new Event("input"));
+  } catch (err) { toast(err.message); }
+}
+for (const field of [$("#p-title"), $("#p-desc"), $("#p-comment")]) field.addEventListener("paste", pasteImages);
+
 // Tags are typed comma-separated and tidied the way the server stores them.
 const cleanTags = (text) => [...new Set(text.split(",").map((t) => t.trim().replace(/\s+/g, " ").toLowerCase()).filter(Boolean))];
 $("#p-tags").addEventListener("keydown", (e) => {

@@ -4,8 +4,9 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
@@ -19,6 +20,8 @@ use crate::home::Home;
 use crate::store::{self, Error, Store, TaskPatch};
 
 const INDEX: &str = include_str!("index.html");
+/// The largest image the board takes from a paste.
+const IMAGE_LIMIT: usize = 25 * 1024 * 1024;
 const APP_JS: &str = include_str!("app.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
 
@@ -129,6 +132,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/{id}/move", post(move_task))
         .route("/api/tasks/{id}/comments", post(add_comment))
         .route("/api/comments/{id}", delete(delete_comment))
+        .route("/api/images", post(save_image).layer(DefaultBodyLimit::max(IMAGE_LIMIT)))
         .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
 }
@@ -395,6 +399,49 @@ async fn add_comment(State(home): Shared, Path(id): Path<i64>, Json(c): Json<New
 
 async fn delete_comment(State(home): Shared, Path(id): Path<i64>) -> Response {
     with_store(home, move |_, s| s.delete_comment(id)).await
+}
+
+/// Saves a pasted image in the data folder and answers with its path, which the board
+/// puts in the text the way a terminal does, so agents can open the image. Files are
+/// named by their content: the same image pasted twice is stored once.
+async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Response {
+    let ext = match headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+        Some("image/png") => "png",
+        Some("image/jpeg") => "jpg",
+        Some("image/gif") => "gif",
+        Some("image/webp") => "webp",
+        _ => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "paste a PNG, JPEG, GIF or WebP image" })))
+                .into_response();
+        }
+    };
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "the image is empty" }))).into_response();
+    }
+    let saved = tokio::task::spawn_blocking(move || -> std::io::Result<std::path::PathBuf> {
+        use std::hash::{Hash, Hasher};
+        let dir = home.dir.join("images");
+        std::fs::create_dir_all(&dir)?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        body.hash(&mut hasher);
+        let path = dir.join(format!("{:016x}.{ext}", hasher.finish()));
+        if !path.exists() {
+            // Write to a temporary name first, so a half-written image never has the real one.
+            let partial = path.with_extension("part");
+            std::fs::write(&partial, &body)?;
+            std::fs::rename(&partial, &path)?;
+        }
+        Ok(path)
+    })
+    .await;
+    match saved {
+        Ok(Ok(path)) => Json(json!({ "path": path.display().to_string() })).into_response(),
+        Ok(Err(e)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("cannot save the image: {e}") })))
+                .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 /// True when the program on `port` answers like a Kanzo board.
