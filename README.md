@@ -104,3 +104,5 @@ Measured on an Apple M4.
 ## License
 
 [AGPL-3.0](LICENSE): use it, change it and share it; if you offer a changed version over a network, share its source too. To help, see [CONTRIBUTING](.github/CONTRIBUTING.md).
+
+<sub>mcp-name: io.github.emanuele-em/kanzo</sub>
