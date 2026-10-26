@@ -179,7 +179,10 @@ impl Store {
 
     /// Bumped by triggers on every write; the board polls it.
     pub fn changes(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'changes'", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .prepare_cached("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'changes'")?
+            .query_row([], |r| r.get(0))?)
     }
 
     /// The current time, in the same format as the stored timestamps.
@@ -322,7 +325,8 @@ impl Store {
     pub fn get_task(&self, id: i64) -> Result<Task> {
         let sql = format!("{} WHERE t.id = ?1", Self::TASK_SELECT);
         self.conn
-            .query_row(&sql, [id], Self::task_row)
+            .prepare_cached(&sql)?
+            .query_row([id], Self::task_row)
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("no task #{id}")))
     }
@@ -496,9 +500,9 @@ impl Store {
     // Comments
 
     pub fn list_comments(&self, task_id: i64) -> Result<Vec<Comment>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, task_id, author, body, created_at FROM comments WHERE task_id = ?1 ORDER BY id")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, task_id, author, body, created_at FROM comments WHERE task_id = ?1 ORDER BY id",
+        )?;
         let rows = stmt.query_map([task_id], |r| {
             Ok(Comment { id: r.get(0)?, task_id: r.get(1)?, author: r.get(2)?, body: r.get(3)?, created_at: r.get(4)? })
         })?;
