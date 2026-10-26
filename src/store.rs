@@ -142,7 +142,17 @@ impl Store {
         }
     }
 
+    /// Brings the schema up to date. Writes nothing when it already is, so starting
+    /// `kanzo mcp` for every agent session costs no disk write.
     pub fn migrate(&self) -> Result<()> {
+        let current = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get::<_, String>(0))
+            .optional()
+            .unwrap_or(None);
+        if current == Some(MIGRATIONS.len().to_string()) {
+            return Ok(());
+        }
         self.write(|c| {
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
             let version: usize = c
