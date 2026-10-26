@@ -16,6 +16,7 @@ if (!HTMLFormElement.prototype.requestSubmit) {
 }
 
 const $ = (sel, root = document) => root.querySelector(sel);
+const DONE_SHOWN = 50;
 const STATUS_COLORS = ["#8a8a83", "#3b82f6", "#e8a317", "#2f9e44", "#ae3ec9", "#e8590c"];
 
 const state = {
@@ -27,6 +28,7 @@ const state = {
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
   query: "",             // search box text
+  allDone: false,        // show every card in the done column
 };
 
 // ---------- helpers ----------
@@ -306,7 +308,14 @@ function renderColumns() {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
     const mine = shown.filter((t) => t.status === status);
     col.querySelector("h2 .count").textContent = mine.length ? String(mine.length) : "";
-    col.querySelector(".cards").replaceChildren(...mine.map((t) => card(t, all)));
+    // The done column only grows; draw its newest cards (at the bottom) unless asked,
+    // so a long-lived board stays quick on old machines.
+    const last = status === statuses[statuses.length - 1];
+    const hidden = last && !state.allDone && !state.query.trim() ? Math.max(0, mine.length - DONE_SHOWN) : 0;
+    const more = hidden
+      ? el("button", { class: "ghost more", onclick: () => { state.allDone = true; renderColumns(); } }, `Show ${hidden} older`)
+      : null;
+    col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.slice(hidden).map((t) => card(t, all)));
   }
   const select = columns.querySelector(".add select");
   if (select) fillProjectSelect(select);
