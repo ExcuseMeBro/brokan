@@ -334,8 +334,15 @@ async fn is_kanzo(port: u16) -> bool {
 }
 
 fn open_browser(url: &str) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    if std::process::Command::new(opener).arg(url).spawn().is_err() {
+    if cfg!(target_os = "macos") {
+        if std::process::Command::new("open").arg(url).spawn().is_err() {
+            eprintln!("Open {url} in your browser.");
+        }
+        return;
+    }
+    // A board without a screen has nothing to open; the URL is already printed.
+    let desktop = ["DISPLAY", "WAYLAND_DISPLAY"].iter().any(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()));
+    if desktop && std::process::Command::new("xdg-open").arg(url).spawn().is_err() {
         eprintln!("Open {url} in your browser.");
     }
 }
