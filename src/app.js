@@ -178,14 +178,21 @@ function markdown(src) {
 
 // ---------- board ----------
 
+// Loads can overlap (a poll, a drop, an edit); only the newest one may render,
+// so a slow older reply never undoes what is on screen.
+let boardRequest = 0;
+
 async function loadBoard() {
+  const request = ++boardRequest;
   try {
     const board = await api("GET", "/board?project=" + encodeURIComponent(state.project));
+    if (request !== boardRequest) return;
     state.board = board;
     state.changes = board.changes;
     $("#offline").hidden = true;
     render();
   } catch (e) {
+    if (request !== boardRequest) return;
     if (state.project !== "all" && /no project/.test(e.message)) {
       setProject("all");
     } else {
