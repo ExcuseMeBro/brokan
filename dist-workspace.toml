@@ -10,7 +10,16 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Macs, and static Linux builds that need no particular glibc: old PCs,
+# Raspberry Pi 3/4/5 (64-bit), Pi 2/3 on a 32-bit OS, and Pi Zero/1 (ARMv6).
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "armv7-unknown-linux-musleabihf",
+    "arm-unknown-linux-musleabihf",
+]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Where to host releases
