@@ -640,8 +640,8 @@ window.addEventListener("hashchange", () => {
 });
 
 // Agents change the board through `kanzo mcp`; a cheap counter tells us when.
-setInterval(async () => {
-  if (document.hidden) return;
+async function poll() {
+  if (document.hidden) return schedulePoll();
   try {
     const { changes } = await api("GET", "/changes");
     $("#offline").hidden = true;
@@ -653,7 +653,15 @@ setInterval(async () => {
   } catch {
     $("#offline").hidden = false;
   }
-}, 2000);
+  schedulePoll();
+}
+
+// The next check starts only after this one finished, so a slow or busy server
+// never piles up requests.
+function schedulePoll() {
+  setTimeout(poll, 2000);
+}
+schedulePoll();
 
 // Relative times ("5m ago") drift; refresh them now and then.
 setInterval(() => {
