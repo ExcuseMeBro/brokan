@@ -3,13 +3,13 @@ name = "kanzo"
 version = "0.1.2"
 edition = "2024"
 rust-version = "1.89"
-description = "A local kanban board for you and your agents, with an MCP server"
+description = "Self-hosted kanban for humans and agents. One 4 MB binary, starts in 2 ms, zero setup."
 license = "AGPL-3.0-only"
 repository = "https://github.com/emanuele-em/kanzo"
 homepage = "https://github.com/emanuele-em/kanzo"
 readme = "README.md"
-keywords = ["kanban", "mcp", "agents", "todo", "board"]
-categories = ["command-line-utilities"]
+keywords = ["kanban", "mcp", "agents", "todo", "claude"]
+categories = ["command-line-utilities", "development-tools"]
 # Only what builds Kanzo: the README's screenshots and the repo's GitHub files stay out.
 exclude = ["/docs", "/.github", "/.cargo", "/dist-workspace.toml", "/rustfmt.toml"]
 
