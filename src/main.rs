@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 
 use crate::home::Home;
 
-/// A local kanban board for you and your agents.
+/// Self-hosted kanban for humans and agents.
 ///
 /// Run `kanzo` to open the board. Agents connect with `kanzo mcp`.
 #[derive(Parser)]
