@@ -20,6 +20,7 @@ use crate::store::{self, Error, Store, TaskPatch};
 
 const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
+const LOGO: &[u8] = include_bytes!("logo.png");
 
 pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let port = port.unwrap_or(home.config.port);
@@ -111,6 +112,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
     }
     app.route("/", get(|| async { Html(INDEX) }))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
+        .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
