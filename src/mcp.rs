@@ -326,8 +326,10 @@ impl Kanzo {
             .run(move |_, store| {
                 let before = args.id.find(store)?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase());
-                let after = store
-                    .update_task(before.id, TaskPatch { title: args.title, description: args.description, status })?;
+                let after = store.update_task(
+                    before.id,
+                    TaskPatch { title: args.title, description: args.description, status, project_id: None },
+                )?;
                 let moved = if before.status != after.status {
                     format!(", {} -> {}", before.status, after.status)
                 } else {

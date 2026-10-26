@@ -99,6 +99,8 @@ pub struct TaskPatch {
     pub title: Option<String>,
     pub description: Option<String>,
     pub status: Option<String>,
+    /// Moves the task to this project (by id).
+    pub project_id: Option<i64>,
 }
 
 pub struct Store {
@@ -413,6 +415,12 @@ impl Store {
                     params![title, id],
                 )?;
             }
+            if let Some(p) = patch.project_id {
+                c.execute(
+                    &format!("UPDATE tasks SET project_id = ?1, updated_at = {NOW} WHERE id = ?2 AND project_id <> ?1"),
+                    params![p, id],
+                )?;
+            }
             if let Some(d) = &patch.description {
                 c.execute(
                     &format!("UPDATE tasks SET description = ?1, updated_at = {NOW} WHERE id = ?2"),
@@ -678,6 +686,10 @@ mod tests {
         assert_eq!((t.title.as_str(), t.status.as_str()), ("Fix login bug", "review"));
         assert!(s.update_task(t.id, TaskPatch { status: Some("nope".into()), ..Default::default() }).is_err());
         assert!(s.update_task(t.id, TaskPatch { title: Some("  ".into()), ..Default::default() }).is_err());
+        let web = s.create_project("web", "", None).unwrap();
+        let moved = s.update_task(t.id, TaskPatch { project_id: Some(web.id), ..Default::default() }).unwrap();
+        assert_eq!((moved.key(), moved.status.as_str()), (format!("web#{}", t.id), "review"));
+        let t = s.update_task(t.id, TaskPatch { project_id: Some(p.id), ..Default::default() }).unwrap();
 
         s.add_comment(t.id, "claude-code", "Done, see PR").unwrap();
         s.add_comment(t.id, "", "thanks").unwrap();

@@ -149,6 +149,14 @@ header .sub a { color: inherit; }
   z-index: 10;
 }
 .panel.shown { transform: none; }
+/* The project, shown as a tag; picking another one moves the task. */
+.panel .project-pick { position: relative; }
+.panel .project-pick select {
+  appearance: none; -webkit-appearance: none; border: 0; background: none; padding: 0 2px 0 0; margin: 0;
+  font-size: inherit; color: inherit; cursor: pointer; outline: none; field-sizing: content;
+}
+.panel .project-pick:hover, .panel .project-pick:focus-within { border-color: var(--faint); }
+.panel .top select { width: auto; padding: 2px 6px; font-size: 12.5px; }
 .panel .top { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .panel .top .key { color: var(--muted); }
 .panel .top .spacer { flex: 1; }

@@ -563,9 +563,8 @@ async function refreshTask() {
   const { task, comments } = data;
   panelTask = task;
   $("#p-key").textContent = key(task);
-  $("#p-project").replaceChildren(el("span", { class: "tag" },
-    el("span", { class: "dot", style: `background:${projectColor(task.project)}` }), task.project));
-  // Never overwrite what is being typed.
+  // Never overwrite what is being typed or picked.
+  if (!$("#p-project").contains(document.activeElement)) renderProjectPick(task);
   for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description]]) {
     if (document.activeElement !== field) { field.value = value; fit(field); }
   }
@@ -582,6 +581,21 @@ async function refreshTask() {
     body.innerHTML = markdown(c.body);
     return el("div", { class: "comment" }, el("div", { class: "who" }, el("b", {}, c.author), " · ", timeEl(c.created_at)), body);
   }));
+}
+
+// The project tag doubles as a picker that moves the task to another project.
+function renderProjectPick(task) {
+  const projects = state.board ? state.board.projects.map((p) => p.slug) : [];
+  if (!projects.includes(task.project)) projects.push(task.project);
+  const select = el("select", { title: "Project", "aria-label": "Project" },
+    ...projects.map((slug) => el("option", { value: slug }, slug)));
+  select.value = task.project;
+  select.addEventListener("change", () => {
+    try { localStorage.setItem("kanzo.newTaskProject", select.value); } catch {}
+    patchTask({ project: select.value });
+  });
+  $("#p-project").replaceChildren(el("label", { class: "tag project-pick" },
+    el("span", { class: "dot", style: `background:${projectColor(task.project)}` }), select));
 }
 
 // Textareas grow with their text instead of scrolling.
