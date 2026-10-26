@@ -70,3 +70,5 @@ Replies are short plain text, not JSON. Token counts are estimated at 4 characte
 ## Learn more
 
 The [guide](docs/guide.md) covers running Kanzo in the background, opening it from other devices, MCP over HTTP, syncing between laptops, export and settings.
+
+To contribute, see [CONTRIBUTING](.github/CONTRIBUTING.md); to report a vulnerability, [SECURITY](.github/SECURITY.md). Kanzo is [MIT licensed](LICENSE).
