@@ -63,8 +63,8 @@ Other MCP clients: run `kanzo mcp` (apps like Raycast need the full path, from `
 Then ask: *"take the next task from kanzo and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.gif">
-  <img alt="A task open on the board: Claude Code reports its work in a comment, and you reply" src="docs/img/task-light.gif">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.jpg">
+  <img alt="A task open on the board, with Claude Code's comments and a reply" src="docs/img/task-light.jpg">
 </picture>
 
 ## Your board on every machine
