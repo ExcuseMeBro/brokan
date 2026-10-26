@@ -22,6 +22,11 @@ const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
 
+/// Scripts only from this server, so even a bug in the Markdown renderer cannot run
+/// injected script; requests only back to this server.
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+                   connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let port = port.unwrap_or(home.config.port);
     let listen = home.config.listen;
@@ -181,17 +186,25 @@ impl Guard {
 }
 
 /// Refuses requests for a Host this board does not answer to, and browser
-/// requests sent from any page other than the board itself.
+/// requests sent from any page other than the board itself. Adds security
+/// headers to every reply.
 async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> Response {
     let ok = {
         let header = |name| req.headers().get(name).and_then(|h: &HeaderValue| h.to_str().ok());
         let host = header(header::HOST).unwrap_or("");
         guard.allows(host) && header(header::ORIGIN).is_none_or(|o| o.eq_ignore_ascii_case(&format!("http://{host}")))
     };
-    if !ok {
-        return (StatusCode::FORBIDDEN, "kanzo does not answer requests from other sites").into_response();
-    }
-    next.run(req).await
+    let mut res = if ok {
+        next.run(req).await
+    } else {
+        (StatusCode::FORBIDDEN, "kanzo does not answer requests from other sites").into_response()
+    };
+    let headers = res.headers_mut();
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-cache"));
+    res
 }
 
 type Shared = State<Arc<Home>>;
