@@ -63,12 +63,6 @@ pub fn install(home: &Home) -> Result<()> {
         bail!("kanzo service only supports macOS; start `kanzo --no-open` with your own init system");
     }
     let exe = std::env::current_exe().context("cannot find the kanzo program")?;
-    // Prefer the stable Homebrew link over the versioned Cellar path it points to.
-    let exe = ["/opt/homebrew/bin/kanzo", "/usr/local/bin/kanzo"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.canonicalize().ok() == exe.canonicalize().ok())
-        .unwrap_or(exe);
     let log = dirs::home_dir().context("cannot find your home folder")?.join("Library/Logs/kanzo.log");
     let plist = plist(&exe, &home.dir, &log);
 
@@ -111,8 +105,7 @@ mod tests {
     fn plist_is_valid() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("agent.plist");
-        let text =
-            plist(Path::new("/opt/homebrew/bin/kanzo"), Path::new("/Users/a & b/kanzo"), Path::new("/tmp/k.log"));
+        let text = plist(Path::new("/usr/local/bin/kanzo"), Path::new("/Users/a & b/kanzo"), Path::new("/tmp/k.log"));
         std::fs::write(&file, &text).unwrap();
         let lint = Command::new("plutil").arg("-lint").arg(&file).output().unwrap();
         assert!(lint.status.success(), "{}", String::from_utf8_lossy(&lint.stdout));
