@@ -319,7 +319,7 @@ async function deleteProject(p) {
   if (!confirm(`Delete project ${p.slug}${tasks}? This cannot be undone.`)) return;
   try {
     await api("DELETE", `/projects/${encodeURIComponent(p.slug)}`);
-    if (panelTask?.project === p.slug) closeTask();
+    if (panelTask?.project === p.slug) { fresh = null; closeTask(); }
     if (state.project === p.slug) setProject("all"); else loadBoard();
   } catch (err) { toast(err.message); }
 }
@@ -348,7 +348,7 @@ function renderColumns() {
           el("span", { class: "count" })),
         el("div", { class: "cards" }),
       );
-      if (i === 0) col.append(addTaskForm());
+      if (i === 0) col.append(el("div", { class: "add" }, el("button", { class: "ghost", onclick: newTask }, "+ Add task")));
       wireDrop(col, col.querySelector(".cards"), status);
       return col;
     }));
@@ -373,8 +373,6 @@ function renderColumns() {
       : null;
     col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.slice(hidden).map((t) => card(t, all)));
   }
-  const select = columns.querySelector(".add select");
-  if (select) fillProjectSelect(select);
 }
 
 // Every word of the search must appear in the task's id, title, description or project.
@@ -439,6 +437,7 @@ function wireDrop(col, list, status) {
     if (dragged) list.insertBefore(dragged, line.parentNode === list ? line : null);
     line.remove();
     state.dropped = true;
+    if (fresh === id) fresh = null;
     const before = after ? Number(after.dataset.id) : null;
     try {
       await api("POST", `/tasks/${id}/move`, { status, before });
@@ -448,51 +447,44 @@ function wireDrop(col, list, status) {
   });
 }
 
-function fillProjectSelect(select) {
-  const { projects } = state.board;
-  const keep = select.value || localStorageGet("kanzo.newTaskProject");
-  select.replaceChildren(...projects.map((p) => el("option", { value: p.slug }, p.name)));
-  if (projects.some((p) => p.slug === keep)) select.value = keep;
-}
-
 function localStorageGet(k) {
   try { return localStorage.getItem(k); } catch { return null; }
 }
 
-function addTaskForm() {
-  const wrap = el("div", { class: "add" });
-  const toggle = el("button", { class: "ghost", onclick: () => { toggle.hidden = true; form.hidden = false; title.focus(); } }, "+ Add task");
-  const title = el("textarea", { class: "field", placeholder: "Task title", rows: "2" });
-  const select = state.project === "all" ? el("select", { class: "field", title: "Project" }) : null;
-  const close = () => { form.hidden = true; toggle.hidden = false; title.value = ""; };
-  const form = el("form", { hidden: true },
-    title,
-    el("div", { class: "row" },
-      select,
-      el("button", { class: "btn primary", type: "submit" }, "Add"),
-      el("button", { class: "btn", type: "button", onclick: close }, "Cancel")));
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const text = title.value.trim();
-    if (!text) return;
-    const project = select ? select.value : state.project;
-    if (!project) { toast("Create a project first"); return; }
-    try {
-      if (select) try { localStorage.setItem("kanzo.newTaskProject", project); } catch {}
-      await api("POST", "/tasks", { project, title: text });
-      title.value = "";
-      title.focus();
-      loadBoard();
-    } catch (err) { toast(err.message); }
-  });
-  title.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
-    if (e.key === "Escape") { e.stopPropagation(); close(); }
-  });
-  wrap.append(toggle, form);
-  wrap.open = () => toggle.click();
-  return wrap;
+// ---------- new task ----------
+
+// "+ Add task" creates the task at once and opens it like any other, with its
+// title selected to type over. Closed untouched, it is deleted again.
+const NEW_TITLE = "New task";
+let fresh = null; // id of the task just added, until something in it is saved
+
+async function newTask() {
+  const { projects } = state.board;
+  if (!projects.length) { toast("Create a project first"); return; }
+  const last = localStorageGet("kanzo.newTaskProject");
+  const project = state.project !== "all" ? state.project
+    : projects.some((p) => p.slug === last) ? last : projects[0].slug;
+  try {
+    const task = await api("POST", "/tasks", { project, title: NEW_TITLE });
+    await openTask(task.id);
+    fresh = task.id;
+    loadBoard();
+    $("#p-title").focus({ preventScroll: true });
+    $("#p-title").select();
+  } catch (err) { toast(err.message); }
 }
+
+function dropFresh() {
+  if (!fresh) return;
+  const id = fresh;
+  fresh = null;
+  api("DELETE", `/tasks/${id}`).then(loadBoard, () => {});
+}
+
+// Leaving the page also counts as closing the task.
+window.addEventListener("pagehide", () => {
+  if (fresh) fetch(`/api/tasks/${fresh}`, { method: "DELETE", keepalive: true });
+});
 
 // ---------- new project ----------
 
@@ -522,14 +514,16 @@ $("#new-project").addEventListener("submit", async (e) => {
 
 // ---------- task panel ----------
 
+// Every field is editable in place and saves when it loses focus.
 const panel = $("#panel");
 let panelTask = null;
 
 async function openTask(id) {
+  leavePanelField();
+  if (fresh !== id) dropFresh();
   state.task = id;
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
-  closeDescEditor();
   $("#p-comment").value = "";
   updateHash();
   await refreshTask();
@@ -538,7 +532,14 @@ async function openTask(id) {
   panel.setAttribute("aria-hidden", "false");
 }
 
+// Blurring a field saves it, so do that before the panel lets go of a task.
+function leavePanelField() {
+  if (panel.contains(document.activeElement)) document.activeElement.blur();
+}
+
 function closeTask() {
+  leavePanelField();
+  dropFresh();
   state.task = null;
   panelTask = null;
   updateHash();
@@ -548,21 +549,26 @@ function closeTask() {
 }
 
 async function refreshTask() {
-  if (!state.task) return;
+  const id = state.task;
+  if (!id) return;
   let data;
   try {
-    data = await api("GET", `/tasks/${state.task}`);
+    data = await api("GET", `/tasks/${id}`);
   } catch (e) {
-    if (/no task/.test(e.message)) { toast("That task was deleted"); closeTask(); }
+    if (state.task === id && /no task/.test(e.message)) { toast("That task was deleted"); closeTask(); }
     return;
   }
+  // Another task may have taken the panel meanwhile.
+  if (state.task !== id) return;
   const { task, comments } = data;
   panelTask = task;
   $("#p-key").textContent = key(task);
   $("#p-project").replaceChildren(el("span", { class: "tag" },
     el("span", { class: "dot", style: `background:${projectColor(task.project)}` }), task.project));
-  const title = $("#p-title");
-  if (document.activeElement !== title) { title.value = task.title; fitTitle(); }
+  // Never overwrite what is being typed.
+  for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description]]) {
+    if (document.activeElement !== field) { field.value = value; fit(field); }
+  }
   const status = $("#p-status");
   const statuses = state.board ? state.board.statuses : [task.status];
   status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
@@ -570,7 +576,6 @@ async function refreshTask() {
   status.value = task.status;
   $("#p-created").replaceChildren(timeEl(task.created_at));
   $("#p-updated").replaceChildren(timeEl(task.updated_at));
-  if ($("#p-desc-editor").hidden) renderDesc(task.description);
   $("#p-comment-count").textContent = comments.length ? String(comments.length) : "";
   $("#p-comments").replaceChildren(...comments.map((c) => {
     const body = el("div", { class: "md" });
@@ -579,20 +584,15 @@ async function refreshTask() {
   }));
 }
 
-function renderDesc(text) {
-  const view = $("#p-desc-view");
-  if (text) view.innerHTML = markdown(text);
-  else view.replaceChildren(el("span", { class: "placeholder" }, "No description. Click to add one."));
-}
-
-function fitTitle() {
-  const t = $("#p-title");
+// Textareas grow with their text instead of scrolling.
+function fit(t) {
   t.style.height = "auto";
   t.style.height = t.scrollHeight + "px";
 }
 
 async function patchTask(fields) {
   if (!panelTask) return;
+  if (fresh === panelTask.id) fresh = null;
   try {
     await api("PATCH", `/tasks/${panelTask.id}`, fields);
     await refreshTask();
@@ -600,46 +600,41 @@ async function patchTask(fields) {
   } catch (e) { toast(e.message); refreshTask(); }
 }
 
+// Escape undoes the field's edit; on a task just added and not saved yet, it drops the task.
+function cancelField(e, saved) {
+  e.stopPropagation();
+  if (fresh && fresh === state.task) { closeTask(); return; }
+  e.target.value = saved;
+  fit(e.target);
+  e.target.blur();
+}
+
 $("#p-close").addEventListener("click", closeTask);
-$("#p-title").addEventListener("input", fitTitle);
+for (const field of [$("#p-title"), $("#p-desc")]) field.addEventListener("input", () => fit(field));
+
+// ⌘↵ in the title or description saves and closes.
 $("#p-title").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); e.target.blur(); }
-  if (e.key === "Escape") { e.stopPropagation(); e.target.value = panelTask.title; e.target.blur(); }
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); closeTask(); }
+  // The title is one line: Enter, like Tab, goes on to the description.
+  else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) { e.preventDefault(); $("#p-desc").focus(); }
+  else if (e.key === "Escape") cancelField(e, panelTask ? panelTask.title : "");
 });
 $("#p-title").addEventListener("blur", (e) => {
+  if (!panelTask) return;
   const v = e.target.value.trim();
-  if (panelTask && v && v !== panelTask.title) patchTask({ title: v });
-  else if (panelTask) { e.target.value = panelTask.title; fitTitle(); }
+  if (v && v !== panelTask.title) patchTask({ title: v });
+  else { e.target.value = panelTask.title; fit(e.target); }
 });
-$("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 
-function openDescEditor() {
-  $("#p-desc").value = panelTask ? panelTask.description : "";
-  $("#p-desc-view").hidden = true;
-  $("#p-desc-edit").hidden = true;
-  $("#p-desc-editor").hidden = false;
-  $("#p-desc").focus();
-}
-
-function closeDescEditor() {
-  $("#p-desc-editor").hidden = true;
-  $("#p-desc-view").hidden = false;
-  $("#p-desc-edit").hidden = false;
-  if (panelTask) renderDesc(panelTask.description);
-}
-
-$("#p-desc-edit").addEventListener("click", openDescEditor);
-$("#p-desc-view").addEventListener("click", (e) => { if (!e.target.closest("a")) openDescEditor(); });
-$("#p-desc-cancel").addEventListener("click", closeDescEditor);
-$("#p-desc-save").addEventListener("click", async () => {
-  const description = $("#p-desc").value;
-  closeDescEditor();
-  await patchTask({ description });
-});
 $("#p-desc").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("#p-desc-save").click(); }
-  if (e.key === "Escape") { e.stopPropagation(); closeDescEditor(); }
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); closeTask(); }
+  else if (e.key === "Escape") cancelField(e, panelTask ? panelTask.description : "");
 });
+$("#p-desc").addEventListener("blur", (e) => {
+  if (panelTask && e.target.value.trim() !== panelTask.description) patchTask({ description: e.target.value });
+});
+
+$("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 
 $("#p-comment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -647,6 +642,7 @@ $("#p-comment-form").addEventListener("submit", async (e) => {
   if (!body || !panelTask) return;
   try {
     await api("POST", `/tasks/${panelTask.id}/comments`, { body });
+    if (fresh === panelTask.id) fresh = null;
     $("#p-comment").value = "";
     await refreshTask();
     loadBoard();
@@ -661,6 +657,7 @@ $("#p-delete").addEventListener("click", async () => {
   const extra = panelTask.comments ? ` and its ${panelTask.comments} comment${panelTask.comments > 1 ? "s" : ""}` : "";
   if (!confirm(`Delete ${key(panelTask)}${extra}? This cannot be undone.`)) return;
   try {
+    if (fresh === panelTask.id) fresh = null;
     await api("DELETE", `/tasks/${panelTask.id}`);
     closeTask();
     loadBoard();
@@ -693,8 +690,7 @@ document.addEventListener("keydown", (e) => {
     $("#search").focus();
   }
   if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
-    const add = $("#columns .add");
-    if (add) { e.preventDefault(); add.open(); }
+    if ($("#columns .add")) { e.preventDefault(); newTask(); }
   }
 });
 
