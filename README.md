@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="AGPL-3.0"></a>
 </p>
 
-Kanzo is a kanban board in your browser and an MCP server in one small program, so you and your coding agents work on the same tasks.
+Kanzo is a kanban board in your browser and an MCP server in one small program, so you and your coding agents work on the same tasks. The whole board is one folder, and a private git repo keeps it in step on every machine you use: no account, no server.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/board-dark.jpg">
@@ -61,6 +61,16 @@ Then ask: *"take the next task from kanzo and do it."* The agent moves the card 
   <img alt="A task open on the board, with a description and comments from Claude Code" src="docs/img/task-light.jpg">
 </picture>
 
+## Your board on every machine
+
+A laptop, a desktop, a Raspberry Pi: they all share one board through a private git repo you own.
+
+1. [Create an empty private repo](https://github.com/new?name=kanzo-data&visibility=private) on GitHub, or anywhere git can push.
+2. Press the sync button in the sidebar and paste its URL. Kanzo makes `~/kanzo` a git repo and pushes the board.
+3. On each other machine, do the same with the same URL: Kanzo offers to use the board that's already there.
+
+From then on, press sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, click its name at the bottom of the sidebar.
+
 ## Settings
 
 Everything lives in `~/kanzo`: the board in `kanzo.db`, settings in `config.toml`. Use another folder with `--home` or `KANZO_HOME`.
@@ -71,10 +81,6 @@ listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: no logins, s
 statuses = ["todo", "doing", "review", "done"]   # new tasks go first, the last counts as done
 mcp_http = true        # MCP at /mcp
 ```
-
-## Sync between machines
-
-Make `~/kanzo` a private git repo once (`git init`, then push it to GitHub), clone it on your other machines, and run `kanzo sync` when you switch. It is safe while the board and agents run.
 
 ## Small and fast
 
