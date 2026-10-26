@@ -163,9 +163,11 @@ header .sub a:hover { color: var(--text); }
 }
 .tag .dot { width: 6px; height: 6px; }
 .drop-line { height: 2px; background: var(--text); border-radius: 2px; margin: -4px 4px; }
-.add { padding: 0 8px 8px; }
-.add .ghost { color: var(--muted); }
-.add .ghost:hover { color: var(--text); }
+.column h2 .add {
+  margin: -6px -6px -6px auto; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 8px;
+  background: none; color: var(--muted);
+}
+.column h2 .add:hover, .column h2 .add:focus-visible { background: var(--hover); color: var(--text); }
 .empty {
   margin: auto; text-align: center; color: var(--muted); max-width: 380px; padding: 40px 20px;
 }

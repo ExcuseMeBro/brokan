@@ -404,10 +404,11 @@ function renderColumns() {
     columns.replaceChildren(...statuses.map((status, i) => {
       const col = el("section", { class: "column", "data-status": status },
         el("h2", {}, el("span", { class: "dot", style: `background:${statusColor(status)}` }), status,
-          el("span", { class: "count" })),
+          el("span", { class: "count" }),
+          // At the top, so a long column never hides it.
+          i === 0 ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null),
         el("div", { class: "cards" }),
       );
-      if (i === 0) col.append(el("div", { class: "add" }, el("button", { class: "ghost", onclick: newTask }, icon("plus"), "Add task")));
       wireDrop(col, col.querySelector(".cards"), status);
       return col;
     }));
