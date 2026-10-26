@@ -135,36 +135,4 @@ kanzo sync --keep-remote   # take GitHub's board; this laptop's is kept in kanzo
 
 ## Development
 
-```sh
-cargo test               # store, config, export, web and service tests
-cargo run                # the board, with data in ~/kanzo
-cargo run -- --home /tmp/k --port 4300   # a throwaway board
-```
-
-The code is small on purpose:
-
-| File | Does |
-| --- | --- |
-| `src/main.rs` | Command line |
-| `src/home.rs` | Data folder and `config.toml` |
-| `src/schema.sql` | The database schema |
-| `src/store.rs` | All SQL |
-| `src/mcp.rs` | The MCP tools, over stdio and HTTP (`rmcp`, pinned on purpose: it still changes often) |
-| `src/web.rs` | The board's HTTP API, and `/mcp` |
-| `src/index.html`, `src/app.js`, `src/logo.png` | The board UI: plain HTML, CSS and JavaScript, built into the binary |
-| `src/sync.rs` | `kanzo sync` |
-| `src/export.rs` | `kanzo export` |
-| `src/service.rs` | `kanzo service` |
-
-### How it stays light
-
-- **One thread** runs the server; database work goes to at most 8 helper threads, which exit when idle.
-- **One short SQLite connection per operation,** with a 5-second busy timeout, so the board and any number of agents can write at once, and `kanzo sync` can safely swap the file between operations. The database uses a rollback journal instead of WAL, because with short connections WAL created and deleted two files on every request. Now a read touches no extra files, and each operation is about 3 times faster.
-- **Cheap polling:** the board asks for a change token every 2 seconds, only while its tab is visible, and waits for each answer before asking again. Database triggers bump the token on every write.
-- **Small pages:** the board loads only the newest 50 done tasks until you ask for more or search, so a board that has piled up thousands of done tasks reloads as fast as a new one.
-- **Few tokens for agents:** MCP replies are short plain text, and the tool list agents read at the start of every session is kept small (about 3 KB).
-- **Release profile:** `opt-level = "s"` with full LTO measured 30% smaller than the default at the same speed.
-
-Measured on a 64-bit ARM Linux container limited to 64 MB of memory and half a CPU: 3.5 MB of memory and one thread when idle, 4.3 MB after 200 tasks.
-
-Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist): push a tag like `v0.1.0` and GitHub Actions builds every target above and the installer. CI runs `cargo fmt`, `clippy` and the tests on Linux and macOS for every push.
+See [CONTRIBUTING](../.github/CONTRIBUTING.md): how to build, test and send a change, a map of the code, and how Kanzo stays light.
