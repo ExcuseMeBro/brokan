@@ -1,11 +1,11 @@
 //! `kanzo`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -22,8 +22,9 @@ const INDEX: &str = include_str!("index.html");
 
 pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let port = port.unwrap_or(home.config.port);
+    let listen = home.config.listen;
     let url = format!("http://localhost:{port}");
-    let listener = match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await {
+    let listener = match tokio::net::TcpListener::bind(SocketAddr::new(listen, port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             if is_kanzo(port).await {
@@ -35,9 +36,16 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
             }
             bail!("port {port} is used by another program; choose another with --port or in config.toml");
         }
-        Err(e) => return Err(e).context(format!("cannot listen on port {port}")),
+        Err(e) => return Err(e).context(format!("cannot listen on {listen} port {port}")),
     };
+    let guard = Guard::new(port, !listen.is_loopback());
     println!("Kanzo board at {url}, data in {}", home.dir.display());
+    if guard.lan {
+        if let Some(name) = guard.names.iter().find(|n| n.ends_with(".local")) {
+            println!("On your network: http://{name}:{port} (or this machine's IP address)");
+        }
+        println!("Anyone who can reach port {port} can read and change this board.");
+    }
     if home.config.mcp_http {
         println!("MCP over HTTP at {url}/mcp");
     }
@@ -46,7 +54,7 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     }
     // Cancelling this also ends open MCP streams, which would otherwise hold up shutdown.
     let shutdown = CancellationToken::new();
-    axum::serve(listener, router(home, port, shutdown.clone()))
+    axum::serve(listener, router(home, guard, shutdown.clone()))
         .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
             shutdown.cancel();
@@ -55,10 +63,10 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     Ok(())
 }
 
-fn router(home: Home, port: u16, shutdown: CancellationToken) -> Router {
+fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
     let mut app = Router::new();
     if home.config.mcp_http {
-        app = app.nest_service("/mcp", crate::mcp::http_service(home.clone(), port, shutdown));
+        app = app.nest_service("/mcp", crate::mcp::http_service(home.clone(), shutdown));
     }
     app.route("/", get(|| async { Html(INDEX) }))
         .route("/api/ping", get(|| async { "kanzo" }))
@@ -69,24 +77,75 @@ fn router(home: Home, port: u16, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
         .route("/api/tasks/{id}/move", post(move_task))
         .route("/api/tasks/{id}/comments", post(add_comment))
-        .layer(middleware::from_fn_with_state(port, local_only))
+        .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
 }
 
-/// Rejects requests whose Host is not this machine, so a web page on another
-/// domain cannot reach the board through DNS rebinding, and requests that a
-/// browser sends from any page other than the board itself.
-async fn local_only(State(port): State<u16>, req: Request, next: Next) -> Response {
+/// Which Host headers the board answers to.
+///
+/// DNS rebinding needs a domain name the attacker controls, so the board only
+/// accepts `localhost`, IP addresses and, when it listens on the network, this
+/// machine's own names. It never accepts other domain names.
+struct Guard {
+    port: u16,
+    lan: bool,
+    /// This machine's names, like `pi` and `pi.local`; filled only when `lan`.
+    names: Vec<String>,
+}
+
+impl Guard {
+    fn new(port: u16, lan: bool) -> Self {
+        let mut names = Vec::new();
+        if lan {
+            let run = |cmd: &str, args: &[&str]| {
+                std::process::Command::new(cmd)
+                    .args(args)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_ascii_lowercase())
+            };
+            // macOS keeps its Bonjour name apart; `hostname` there can be a DHCP address.
+            let found = [run("scutil", &["--get", "LocalHostName"]), run("hostname", &[])];
+            for full in found.into_iter().flatten().filter(|n| !n.is_empty() && n.parse::<IpAddr>().is_err()) {
+                let short = full.split('.').next().unwrap_or_default().to_string();
+                for name in [format!("{short}.local"), full, short] {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        Self { port, lan, names }
+    }
+
+    fn allows(&self, host: &str) -> bool {
+        let (name, port) = match host.rsplit_once(':') {
+            Some((n, p)) if !p.contains(']') => (n, Some(p)),
+            _ => (host, None),
+        };
+        if port.is_some_and(|p| p.parse() != Ok(self.port)) {
+            return false;
+        }
+        let name = name.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
+        let ip = name.parse::<IpAddr>().ok();
+        if name == "localhost" || ip.is_some_and(|ip| ip.is_loopback()) {
+            return true;
+        }
+        self.lan && (ip.is_some() || self.names.contains(&name))
+    }
+}
+
+/// Refuses requests for a Host this board does not answer to, and browser
+/// requests sent from any page other than the board itself.
+async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> Response {
     let ok = {
-        let header = |name| req.headers().get(name).and_then(|h: &header::HeaderValue| h.to_str().ok());
+        let header = |name| req.headers().get(name).and_then(|h: &HeaderValue| h.to_str().ok());
         let host = header(header::HOST).unwrap_or("");
-        let host_ok = ["localhost", "127.0.0.1"].iter().any(|h| host == *h || host == format!("{h}:{port}"));
-        let origin_ok = header(header::ORIGIN)
-            .is_none_or(|o| o == format!("http://localhost:{port}") || o == format!("http://127.0.0.1:{port}"));
-        host_ok && origin_ok
+        guard.allows(host) && header(header::ORIGIN).is_none_or(|o| o.eq_ignore_ascii_case(&format!("http://{host}")))
     };
     if !ok {
-        return (StatusCode::FORBIDDEN, "kanzo only answers its own board on localhost").into_response();
+        return (StatusCode::FORBIDDEN, "kanzo does not answer requests from other sites").into_response();
     }
     next.run(req).await
 }
@@ -238,5 +297,29 @@ fn open_browser(url: &str) {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     if std::process::Command::new(opener).arg(url).spawn().is_err() {
         eprintln!("Open {url} in your browser.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosts() {
+        let local = Guard { port: 4242, lan: false, names: vec![] };
+        for ok in ["localhost", "localhost:4242", "127.0.0.1:4242", "[::1]:4242", "LOCALHOST:4242"] {
+            assert!(local.allows(ok), "{ok}");
+        }
+        for bad in ["evil.com", "evil.com:4242", "localhost:80", "192.168.1.5:4242", "", "pi.local:4242"] {
+            assert!(!local.allows(bad), "{bad}");
+        }
+
+        let lan = Guard { port: 4242, lan: true, names: vec!["pi".into(), "pi.local".into()] };
+        for ok in ["localhost:4242", "192.168.1.5:4242", "[fe80::1]:4242", "pi.local:4242", "pi:4242", "PI.LOCAL."] {
+            assert!(lan.allows(ok), "{ok}");
+        }
+        for bad in ["evil.com:4242", "pi.evil.com:4242", "192.168.1.5:80"] {
+            assert!(!lan.allows(bad), "{bad}");
+        }
     }
 }

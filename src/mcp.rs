@@ -39,17 +39,12 @@ pub async fn serve(home: Home) -> Result<()> {
     Ok(())
 }
 
-/// MCP over HTTP, mounted at `/mcp` by the board. Only browsers on the board's own origin may call it.
-pub fn http_service(
-    home: Home,
-    port: u16,
-    shutdown: CancellationToken,
-) -> StreamableHttpService<Kanzo, LocalSessionManager> {
+/// MCP over HTTP, mounted at `/mcp` by the board. The board's own Host and Origin
+/// checks (`web::protect`) guard it, including when it listens on the network, so
+/// rmcp's localhost-only list is turned off here.
+pub fn http_service(home: Home, shutdown: CancellationToken) -> StreamableHttpService<Kanzo, LocalSessionManager> {
     let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new() });
-    let config = StreamableHttpServerConfig::default()
-        .with_allowed_hosts(["localhost", "127.0.0.1"])
-        .with_allowed_origins([format!("http://localhost:{port}"), format!("http://127.0.0.1:{port}")])
-        .with_cancellation_token(shutdown);
+    let config = StreamableHttpServerConfig::default().disable_allowed_hosts().with_cancellation_token(shutdown);
     StreamableHttpService::new(
         move || Ok(Kanzo { ctx: ctx.clone(), tool_router: Kanzo::tool_router() }),
         Default::default(),

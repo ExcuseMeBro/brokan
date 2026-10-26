@@ -1,6 +1,7 @@
 //! The data folder: where it is, what it holds, and the settings in `config.toml`.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,12 @@ const CONFIG_TEMPLATE: &str = r#"# Kanzo settings.
 
 # Port for the board at http://localhost:<port>.
 port = 4242
+
+# Address the board listens on. 127.0.0.1 keeps it on this machine. Use
+# "0.0.0.0" to open it from other devices, for example when Kanzo runs on a
+# Raspberry Pi with no screen. There are no logins: anyone who can reach the
+# port can read and change the board, and use its MCP endpoint.
+listen = "127.0.0.1"
 
 # Board columns, left to right. New tasks go in the first one;
 # tasks in the last one count as done.
@@ -45,6 +52,7 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub port: u16,
+    pub listen: IpAddr,
     pub statuses: Vec<String>,
     pub mcp_http: bool,
 }
@@ -53,6 +61,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             port: DEFAULT_PORT,
+            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
             statuses: ["todo", "doing", "review", "done"].map(String::from).to_vec(),
             mcp_http: true,
         }
@@ -195,6 +204,7 @@ mod tests {
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert_eq!(home.config.statuses, ["todo", "doing", "review", "done"]);
         assert!(home.config.mcp_http);
+        assert!(home.config.listen.is_loopback());
     }
 
     #[test]
