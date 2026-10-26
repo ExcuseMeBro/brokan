@@ -178,6 +178,8 @@ struct CreateTaskArgs {
     description: Option<String>,
     /// Project slug. Defaults to the project of the current repo.
     project: Option<String>,
+    /// Comma-separated, like "bug, ui".
+    tags: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -190,6 +192,8 @@ struct UpdateTaskArgs {
     description: Option<String>,
     /// New column, like doing, review or done. The task goes to the bottom of it.
     status: Option<String>,
+    /// Comma-separated; replaces all tags, and "" clears them.
+    tags: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -341,13 +345,16 @@ impl Kanzo {
         Ok(self
             .run(move |ctx, store| {
                 let project = ctx.project(store, args.project.as_deref())?;
-                let t = store.create_task(project.id, &args.title, args.description.as_deref().unwrap_or(""))?;
+                let mut t = store.create_task(project.id, &args.title, args.description.as_deref().unwrap_or(""))?;
+                if args.tags.is_some() {
+                    t = store.update_task(t.id, TaskPatch { tags: args.tags, ..Default::default() })?;
+                }
                 Ok(format!("Created {} in {}: {}", t.key(), t.status, t.title))
             })
             .await)
     }
 
-    #[tool(description = "Change a task's title, description or status. Only the fields you pass change.")]
+    #[tool(description = "Change a task's title, description, status or tags. Only the fields you pass change.")]
     async fn update_task(&self, Parameters(args): Parameters<UpdateTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
@@ -355,7 +362,13 @@ impl Kanzo {
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase());
                 let after = store.update_task(
                     before.id,
-                    TaskPatch { title: args.title, description: args.description, status, project_id: None },
+                    TaskPatch {
+                        title: args.title,
+                        description: args.description,
+                        status,
+                        tags: args.tags,
+                        project_id: None,
+                    },
                 )?;
                 let moved = if before.status != after.status {
                     format!(", {} -> {}", before.status, after.status)
@@ -448,14 +461,19 @@ fn task_line(t: &Task) -> String {
         1 => " (1 comment)".into(),
         n => format!(" ({n} comments)"),
     };
-    format!("{} [{}] {}{comments}", t.key(), t.status, t.title)
+    format!("{} [{}] {}{}{comments}", t.key(), t.status, t.title, tag_list(t))
+}
+
+/// ` {bug, ui}`, or nothing without tags.
+fn tag_list(t: &Task) -> String {
+    if t.tags.is_empty() { String::new() } else { format!(" {{{}}}", t.tags.join(", ")) }
 }
 
 fn task_detail(t: &Task, comments: &[Comment]) -> String {
     let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
     // The update time only when it says something the creation time does not.
     let updated = if updated == created { String::new() } else { format!(", updated {updated}") };
-    let mut out = format!("{} {}\nstatus: {}, created {created}{updated}\n", t.key(), t.title, t.status);
+    let mut out = format!("{} {}{}\nstatus: {}, created {created}{updated}\n", t.key(), t.title, tag_list(t), t.status);
     if !t.description.is_empty() {
         out.push('\n');
         out.push_str(&t.description);

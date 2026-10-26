@@ -450,7 +450,7 @@ function plainText(md) {
 function matches(t) {
   const words = state.query.toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return true;
-  const text = `${key(t)} ${t.title} ${t.description} ${t.project}`.toLowerCase();
+  const text = `${key(t)} ${t.title} ${t.description} ${t.project} ${t.tags.join(" ")}`.toLowerCase();
   return words.every((w) => text.includes(w));
 }
 
@@ -462,7 +462,8 @@ function card(t, showProject) {
       // On "All projects" a dot in the project's colour tells the projects apart.
       el("span", { class: "num", title: key(t) },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
-    t.description ? el("div", { class: "desc" }, plainText(t.description)) : null);
+    t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
+    t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("span", { class: "tag" }, tag))) : null);
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
     e.dataTransfer.effectAllowed = "move";
@@ -636,7 +637,7 @@ async function refreshTask() {
   $("#p-key").textContent = key(task);
   // Never overwrite what is being typed or picked.
   if (!$("#p-project").contains(document.activeElement)) renderProjectPick(task);
-  for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description]]) {
+  for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description], [$("#p-tags"), task.tags.join(", ")]]) {
     if (document.activeElement !== field) { field.value = value; fit(field); }
   }
   const status = $("#p-status");
@@ -684,6 +685,7 @@ function renderProjectPick(task) {
 
 // Textareas grow with their text instead of scrolling.
 function fit(t) {
+  if (t.tagName !== "TEXTAREA") return;
   t.style.height = "auto";
   t.style.height = t.scrollHeight + "px";
 }
@@ -733,6 +735,19 @@ $("#p-desc").addEventListener("blur", (e) => {
 });
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
+
+// Tags are typed comma-separated and tidied the way the server stores them.
+const cleanTags = (text) => [...new Set(text.split(",").map((t) => t.trim().replace(/\s+/g, " ").toLowerCase()).filter(Boolean))];
+$("#p-tags").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); e.target.blur(); }
+  else if (e.key === "Escape") cancelField(e, panelTask ? panelTask.tags.join(", ") : "");
+});
+$("#p-tags").addEventListener("blur", (e) => {
+  if (!panelTask) return;
+  const tags = cleanTags(e.target.value);
+  if (tags.join(",") !== panelTask.tags.join(",")) patchTask({ tags: tags.join(", ") });
+  else e.target.value = panelTask.tags.join(", ");
+});
 
 $("#p-comment-form").addEventListener("submit", async (e) => {
   e.preventDefault();

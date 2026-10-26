@@ -36,6 +36,7 @@ struct TaskOut {
     key: String,
     title: String,
     description: String,
+    tags: Vec<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -49,6 +50,7 @@ impl TaskOut {
             id: task.id,
             title: task.title,
             description: task.description,
+            tags: task.tags,
             status: task.status,
             created_at: task.created_at,
             updated_at: task.updated_at,
@@ -127,6 +129,9 @@ fn markdown(board: &Board) -> String {
                     short_time(&t.created_at),
                     short_time(&t.updated_at)
                 );
+                if !t.tags.is_empty() {
+                    let _ = writeln!(md, "Tags: {}.", t.tags.join(", "));
+                }
                 if !t.description.is_empty() {
                     let _ = write!(md, "\n{}\n", t.description);
                 }

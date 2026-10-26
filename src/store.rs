@@ -17,6 +17,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     // 2: a colour picked for the project; NULL leaves the board to choose one.
     "ALTER TABLE projects ADD COLUMN color TEXT;",
+    // 3: a task's tags, comma-separated (see `clean_tags`).
+    "ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '';",
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
@@ -79,6 +81,8 @@ pub struct Task {
     pub project: String,
     pub title: String,
     pub description: String,
+    /// Lowercase, without duplicates, in the order they were given.
+    pub tags: Vec<String>,
     pub status: String,
     pub position: f64,
     pub created_at: String,
@@ -110,6 +114,8 @@ pub struct TaskPatch {
     pub status: Option<String>,
     /// Moves the task to this project (by id).
     pub project_id: Option<i64>,
+    /// Comma-separated; replaces all the tags, and an empty string clears them.
+    pub tags: Option<String>,
 }
 
 pub struct Store {
@@ -337,7 +343,7 @@ impl Store {
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
-            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id)
+            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags
         FROM tasks t JOIN projects p ON p.id = t.project_id";
 
     fn task_row(r: &Row) -> rusqlite::Result<Task> {
@@ -346,6 +352,7 @@ impl Store {
             project: r.get(1)?,
             title: r.get(2)?,
             description: r.get(3)?,
+            tags: r.get::<_, String>(9)?.split(',').filter(|t| !t.is_empty()).map(String::from).collect(),
             status: r.get(4)?,
             position: r.get(5)?,
             created_at: r.get(6)?,
@@ -438,6 +445,12 @@ impl Store {
                 c.execute(
                     &format!("UPDATE tasks SET project_id = ?1, updated_at = {NOW} WHERE id = ?2 AND project_id <> ?1"),
                     params![p, id],
+                )?;
+            }
+            if let Some(t) = &patch.tags {
+                c.execute(
+                    &format!("UPDATE tasks SET tags = ?1, updated_at = {NOW} WHERE id = ?2"),
+                    params![clean_tags(t).join(","), id],
                 )?;
             }
             if let Some(d) = &patch.description {
@@ -610,6 +623,18 @@ fn valid_slug(s: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// `" Bug, UI,bug ,, needs  review"` -> `["bug", "ui", "needs review"]`.
+pub fn clean_tags(input: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for tag in input.split(',') {
+        let tag = tag.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        if !tag.is_empty() && !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
 fn clean_title(title: &str) -> Result<String> {
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
@@ -727,6 +752,12 @@ mod tests {
         assert_eq!(comments.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), ["claude-code", "me"]);
         assert!(s.add_comment(t.id, "me", " ").is_err());
         assert_eq!(s.get_task(t.id).unwrap().comments, 2);
+        let tagged =
+            s.update_task(t.id, TaskPatch { tags: Some(" Bug, UI,bug ,, needs  review".into()), ..Default::default() });
+        assert_eq!(tagged.unwrap().tags, ["bug", "ui", "needs review"]);
+        assert!(
+            s.update_task(t.id, TaskPatch { tags: Some(" , ".into()), ..Default::default() }).unwrap().tags.is_empty()
+        );
         let gone = s.add_comment(t.id, "me", "typo").unwrap();
         assert_eq!(s.delete_comment(gone.id).unwrap().body, "typo");
         assert!(s.delete_comment(gone.id).is_err());

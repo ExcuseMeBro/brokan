@@ -342,12 +342,16 @@ struct Patch {
     description: Option<String>,
     status: Option<String>,
     project: Option<String>,
+    tags: Option<String>,
 }
 
 async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Patch>) -> Response {
     with_store(home, move |_, s| {
         let project_id = p.project.map(|slug| s.find_project(&slug)).transpose()?.map(|p| p.id);
-        s.update_task(id, TaskPatch { title: p.title, description: p.description, status: p.status, project_id })
+        s.update_task(
+            id,
+            TaskPatch { title: p.title, description: p.description, status: p.status, project_id, tags: p.tags },
+        )
     })
     .await
 }
