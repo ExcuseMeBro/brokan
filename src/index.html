@@ -191,6 +191,21 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 #p-key { cursor: copy; }
 .card .num .dot { width: 6px; height: 6px; }
 .card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.card .human-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
+.card .human-mark .icon svg { width: 15px; height: 15px; }
+/* An on/off switch, for the Human field. */
+.human-field { display: flex; align-items: center; gap: 10px; }
+.props .human-field .hint { color: var(--faint); font-size: 12px; }
+.switch { position: relative; display: inline-flex; width: 34px; height: 20px; flex: none; }
+.switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.switch span { flex: 1; border-radius: 99px; background: var(--active); transition: background .15s; }
+.switch span::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s;
+}
+.switch input:checked + span { background: #3b82f6; }
+.switch input:checked + span::after { transform: translateX(14px); }
+.switch input:focus-visible + span { box-shadow: 0 0 0 2px var(--hover); }
 .card .desc {
   margin-top: 2px; color: var(--muted); font-size: 13px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -410,6 +425,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
     <div class="props">
       Status <span><select class="field" id="p-status"></select></span>
       Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span>
+      Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>
       Created <span id="p-created"></span>
       Updated <span id="p-updated"></span>
     </div>

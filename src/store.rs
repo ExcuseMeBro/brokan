@@ -41,6 +41,8 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX images_by_task ON images(task_id);
      CREATE TRIGGER images_insert AFTER INSERT ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
      CREATE TRIGGER images_delete AFTER DELETE ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
+    // 6: tasks for a person, which agents leave alone.
+    "ALTER TABLE tasks ADD COLUMN human INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
@@ -106,6 +108,8 @@ pub struct Task {
     pub description: String,
     /// Lowercase, without duplicates, in the order they were given.
     pub tags: Vec<String>,
+    /// Work for a person: agents leave it alone, and `next_task` never picks it.
+    pub human: bool,
     pub status: String,
     pub position: f64,
     pub created_at: String,
@@ -149,6 +153,7 @@ pub struct TaskPatch {
     pub project_id: Option<i64>,
     /// Comma-separated; replaces all the tags, and an empty string clears them.
     pub tags: Option<String>,
+    pub human: Option<bool>,
 }
 
 pub struct Store {
@@ -430,7 +435,7 @@ impl Store {
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
-            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags
+            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human
         FROM tasks t JOIN projects p ON p.id = t.project_id";
 
     fn task_row(r: &Row) -> rusqlite::Result<Task> {
@@ -440,6 +445,7 @@ impl Store {
             title: r.get(2)?,
             description: r.get(3)?,
             tags: r.get::<_, String>(9)?.split(',').filter(|t| !t.is_empty()).map(String::from).collect(),
+            human: r.get(10)?,
             status: r.get(4)?,
             position: r.get(5)?,
             created_at: r.get(6)?,
@@ -558,6 +564,12 @@ impl Store {
                     params![p, id],
                 )?;
             }
+            if let Some(human) = patch.human {
+                c.execute(
+                    &format!("UPDATE tasks SET human = ?1, updated_at = {NOW} WHERE id = ?2 AND human <> ?1"),
+                    params![human, id],
+                )?;
+            }
             if let Some(t) = &patch.tags {
                 c.execute(
                     &format!("UPDATE tasks SET tags = ?1, updated_at = {NOW} WHERE id = ?2"),
@@ -643,14 +655,16 @@ impl Store {
         Ok(())
     }
 
-    /// Takes the top task of the first column and moves it to the bottom of the second.
+    /// Takes the top task of the first column that isn't for a person, and moves it to
+    /// the bottom of the second.
     pub fn next_task(&self, project_id: Option<i64>) -> Result<Option<Task>> {
         let from = self.first_status();
         let to = &self.statuses[1];
         let id = self.write(|c| {
             let id: Option<i64> = c
                 .query_row(
-                    "SELECT id FROM tasks WHERE status = ?1 AND (?2 IS NULL OR project_id = ?2) ORDER BY position LIMIT 1",
+                    "SELECT id FROM tasks WHERE status = ?1 AND human = 0 AND (?2 IS NULL OR project_id = ?2) \
+                     ORDER BY position LIMIT 1",
                     params![from, project_id],
                     |r| r.get(0),
                 )
@@ -1138,6 +1152,9 @@ mod tests {
         let api = s.create_project("api", "", None).unwrap();
         let web = s.create_project("web", "", None).unwrap();
         s.create_task(web.id, "web first", "").unwrap();
+        // At the top of api's todo, but for a person: agents never get it.
+        let human = s.create_task(api.id, "Call the bank", "").unwrap();
+        assert!(s.update_task(human.id, TaskPatch { human: Some(true), ..Default::default() }).unwrap().human);
         s.create_task(api.id, "api first", "").unwrap();
         s.create_task(api.id, "api second", "").unwrap();
 
@@ -1146,6 +1163,7 @@ mod tests {
         assert_eq!(s.next_task(None).unwrap().unwrap().title, "web first");
         assert_eq!(s.next_task(Some(api.id)).unwrap().unwrap().title, "api second");
         assert!(s.next_task(Some(api.id)).unwrap().is_none());
+        assert_eq!(s.get_task(human.id).unwrap().status, "todo");
     }
 
     #[test]

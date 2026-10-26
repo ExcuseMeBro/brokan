@@ -66,6 +66,7 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  human: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/>',
   github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.1-1.3-.3-2.5-1-3.5.3-1.2.3-2.4 0-3.5 0 0-1 0-3 1.5a12 12 0 0 0-8 0C6 2 5 2 5 2c-.3 1.2-.3 2.4 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.4.5-.7 1-.8 1.7-.2.6-.3 1.2-.2 1.8v4"/><path d="M9 18c-4.5 2-5-2-7-2"/>',
   sync: '<path d="M12 13v8"/><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="m8 17 4-4 4 4"/>',
   collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
@@ -583,6 +584,7 @@ function card(t, showProject) {
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       // On "All projects" a dot in the project's colour tells the projects apart.
+      t.human ? el("span", { class: "human-mark", title: "Human task: agents skip it" }, icon("human")) : null,
       el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
@@ -770,6 +772,7 @@ async function refreshTask() {
   status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
   if (!statuses.includes(task.status)) status.append(el("option", { value: task.status }, task.status));
   status.value = task.status;
+  $("#p-human").checked = task.human;
   $("#p-created").replaceChildren(timeEl(task.created_at));
   $("#p-updated").replaceChildren(timeEl(task.updated_at));
   $("#p-comment-count").textContent = comments.length ? String(comments.length) : "";
@@ -867,6 +870,7 @@ $("#p-desc").addEventListener("blur", (e) => {
 });
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
+$("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));
 
 // ---------- images ----------
 

@@ -26,13 +26,13 @@ const INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all thei
 Tasks are written project#id, like api#12. When you leave out `project`, Kanzo uses the project \
 linked to the GitHub repo of the folder you are working in. A good loop: next_task to pick up work, \
 add_comment to report what you did, then update_task to move it to review. Tag tasks when it helps, like \
-bug or ui: create_task and update_task take `tags`.";
+bug or ui: create_task and update_task take `tags`. Leave tasks marked human alone: they're for the user.";
 
 const HTTP_INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
 Tasks are written project#id, like api#12. Over HTTP Kanzo cannot see which folder you work in, so \
 pass `project` (see list_projects). A good loop: next_task to pick up work, add_comment to report \
 what you did, then update_task to move it to review. Tag tasks when it helps, like \
-bug or ui: create_task and update_task take `tags`.";
+bug or ui: create_task and update_task take `tags`. Leave tasks marked human alone: they're for the user.";
 
 /// `kanzo mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
@@ -335,10 +335,19 @@ impl Kanzo {
                     !old
                 });
                 let hidden = total_hidden;
+                // Tasks for a person are left out: agents leave them alone.
+                let people = tasks.iter().filter(|t| t.human).count();
+                tasks.retain(|t| !t.human);
                 let scope = project.as_ref().map_or("any project".to_string(), |p| p.slug.clone());
                 let mut out: Vec<String> = tasks.iter().map(task_line).collect();
                 if out.is_empty() {
                     out.push(format!("No tasks in {scope}."));
+                }
+                if people > 0 {
+                    out.push(format!(
+                        "({people} human {} not shown: for the user, not for agents)",
+                        plural(people, "task")
+                    ));
                 }
                 if hidden > 0 && status.is_none() {
                     out.push(format!("({hidden} {done} not shown; pass status \"{done}\" or \"all\")"));
@@ -388,6 +397,7 @@ impl Kanzo {
                         status,
                         tags: args.tags,
                         project_id: None,
+                        human: None,
                     },
                 )?;
                 let moved = if before.status != after.status {
@@ -481,6 +491,10 @@ fn task_line(t: &Task) -> String {
     format!("{} [{}] {}{}{comments}", t.key(), t.status, t.title, tag_list(t))
 }
 
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 { word.to_string() } else { format!("{word}s") }
+}
+
 /// ` {bug, ui}`, or nothing without tags.
 fn tag_list(t: &Task) -> String {
     if t.tags.is_empty() { String::new() } else { format!(" {{{}}}", t.tags.join(", ")) }
@@ -497,7 +511,9 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
     // The update time only when it says something the creation time does not.
     let updated = if updated == created { String::new() } else { format!(", updated {updated}") };
-    let mut out = format!("{} {}{}\nstatus: {}, created {created}{updated}\n", t.key(), t.title, tag_list(t), t.status);
+    let human = if t.human { ", human: for the user, not for agents" } else { "" };
+    let mut out =
+        format!("{} {}{}\nstatus: {}{human}, created {created}{updated}\n", t.key(), t.title, tag_list(t), t.status);
     if !t.description.is_empty() {
         out.push('\n');
         out.push_str(&t.description);

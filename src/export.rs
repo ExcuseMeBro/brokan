@@ -37,6 +37,8 @@ struct TaskOut {
     title: String,
     description: String,
     tags: Vec<String>,
+    /// Work for a person, which agents leave alone.
+    human: bool,
     /// Paths of the images attached to the task and its comments.
     images: Vec<String>,
     status: String,
@@ -53,6 +55,7 @@ impl TaskOut {
             title: task.title,
             description: task.description,
             tags: task.tags,
+            human: task.human,
             images,
             status: task.status,
             created_at: task.created_at,
@@ -134,6 +137,9 @@ fn markdown(board: &Board) -> String {
                     short_time(&t.created_at),
                     short_time(&t.updated_at)
                 );
+                if t.human {
+                    md.push_str("Human task.\n");
+                }
                 if !t.tags.is_empty() {
                     let _ = writeln!(md, "Tags: {}.", t.tags.join(", "));
                 }
