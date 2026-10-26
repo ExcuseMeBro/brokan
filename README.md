@@ -23,7 +23,7 @@ Kanzo is a kanban board in your browser and an MCP server in one small program, 
 curl -LsSf https://github.com/emanuele-em/kanzo/releases/latest/download/kanzo-installer.sh | sh
 ```
 
-For macOS and Linux, including every Raspberry Pi. Or build it: `cargo install --git https://github.com/emanuele-em/kanzo`.
+For macOS and Linux, including every Raspberry Pi. Or with Cargo: `cargo install kanzo`.
 
 ## Use
 
@@ -87,11 +87,11 @@ mcp_http = true        # MCP at /mcp
 
 | | |
 | --- | --- |
-| Program | 4.3 MB, SQLite included |
-| Memory | 4.4 MB idle, 9 MB with 3,000 tasks |
-| Start | 3 ms |
+| Program | 4.4 MB, SQLite included |
+| Memory | 4.5 MB idle, 11 MB with 3,000 tasks |
+| Start | 2 ms |
 | Board of 3,000 tasks | 17 ms to load in the browser |
-| Agents' tool list | about 800 tokens, once per session |
+| Agents' tool list | about 900 tokens, once per session |
 | Agents' replies | 10 to 60 tokens of plain text |
 
 Measured on an Apple M4.

@@ -26,6 +26,8 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Also publish each release to crates.io, for `cargo install kanzo`
+publish-jobs = ["./publish-crates"]
 
 # Build on the newest runners: Ubuntu 26.04 LTS and macOS 26. dist's defaults,
 # Ubuntu 22.04 and macOS 14, are deprecated on GitHub.

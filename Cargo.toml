@@ -10,6 +10,8 @@ homepage = "https://github.com/emanuele-em/kanzo"
 readme = "README.md"
 keywords = ["kanban", "mcp", "agents", "todo", "board"]
 categories = ["command-line-utilities"]
+# Only what builds Kanzo: the README's screenshots and the repo's GitHub files stay out.
+exclude = ["/docs", "/.github", "/dist-workspace.toml", "/rustfmt.toml"]
 
 [dependencies]
 anyhow = "1.0.104"

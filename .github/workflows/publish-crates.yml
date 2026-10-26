@@ -1,0 +1,37 @@
+# Publishes the release to crates.io, so `cargo install kanzo` gets it too. dist runs
+# this from release.yml once the GitHub release is up. crates.io trusted publishing
+# signs in with GitHub's OIDC token: there's no crates.io token to store.
+name: Publish to crates.io
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-26.04
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      # A version already there, from a re-run, is left alone.
+      - id: check
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if curl -fsS -A "kanzo release" "https://crates.io/api/v1/crates/kanzo/$version" > /dev/null; then
+            echo "kanzo $version is already on crates.io"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.publish
+        run: rustup update stable --no-self-update && rustup default stable
+      - if: steps.check.outputs.publish
+        uses: rust-lang/crates-io-auth-action@v1.0.6
+        id: auth
+      - if: steps.check.outputs.publish
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
