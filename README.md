@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/emanuele-em/kanzo/actions/workflows/ci.yml"><img src="https://github.com/emanuele-em/kanzo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/kanzo"><img src="https://img.shields.io/crates/v/kanzo" alt="crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="AGPL-3.0"></a>
 </p>
 
@@ -23,7 +24,11 @@ Kanzo is a kanban board in your browser and an MCP server in one small program, 
 curl -LsSf https://github.com/emanuele-em/kanzo/releases/latest/download/kanzo-installer.sh | sh
 ```
 
-For macOS and Linux, including every Raspberry Pi. Or with Cargo: `cargo install kanzo`.
+For macOS and Linux, including every Raspberry Pi. Or with Cargo:
+
+```sh
+cargo install kanzo
+```
 
 ## Use
 
