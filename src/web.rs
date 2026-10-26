@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -127,6 +127,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
         .route("/api/tasks/{id}/move", post(move_task))
         .route("/api/tasks/{id}/comments", post(add_comment))
+        .route("/api/comments/{id}", delete(delete_comment))
         .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
 }
@@ -352,6 +353,10 @@ struct NewComment {
 
 async fn add_comment(State(home): Shared, Path(id): Path<i64>, Json(c): Json<NewComment>) -> Response {
     with_store(home, move |_, s| s.add_comment(id, "me", &c.body)).await
+}
+
+async fn delete_comment(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.delete_comment(id)).await
 }
 
 /// True when the program on `port` answers like a Kanzo board.

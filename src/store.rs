@@ -576,11 +576,12 @@ impl Store {
             "INSERT INTO comments (task_id, author, body) VALUES (?1, ?2, ?3)",
             params![task_id, author, body],
         )?;
-        let id = self.conn.last_insert_rowid();
-        Ok(self.conn.query_row(
-            "SELECT id, task_id, author, body, created_at FROM comments WHERE id = ?1",
-            [id],
-            |r| {
+        self.get_comment(self.conn.last_insert_rowid())
+    }
+
+    fn get_comment(&self, id: i64) -> Result<Comment> {
+        self.conn
+            .query_row("SELECT id, task_id, author, body, created_at FROM comments WHERE id = ?1", [id], |r| {
                 Ok(Comment {
                     id: r.get(0)?,
                     task_id: r.get(1)?,
@@ -588,8 +589,16 @@ impl Store {
                     body: r.get(3)?,
                     created_at: r.get(4)?,
                 })
-            },
-        )?)
+            })
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("no comment {id}")))
+    }
+
+    /// Deletes a comment; returns it as it was.
+    pub fn delete_comment(&self, id: i64) -> Result<Comment> {
+        let comment = self.get_comment(id)?;
+        self.conn.execute("DELETE FROM comments WHERE id = ?1", [id])?;
+        Ok(comment)
     }
 }
 
@@ -717,6 +726,10 @@ mod tests {
         let comments = s.list_comments(t.id).unwrap();
         assert_eq!(comments.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), ["claude-code", "me"]);
         assert!(s.add_comment(t.id, "me", " ").is_err());
+        assert_eq!(s.get_task(t.id).unwrap().comments, 2);
+        let gone = s.add_comment(t.id, "me", "typo").unwrap();
+        assert_eq!(s.delete_comment(gone.id).unwrap().body, "typo");
+        assert!(s.delete_comment(gone.id).is_err());
         assert_eq!(s.get_task(t.id).unwrap().comments, 2);
         assert_eq!(s.find_project("api").unwrap().open, 1);
 

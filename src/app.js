@@ -643,8 +643,21 @@ async function refreshTask() {
   $("#p-comments").replaceChildren(...comments.map((c) => {
     const body = el("div", { class: "md" });
     body.innerHTML = markdown(c.body);
-    return el("div", { class: "comment" }, el("div", { class: "who" }, el("b", {}, c.author), " · ", timeEl(c.created_at)), body);
+    return el("div", { class: "comment" },
+      el("div", { class: "who" }, el("b", {}, c.author), " · ", timeEl(c.created_at),
+        el("button", { class: "remove", title: "Delete comment", "aria-label": "Delete comment",
+                       onclick: () => deleteComment(c) }, icon("trash"))),
+      body);
   }));
+}
+
+async function deleteComment(c) {
+  if (!confirm("Delete this comment? This cannot be undone.")) return;
+  try {
+    await api("DELETE", `/comments/${c.id}`);
+    await refreshTask();
+    loadBoard();
+  } catch (err) { toast(err.message); }
 }
 
 // The project tag doubles as a picker that moves the task to another project.

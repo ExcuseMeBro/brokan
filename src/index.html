@@ -211,7 +211,16 @@ header .sub a:hover { color: var(--text); }
 .section h3 .count { color: var(--faint); font-weight: 400; }
 .comment { padding: 10px 0; }
 .comment:first-child { padding-top: 0; }
-.comment .who { font-size: 12px; color: var(--faint); margin-bottom: 2px; }
+.comment .who { font-size: 12px; color: var(--faint); margin-bottom: 2px; display: flex; align-items: center; gap: 4px; }
+/* Each comment's delete button shows on hover, like the sidebar's "more" button. */
+.comment .remove {
+  margin-left: auto; padding: 3px; border: 0; border-radius: 6px; background: none; color: var(--faint);
+  visibility: hidden;
+}
+.comment:hover .remove, .comment .remove:focus-visible { visibility: visible; }
+.comment .remove:hover { color: var(--danger); background: var(--danger-bg); }
+.comment .remove .icon svg { width: 14px; height: 14px; }
+@media (hover: none) { .comment .remove { visibility: visible; } }
 .comment .who b { color: var(--text); font-weight: 600; }
 /* The comment box, with its send button inside like a chat composer. */
 .composer { position: relative; margin-top: 6px; background: var(--field); border-radius: 20px; }
