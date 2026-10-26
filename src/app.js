@@ -57,6 +57,28 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Line icons (from Lucide, ISC licence), drawn in the text colour.
+const ICONS = {
+  newProject: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  board: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  close: '<path d="M18 6 6 18M6 6l12 12"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  plus: '<path d="M5 12h14M12 5v14"/>',
+  trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
+  text: '<path d="M17 6H3M21 12H3M15 18H3"/>',
+  comment: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+};
+
+function icon(name, color) {
+  const span = el("span", { class: "icon", style: color ? `color:${color}` : null });
+  span.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+  return span;
+}
+
+document.querySelectorAll("[data-icon]").forEach((n) => n.replaceWith(icon(n.dataset.icon)));
+
 let toastTimer;
 function toast(message) {
   document.querySelector(".toast")?.remove();
@@ -234,27 +256,24 @@ function render() {
 function renderNav() {
   const { projects } = state.board;
   const open = projects.reduce((n, p) => n + p.open, 0);
-  const link = (slug, name, count, color) =>
+  const link = (slug, name, count, glyph) =>
     el("a", { href: "#" + slug, class: state.project === slug ? "active" : null,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
-      color ? el("span", { class: "dot", style: `background:${color}` }) : null,
+      glyph,
       el("span", { class: "name" }, name),
       el("span", { class: "count" }, String(count)));
   const item = (p) => el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
-    link(p.slug, p.name, p.open, projectColor(p.slug)),
+    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
     el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
-                   onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, "⋯"));
+                   onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
   $("#nav").replaceChildren(
-    link("all", "All projects", open),
+    link("all", "All projects", open, icon("board")),
     ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
     ...projects.map(item),
   );
 }
 
 // ---------- project menu ----------
-
-const TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-  'stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
 
 // The "⋯" menu of a sidebar project. `state.menu` holds its slug, so the row keeps
 // its highlight while the sidebar is redrawn by polling.
@@ -264,10 +283,8 @@ function toggleProjectMenu(p, button) {
   if (wasOpen) return;
   state.menu = p.slug;
   button.closest(".item").classList.add("menu-open");
-  const icon = el("span", {});
-  icon.innerHTML = TRASH;
   const remove = el("button", { class: "danger", role: "menuitem", onclick: () => { closeMenu(); deleteProject(p); } },
-    icon, "Delete project");
+    icon("trash"), "Delete project");
   const menu = el("div", { class: "menu", role: "menu" }, remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
@@ -348,7 +365,7 @@ function renderColumns() {
           el("span", { class: "count" })),
         el("div", { class: "cards" }),
       );
-      if (i === 0) col.append(el("div", { class: "add" }, el("button", { class: "ghost", onclick: newTask }, "+ Add task")));
+      if (i === 0) col.append(el("div", { class: "add" }, el("button", { class: "ghost", onclick: newTask }, icon("plus"), "Add task")));
       wireDrop(col, col.querySelector(".cards"), status);
       return col;
     }));
@@ -391,8 +408,8 @@ function card(t, showProject) {
       el("span", { class: "mono" }, key(t)),
       showProject ? el("span", { class: "tag" }, el("span", { class: "dot", style: `background:${projectColor(t.project)}` }), t.project) : null,
       el("span", { class: "spacer" }),
-      t.description ? el("span", { title: "Has a description" }, "≡") : null,
-      t.comments ? el("span", { title: `${t.comments} comments` }, `💬 ${t.comments}`) : null,
+      t.description ? el("span", { class: "icon", title: "Has a description" }, icon("text")) : null,
+      t.comments ? el("span", { class: "comments", title: `${t.comments} comments` }, icon("comment"), String(t.comments)) : null,
     ));
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
