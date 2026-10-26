@@ -3,6 +3,6 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/emanuele-em/kanzo/security/advisories/new
     about: Please report it privately, not in a public issue.
-  - name: Guide
-    url: https://github.com/emanuele-em/kanzo/blob/main/docs/guide.md
-    about: Install, settings, agents, sync and export.
+  - name: README
+    url: https://github.com/emanuele-em/kanzo#readme
+    about: Install, use, agents, settings, sync and export.
