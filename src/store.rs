@@ -12,6 +12,12 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
+/// The oldest schema version whose Kanzo can still use a database at the latest one.
+/// Adding a table or a column with a default leaves older versions working, so a board
+/// synced from a newer Kanzo still opens in an older one. Raise it to the new version
+/// only for a migration that older code can't live with, like a renamed column.
+const COMPATIBLE_FROM: usize = 4;
+
 /// Schema migrations, applied in order. Index + 1 is the `schema_version` they lead to.
 const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
@@ -209,33 +215,37 @@ impl Store {
     /// Brings the schema up to date. Writes nothing when it already is, so starting
     /// `kanzo mcp` for every agent session costs no disk write.
     pub fn migrate(&self) -> Result<()> {
-        let current = self
-            .conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get::<_, String>(0))
-            .optional()
-            .unwrap_or(None);
-        if current == Some(MIGRATIONS.len().to_string()) {
+        let meta = |c: &Connection, key: &str| -> rusqlite::Result<Option<usize>> {
+            Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+                .optional()?
+                .and_then(|v| v.parse().ok()))
+        };
+        let latest = MIGRATIONS.len();
+        let current =
+            (meta(&self.conn, "schema_version").unwrap_or(None), meta(&self.conn, "compatible").unwrap_or(None));
+        if current == (Some(latest), Some(COMPATIBLE_FROM)) {
             return Ok(());
         }
         self.write(|c| {
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
-            let version: usize = c
-                .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get::<_, String>(0))
-                .optional()?
-                .map_or(0, |v| v.parse().unwrap_or(0));
-            if version > MIGRATIONS.len() {
-                return Err(Error::Invalid(format!(
-                    "kanzo.db has schema version {version}, newer than this kanzo supports ({}); update kanzo",
-                    MIGRATIONS.len()
-                )));
+            let version = meta(c, "schema_version")?.unwrap_or(0);
+            if version > latest {
+                // From a newer Kanzo, maybe synced from another machine: use it as it is
+                // when this version can, without touching its schema.
+                if meta(c, "compatible")?.is_some_and(|oldest| oldest <= latest) {
+                    return Ok(());
+                }
+                return Err(Error::Invalid(
+                    "this board was saved by a newer version of Kanzo; update this one with `kanzo update`".into(),
+                ));
             }
             for sql in &MIGRATIONS[version..] {
                 c.execute_batch(sql)?;
             }
             c.execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1), ('compatible', ?2)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [MIGRATIONS.len().to_string()],
+                [latest.to_string(), COMPATIBLE_FROM.to_string()],
             )?;
             Ok(())
         })
@@ -931,6 +941,30 @@ mod tests {
         let v: String =
             s.conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, MIGRATIONS.len().to_string());
+    }
+
+    #[test]
+    fn opens_a_board_from_a_newer_kanzo_when_it_can() {
+        let (_dir, s) = store();
+        let set = |version: usize, compatible: usize| {
+            s.conn
+                .execute_batch(&format!(
+                    "UPDATE meta SET value = '{version}' WHERE key = 'schema_version';
+                     UPDATE meta SET value = '{compatible}' WHERE key = 'compatible';"
+                ))
+                .unwrap();
+        };
+        let newer = MIGRATIONS.len() + 1;
+        // A newer Kanzo only added things: this one goes on using the board, untouched.
+        set(newer, MIGRATIONS.len());
+        s.migrate().unwrap();
+        s.create_project("api", "", None).unwrap();
+        let v: String =
+            s.conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, newer.to_string());
+        // A change this version can't live with: it says how to update.
+        set(newer, newer);
+        assert!(s.migrate().unwrap_err().to_string().contains("kanzo update"));
     }
 
     #[test]

@@ -69,6 +69,8 @@ enum Command {
         #[arg(long, short, value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// Install the latest release over this Kanzo, and restart the board's service
+    Update,
     /// Start the board automatically at login (macOS and Linux)
     Service {
         #[command(subcommand)]
@@ -105,6 +107,10 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
+    // Before opening the data folder: it may be the reason to update.
+    if let Some(Command::Update) = cli.command {
+        return update_kanzo();
+    }
     let dir = match &cli.command {
         Some(Command::Init { folder: Some(folder) }) => folder.clone(),
         _ => Home::resolve(cli.home)?,
@@ -134,5 +140,26 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Command::Service { action: ServiceAction::Install }) => service::install(&home),
         Some(Command::Service { action: ServiceAction::Uninstall }) => service::uninstall(),
+        Some(Command::Update) => unreachable!("handled above"),
     }
+}
+
+/// `kanzo update`: installs the latest release over this program, then restarts the
+/// board's service, if there is one, so it runs the new version too.
+fn update_kanzo() -> anyhow::Result<()> {
+    let Some(latest) = update::latest(true) else {
+        anyhow::bail!("can't reach GitHub to check for updates");
+    };
+    if !update::newer(&latest) {
+        println!("Kanzo is up to date ({}).", update::CURRENT);
+        return Ok(());
+    }
+    println!("Installing Kanzo {latest} (you have {})…", update::CURRENT);
+    update::install().map_err(anyhow::Error::msg)?;
+    if service::restart()? {
+        println!("Updated to {latest}, and restarted the board.");
+    } else {
+        println!("Updated to {latest}.");
+    }
+    Ok(())
 }

@@ -32,6 +32,19 @@ pub fn uninstall() -> Result<()> {
     }
 }
 
+/// Restarts the service, if it's installed, so it runs a newly installed Kanzo; false
+/// when there's none.
+pub fn restart() -> Result<bool> {
+    if cfg!(target_os = "macos") && plist_path()?.exists() {
+        run("launchctl", &["kickstart", "-k", &format!("{}/{LABEL}", launchd_domain()?)])?;
+    } else if cfg!(target_os = "linux") && unit_path()?.exists() {
+        run("systemctl", &["--user", "restart", UNIT])?;
+    } else {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().context("cannot find your home folder")
 }

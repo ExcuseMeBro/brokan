@@ -34,6 +34,7 @@ For macOS and Linux, including every Raspberry Pi. Or build it: `cargo install -
 | `kanzo mcp` | The MCP server for agents: they start it, not you |
 | `kanzo sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
 | `kanzo export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
+| `kanzo update` | Installs the latest release and restarts the board's service; the board offers new versions too |
 | `kanzo init` | Creates the data folder; the first run does this too |
 | `kanzo --version` | Prints the version |
 
