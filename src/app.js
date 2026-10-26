@@ -69,6 +69,7 @@ const ICONS = {
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   text: '<path d="M17 6H3M21 12H3M15 18H3"/>',
   comment: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
 };
 
 function icon(name, color) {
@@ -88,10 +89,24 @@ function toast(message) {
   toastTimer = setTimeout(() => t.remove(), 3500);
 }
 
-function projectColor(slug) {
+// The colours a project can be given; the names match PROJECT_COLORS in store.rs.
+const PROJECT_COLORS = {
+  gray: "#8e8e93", red: "#ef4444", orange: "#f97316", yellow: "#eab308", green: "#22c55e",
+  teal: "#14b8a6", blue: "#3b82f6", purple: "#a855f7", pink: "#ec4899",
+};
+
+// The colour picked for a project, or until then one chosen from its slug.
+function projectColorName(slug) {
+  const picked = state.board?.projects.find((p) => p.slug === slug)?.color;
+  if (PROJECT_COLORS[picked]) return picked;
+  const names = Object.keys(PROJECT_COLORS).filter((n) => n !== "gray");
   let h = 0;
-  for (const c of slug) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `hsl(${h} 55% 52%)`;
+  for (const c of slug) h = (h * 31 + c.charCodeAt(0)) % 997;
+  return names[h % names.length];
+}
+
+function projectColor(slug) {
+  return PROJECT_COLORS[projectColorName(slug)];
 }
 
 function statusColor(status) {
@@ -283,15 +298,32 @@ function toggleProjectMenu(p, button) {
   if (wasOpen) return;
   state.menu = p.slug;
   button.closest(".item").classList.add("menu-open");
-  const remove = el("button", { class: "danger", role: "menuitem", onclick: () => { closeMenu(); deleteProject(p); } },
+  const swatches = el("div", { class: "swatches", role: "group", "aria-label": "Color" });
+  const drawSwatches = () => swatches.replaceChildren(...Object.entries(PROJECT_COLORS).map(([name, hex]) => {
+    const current = projectColorName(p.slug) === name;
+    return el("button", { class: "swatch", style: `background:${hex}`, title: name, "aria-label": name,
+                          "aria-pressed": String(current), onclick: () => pickColor(p.slug, name).then(drawSwatches) },
+      current ? icon("check") : null);
+  }));
+  drawSwatches();
+  const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), "Delete project");
-  const menu = el("div", { class: "menu", role: "menu" }, remove);
+  const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
+    el("div", { class: "label" }, "Color"), swatches, el("div", { class: "sep" }), remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
   menu.style.top = `${below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight}px`;
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
-  remove.focus();
+  // Focus the menu itself, so Tab reaches its buttons without one looking selected.
+  menu.focus();
+}
+
+async function pickColor(slug, color) {
+  try {
+    await api("PATCH", `/projects/${encodeURIComponent(slug)}`, { color });
+    await loadBoard();
+  } catch (err) { toast(err.message); }
 }
 
 function closeMenu() {

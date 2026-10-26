@@ -13,7 +13,14 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 /// Schema migrations, applied in order. Index + 1 is the `schema_version` they lead to.
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    // 2: a colour picked for the project; NULL leaves the board to choose one.
+    "ALTER TABLE projects ADD COLUMN color TEXT;",
+];
+
+/// The colours a project can be given; the board maps each name to a shade.
+pub const PROJECT_COLORS: &[&str] = &["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -58,6 +65,8 @@ pub struct Project {
     pub slug: String,
     pub name: String,
     pub repo: Option<String>,
+    /// One of `PROJECT_COLORS`, or `None` when never picked.
+    pub color: Option<String>,
     pub created_at: String,
     /// Tasks not in the last (done) column.
     pub open: i64,
@@ -210,7 +219,7 @@ impl Store {
 
     // Projects
 
-    const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.repo, p.created_at,
+    const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.repo, p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id)
         FROM projects p";
@@ -221,9 +230,10 @@ impl Store {
             slug: r.get(1)?,
             name: r.get(2)?,
             repo: r.get(3)?,
-            created_at: r.get(4)?,
-            open: r.get(5)?,
-            total: r.get(6)?,
+            color: r.get(4)?,
+            created_at: r.get(5)?,
+            open: r.get(6)?,
+            total: r.get(7)?,
         })
     }
 
@@ -305,6 +315,15 @@ impl Store {
             other => other?,
         };
         self.find_project(&slug)
+    }
+
+    pub fn set_project_color(&self, slug: &str, color: &str) -> Result<Project> {
+        if !PROJECT_COLORS.contains(&color) {
+            return Err(Error::Invalid(format!("unknown color {color:?}; use one of: {}", PROJECT_COLORS.join(", "))));
+        }
+        let project = self.find_project(slug)?;
+        self.conn.execute("UPDATE projects SET color = ?1 WHERE id = ?2", params![color, project.id])?;
+        self.find_project(&project.slug)
     }
 
     /// Deletes a project with all its tasks and their comments; returns the project as it was.
@@ -664,7 +683,9 @@ mod tests {
         assert!(s.create_project("web", "", Some("me/api")).unwrap_err().to_string().contains("already linked"));
         assert!(s.create_project("bad slug", "", None).is_err());
         let web = s.create_project("web", "", None).unwrap();
-        assert_eq!(web.name, "web");
+        assert_eq!((web.name.as_str(), web.color.as_deref()), ("web", None));
+        assert_eq!(s.set_project_color("web", "teal").unwrap().color.as_deref(), Some("teal"));
+        assert!(s.set_project_color("web", "#ff0000").is_err());
         assert!(s.find_project("nope").unwrap_err().to_string().contains("api, web"));
     }
 
