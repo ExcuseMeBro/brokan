@@ -27,10 +27,17 @@ For macOS and Linux, including every Raspberry Pi. Or build it: `cargo install -
 
 ## Use
 
-```sh
-kanzo                    # the board, at http://localhost:4242
-kanzo service install    # keep it running and start it at login
-```
+| Command | Does |
+| --- | --- |
+| `kanzo` | Starts the board at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
+| `kanzo service install` | Keeps the board running and starts it at login; `uninstall` removes it |
+| `kanzo mcp` | The MCP server for agents: they start it, not you |
+| `kanzo sync` | Commits the board and pulls or pushes it; `--keep-local` or `--keep-remote` when both sides changed |
+| `kanzo export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
+| `kanzo init` | Creates the data folder; the first run does this too |
+| `kanzo --version` | Prints the version |
+
+Every command takes `--home <dir>` to use another data folder.
 
 `n` adds a task, `/` searches, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
 
@@ -67,14 +74,7 @@ mcp_http = true        # MCP at /mcp
 
 ## Sync between machines
 
-Make `~/kanzo` a private git repo once (`git init`, then push it to GitHub), clone it on your other machines, and run `kanzo sync` when you switch. It is safe while the board and agents run. If both sides changed, choose one with `--keep-local` or `--keep-remote`.
-
-## Export
-
-```sh
-kanzo export                         # the whole board as Markdown
-kanzo export -f json -o board.json   # as JSON, to a file
-```
+Make `~/kanzo` a private git repo once (`git init`, then push it to GitHub), clone it on your other machines, and run `kanzo sync` when you switch. It is safe while the board and agents run.
 
 ## Small and fast
 

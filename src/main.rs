@@ -66,7 +66,7 @@ enum Command {
         #[arg(long, short, value_name = "FILE")]
         output: Option<PathBuf>,
     },
-    /// Start the board automatically at login (macOS)
+    /// Start the board automatically at login (macOS and Linux)
     Service {
         #[command(subcommand)]
         action: ServiceAction,
@@ -75,9 +75,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ServiceAction {
-    /// Install and start a LaunchAgent that runs the board at login
+    /// Install and start a service that runs the board at login (LaunchAgent on macOS, systemd on Linux)
     Install,
-    /// Stop and remove the LaunchAgent
+    /// Stop and remove that service
     Uninstall,
 }
 
