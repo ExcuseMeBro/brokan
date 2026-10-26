@@ -250,9 +250,10 @@ impl Kanzo {
                 Ok(projects
                     .iter()
                     .map(|p| {
+                        let name = if p.name == p.slug { String::new() } else { format!(" \"{}\"", p.name) };
                         let repo = p.repo.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
                         let mark = if here.is_some_and(|h| h.id == p.id) { " <- current repo" } else { "" };
-                        format!("{}: {}{repo}, {} open of {}{mark}", p.slug, p.name, p.open, p.total)
+                        format!("{}{name}{repo}: {} open of {}{mark}", p.slug, p.open, p.total)
                     })
                     .collect::<Vec<_>>()
                     .join("\n"))
@@ -385,7 +386,7 @@ impl Kanzo {
                 match store.next_task(project.as_ref().map(|p| p.id))? {
                     Some(task) => {
                         let comments = store.list_comments(task.id)?;
-                        Ok(format!("Moved {} to {}.\n\n{}", task.key(), task.status, task_detail(&task, &comments)))
+                        Ok(format!("Moved to {}:\n{}", task.status, task_detail(&task, &comments)))
                     }
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
@@ -442,14 +443,10 @@ fn task_line(t: &Task) -> String {
 }
 
 fn task_detail(t: &Task, comments: &[Comment]) -> String {
-    let mut out = format!(
-        "{} {}\nstatus: {}, created {}, updated {}\n",
-        t.key(),
-        t.title,
-        t.status,
-        short_time(&t.created_at),
-        short_time(&t.updated_at)
-    );
+    let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
+    // The update time only when it says something the creation time does not.
+    let updated = if updated == created { String::new() } else { format!(", updated {updated}") };
+    let mut out = format!("{} {}\nstatus: {}, created {created}{updated}\n", t.key(), t.title, t.status);
     if !t.description.is_empty() {
         out.push('\n');
         out.push_str(&t.description);
