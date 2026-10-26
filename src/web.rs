@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -122,6 +122,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
         .route("/api/projects", post(create_project))
+        .route("/api/projects/{slug}", delete(delete_project))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
         .route("/api/tasks/{id}/move", post(move_task))
@@ -274,6 +275,10 @@ struct NewProject {
 
 async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Response {
     with_store(home, move |_, s| s.create_project(&p.slug, &p.name, p.repo.as_deref())).await
+}
+
+async fn delete_project(State(home): Shared, Path(slug): Path<String>) -> Response {
+    with_store(home, move |_, s| s.delete_project(&slug)).await
 }
 
 #[derive(Deserialize)]

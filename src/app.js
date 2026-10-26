@@ -29,6 +29,7 @@ const state = {
   layout: "",            // key of the rendered column layout
   query: "",             // search box text
   allDone: false,        // show every card in the done column
+  menu: null,            // slug of the project whose "⋯" menu is open
 };
 
 // ---------- helpers ----------
@@ -239,12 +240,57 @@ function renderNav() {
       color ? el("span", { class: "dot", style: `background:${color}` }) : null,
       el("span", { class: "name" }, name),
       el("span", { class: "count" }, String(count)));
+  const item = (p) => el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
+    link(p.slug, p.name, p.open, projectColor(p.slug)),
+    el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
+                   onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, "⋯"));
   $("#nav").replaceChildren(
     link("all", "All projects", open),
     ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
-    ...projects.map((p) => link(p.slug, p.name, p.open, projectColor(p.slug))),
+    ...projects.map(item),
   );
 }
+
+// ---------- project menu ----------
+
+const TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
+
+// The "⋯" menu of a sidebar project. `state.menu` holds its slug, so the row keeps
+// its highlight while the sidebar is redrawn by polling.
+function toggleProjectMenu(p, button) {
+  const wasOpen = state.menu === p.slug;
+  closeMenu();
+  if (wasOpen) return;
+  state.menu = p.slug;
+  button.closest(".item").classList.add("menu-open");
+  const icon = el("span", {});
+  icon.innerHTML = TRASH;
+  const remove = el("button", { class: "danger", role: "menuitem", onclick: () => { closeMenu(); deleteProject(p); } },
+    icon, "Delete project");
+  const menu = el("div", { class: "menu", role: "menu" }, remove);
+  document.body.append(menu);
+  const r = button.getBoundingClientRect();
+  const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
+  menu.style.top = `${below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
+  remove.focus();
+}
+
+function closeMenu() {
+  if (!state.menu) return;
+  state.menu = null;
+  document.querySelector(".menu")?.remove();
+  document.querySelectorAll(".nav .menu-open").forEach((i) => i.classList.remove("menu-open"));
+}
+
+// A click elsewhere closes the menu; one on a "⋯" button is left to toggle it.
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest(".menu, .nav .more")) closeMenu();
+});
+window.addEventListener("resize", closeMenu);
+window.addEventListener("blur", closeMenu);
+$("#nav").addEventListener("scroll", closeMenu);
 
 function currentProject() {
   return state.board.projects.find((p) => p.slug === state.project) || null;
@@ -266,6 +312,16 @@ function renderHeader() {
     el("span", { class: "sub mono" }, p.slug),
     ...(p.repo ? [el("span", { class: "sub" }, el("a", { href: `https://github.com/${p.repo}`, target: "_blank", rel: "noopener" }, p.repo))] : []),
   );
+}
+
+async function deleteProject(p) {
+  const tasks = p.total ? ` and its ${p.total} task${p.total > 1 ? "s" : ""}, with their comments` : "";
+  if (!confirm(`Delete project ${p.slug}${tasks}? This cannot be undone.`)) return;
+  try {
+    await api("DELETE", `/projects/${encodeURIComponent(p.slug)}`);
+    if (panelTask?.project === p.slug) closeTask();
+    if (state.project === p.slug) setProject("all"); else loadBoard();
+  } catch (err) { toast(err.message); }
 }
 
 function renderColumns() {
@@ -630,6 +686,7 @@ $("#search").addEventListener("keydown", (e) => {
 
 document.addEventListener("keydown", (e) => {
   const typing = e.target.closest("input, textarea, select");
+  if (e.key === "Escape" && state.menu) { closeMenu(); return; }
   if (e.key === "Escape" && state.task && !typing) closeTask();
   if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();

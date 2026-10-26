@@ -48,6 +48,30 @@ aside {
 .nav a.active { background: var(--card); box-shadow: var(--shadow); font-weight: 550; }
 .nav a .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .nav a .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* A project row: its "more" button takes the count's place on hover, like most sidebars. */
+.nav .item { position: relative; }
+.nav .more {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: none;
+  width: 24px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--muted);
+  line-height: 1; font-size: 15px; letter-spacing: 1px;
+}
+.nav .more:hover, .nav .item.menu-open .more { background: var(--hover); color: var(--text); }
+.nav .item:hover .more, .nav .item:focus-within .more, .nav .item.menu-open .more { display: block; }
+.nav .item:hover .count, .nav .item:focus-within .count, .nav .item.menu-open .count { visibility: hidden; }
+.nav .item.menu-open a { background: var(--hover); }
+@media (hover: none) { .nav .more { display: block; } .nav .item .count { visibility: hidden; } }
+.menu {
+  position: fixed; z-index: 30; min-width: 170px; padding: 4px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18);
+}
+.menu button {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 10px; border: 0; border-radius: 6px;
+  background: none; text-align: left;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--hover); outline: none; }
+.menu button.danger { color: var(--danger); }
+.menu span { display: flex; }
+.menu svg { width: 16px; height: 16px; flex: none; }
 .nav .label { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 14px 10px 4px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .ghost {

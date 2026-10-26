@@ -305,6 +305,14 @@ impl Store {
         self.find_project(&slug)
     }
 
+    /// Deletes a project with all its tasks and their comments; returns the project as it was.
+    pub fn delete_project(&self, slug: &str) -> Result<Project> {
+        let project = self.find_project(slug)?;
+        // Tasks and comments go with it through ON DELETE CASCADE.
+        self.conn.execute("DELETE FROM projects WHERE id = ?1", [project.id])?;
+        Ok(project)
+    }
+
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
@@ -686,6 +694,28 @@ mod tests {
         // Ids are never reused, so api#12 always means the same task.
         let t2 = s.create_task(p.id, "Another", "").unwrap();
         assert!(t2.id > t.id);
+    }
+
+    #[test]
+    fn delete_project_removes_its_tasks_and_comments() {
+        let (_dir, s) = store();
+        let api = s.create_project("api", "", Some("me/api")).unwrap();
+        let web = s.create_project("web", "", None).unwrap();
+        let t = s.create_task(api.id, "a", "").unwrap();
+        s.add_comment(t.id, "me", "hi").unwrap();
+        let kept = s.create_task(web.id, "b", "").unwrap();
+        s.add_comment(kept.id, "me", "hello").unwrap();
+
+        assert_eq!(s.delete_project("api").unwrap().id, api.id);
+        assert!(s.find_project("api").is_err());
+        assert!(s.get_task(t.id).is_err());
+        let count = |table: &str| -> i64 {
+            s.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!((count("projects"), count("tasks"), count("comments")), (1, 1, 1));
+        assert!(s.delete_project("api").is_err());
+        // The slug and repo are free again.
+        s.create_project("api", "", Some("me/api")).unwrap();
     }
 
     #[test]
