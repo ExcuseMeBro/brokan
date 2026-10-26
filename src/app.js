@@ -67,8 +67,6 @@ const ICONS = {
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
-  text: '<path d="M17 6H3M21 12H3M15 18H3"/>',
-  comment: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
 };
 
@@ -424,6 +422,17 @@ function renderColumns() {
   }
 }
 
+// A description as one line of plain text for a card: Markdown markers dropped, lines joined.
+function plainText(md) {
+  return md.split("\n")
+    .map((l) => l.replace(/^\s*(#{1,6}|>|[-*+]|\d+[.)])\s+/, "").replace(/^\[[ xX]\]\s+/, ""))
+    .filter((l) => l.trim() && !/^\s*```/.test(l))
+    .join(" ")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // Every word of the search must appear in the task's id, title, description or project.
 function matches(t) {
   const words = state.query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -435,14 +444,12 @@ function matches(t) {
 function card(t, showProject) {
   const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: "true", "data-id": t.id,
                            onclick: () => openTask(t.id) },
-    el("div", { class: "title" }, t.title),
-    el("div", { class: "meta" },
-      el("span", { class: "mono" }, key(t)),
-      showProject ? el("span", { class: "tag" }, el("span", { class: "dot", style: `background:${projectColor(t.project)}` }), t.project) : null,
-      el("span", { class: "spacer" }),
-      t.description ? el("span", { class: "icon", title: "Has a description" }, icon("text")) : null,
-      t.comments ? el("span", { class: "comments", title: `${t.comments} comments` }, icon("comment"), String(t.comments)) : null,
-    ));
+    el("div", { class: "head" },
+      el("div", { class: "title" }, t.title),
+      // On "All projects" a dot in the project's colour tells the projects apart.
+      el("span", { class: "num", title: key(t) },
+        showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
+    t.description ? el("div", { class: "desc" }, plainText(t.description)) : null);
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
     e.dataTransfer.effectAllowed = "move";
