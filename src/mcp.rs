@@ -33,7 +33,7 @@ what you did, then update_task to move it to review.";
 pub async fn serve(home: Home) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let repos = git_repos(&cwd);
-    let server = Kanzo { ctx: Arc::new(Ctx { home, cwd: Some(cwd), repos }), tool_router: Kanzo::tool_router() };
+    let server = Kanzo { ctx: Arc::new(Ctx { home, cwd: Some(cwd), repos }), tool_router: Kanzo::tools() };
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -46,7 +46,7 @@ pub fn http_service(home: Home, shutdown: CancellationToken) -> StreamableHttpSe
     let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new() });
     let config = StreamableHttpServerConfig::default().disable_allowed_hosts().with_cancellation_token(shutdown);
     StreamableHttpService::new(
-        move || Ok(Kanzo { ctx: ctx.clone(), tool_router: Kanzo::tool_router() }),
+        move || Ok(Kanzo { ctx: ctx.clone(), tool_router: Kanzo::tools() }),
         Default::default(),
         config,
     )
@@ -122,7 +122,6 @@ fn git_repos(dir: &std::path::Path) -> Vec<String> {
 #[derive(Clone)]
 pub struct Kanzo {
     ctx: Arc<Ctx>,
-    #[allow(dead_code, reason = "used by the tool_handler macro")]
     tool_router: ToolRouter<Self>,
 }
 
@@ -205,6 +204,20 @@ struct AddCommentArgs {
 struct NextTaskArgs {
     /// Project slug, or "all" for any project. Defaults to the project of the current repo.
     project: Option<String>,
+}
+
+impl Kanzo {
+    /// The tool list without the `$schema` line rmcp puts in every input schema:
+    /// agents read this list at the start of every session, so each byte counts.
+    fn tools() -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        for route in router.map.values_mut() {
+            let mut schema = (*route.attr.input_schema).clone();
+            schema.remove("$schema");
+            route.attr.input_schema = Arc::new(schema);
+        }
+        router
+    }
 }
 
 #[tool_router]
@@ -400,7 +413,9 @@ impl Kanzo {
     }
 }
 
-#[tool_handler]
+// Serve the router built once in `tools()`; by default the macro builds a new,
+// untrimmed one for every request.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for Kanzo {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
