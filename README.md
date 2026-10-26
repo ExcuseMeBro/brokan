@@ -39,7 +39,7 @@ For macOS and Linux, including every Raspberry Pi. Or build it: `cargo install -
 
 Every command takes `--home <dir>` to use another data folder.
 
-`n` adds a task, `/` searches, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
+`n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
 
 Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Agents get its file path and can open it.
 

@@ -26,7 +26,6 @@ const state = {
   dragging: null,        // id of the card being dragged
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
-  query: "",             // search box text
   allDone: false,        // show every card in the done column
   menu: null,            // slug of the project whose "⋯" menu is open
 };
@@ -226,7 +225,7 @@ async function loadBoard() {
   try {
     // The server leaves out older done tasks unless asked: the board does not show
     // them, and the done column only grows. Search needs them all.
-    const done = fullDone() ? "&done=all" : "";
+    const done = state.allDone ? "&done=all" : "";
     const board = await api("GET", "/board?project=" + encodeURIComponent(state.project) + done);
     if (request !== boardRequest) return;
     state.board = board;
@@ -241,10 +240,6 @@ async function loadBoard() {
       toast(e.message);
     }
   }
-}
-
-function fullDone() {
-  return state.allDone || state.query.trim() !== "";
 }
 
 // The address is #project or #project/task-id, so a task can be linked to.
@@ -373,7 +368,7 @@ document.addEventListener("mousedown", (e) => {
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, #search-dialog")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -387,7 +382,6 @@ function renderHeader() {
   const p = currentProject();
   const { projects, tasks } = state.board;
   const header = $("#header");
-  $("#search-box").hidden = !projects.length;
   if (!projects.length) { header.replaceChildren(); return; }
   if (!p) {
     header.replaceChildren(el("h1", {}, "All projects"),
@@ -445,15 +439,12 @@ function renderColumns() {
   // During a drag the DOM is being moved by hand; refresh once it ends.
   if (state.dragging) return;
   const all = state.project === "all";
-  const shown = tasks.filter(matches);
-  $("#search-note").textContent = !state.query.trim() ? ""
-    : shown.length ? `${shown.length} of ${tasks.length}` : "No matches";
   for (const status of statuses) {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
-    const mine = shown.filter((t) => t.status === status);
+    const mine = tasks.filter((t) => t.status === status);
     // Older done tasks the server left out (see loadBoard).
     const last = status === statuses[statuses.length - 1];
-    const hidden = last && !fullDone() ? state.board.done_hidden || 0 : 0;
+    const hidden = last && !state.allDone ? state.board.done_hidden || 0 : 0;
     const count = mine.length + hidden;
     col.querySelector("h2 .count").textContent = count ? String(count) : "";
     const more = hidden
@@ -472,14 +463,6 @@ function plainText(md) {
     .replace(/\*\*|__|`/g, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-// Every word of the search must appear in the task's id, title, description or project.
-function matches(t) {
-  const words = state.query.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const text = `${key(t)} ${t.title} ${t.description} ${t.project} ${t.tags.join(" ")}`.toLowerCase();
-  return words.every((w) => text.includes(w));
 }
 
 function card(t, showProject) {
@@ -892,21 +875,64 @@ $("#p-delete").addEventListener("click", async () => {
 
 // ---------- search ----------
 
-$("#search").addEventListener("input", (e) => {
-  const wasFull = fullDone();
-  state.query = e.target.value;
-  // Searching needs every done task; load them when a search starts.
-  if (fullDone() !== wasFull) loadBoard();
-  else if (state.board) renderColumns();
-});
+// The search window, as in ChatGPT: tasks of every project, found by the server, open
+// ones first. Arrows pick, Enter opens, Esc closes. Without words it shows the latest changes.
+let results = [], selected = 0, searchRequest = 0, searchTimer;
+
+function openSearch() {
+  closeMenu();
+  $("#search-dialog").hidden = false;
+  $("#search").value = "";
+  $("#search").focus();
+  runSearch();
+}
+
+function closeSearch() {
+  $("#search-dialog").hidden = true;
+}
+
+async function runSearch() {
+  const q = $("#search").value.trim();
+  const request = ++searchRequest;
+  try {
+    const found = await api("GET", "/search?q=" + encodeURIComponent(q));
+    if (request !== searchRequest) return;
+    results = found;
+    selected = 0;
+    $("#search-results").replaceChildren(
+      ...(results.length ? [el("div", { class: "label" }, q ? "Tasks" : "Recent")] : []),
+      ...results.map((t, i) => el("button", { type: "button", class: "result" + (i === 0 ? " selected" : ""),
+                                             onmousemove: () => select(i), onclick: () => pick(t) },
+        el("span", { class: "dot", style: `background:${projectColor(t.project)}` }),
+        el("span", { class: "title" }, t.title),
+        el("span", { class: "meta" }, el("span", { class: "mono" }, key(t)), t.status))),
+      ...(results.length ? [] : [el("div", { class: "note" }, q ? "No tasks match." : "No tasks yet.")]));
+  } catch (err) { toast(err.message); }
+}
+
+function select(i) {
+  const rows = $("#search-results").querySelectorAll(".result");
+  if (!rows.length) return;
+  selected = (i + rows.length) % rows.length;
+  rows.forEach((r, j) => r.classList.toggle("selected", j === selected));
+  rows[selected].scrollIntoView({ block: "nearest" });
+}
+
+// Opens the task, in its own project unless the board shows all of them.
+function pick(t) {
+  closeSearch();
+  if (state.project !== "all" && state.project !== t.project) setProject(t.project);
+  openTask(t.id);
+}
+
+$("#search-open").addEventListener("click", openSearch);
+$("#search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 120); });
 $("#search").addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    e.stopPropagation();
-    e.target.value = "";
-    e.target.dispatchEvent(new Event("input"));
-    e.target.blur();
-  }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); select(selected + (e.key === "ArrowDown" ? 1 : -1)); }
+  else if (e.key === "Enter" && results[selected]) { e.preventDefault(); pick(results[selected]); }
+  else if (e.key === "Escape") { e.stopPropagation(); closeSearch(); }
 });
+$("#search-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "search-dialog") closeSearch(); });
 
 // ---------- keyboard, polling, start ----------
 
@@ -914,9 +940,9 @@ document.addEventListener("keydown", (e) => {
   const typing = e.target.closest("input, textarea, select");
   if (e.key === "Escape" && state.menu) { closeMenu(); return; }
   if (e.key === "Escape" && state.task && !typing) closeTask();
-  if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey) {
+  if ((e.key === "/" && !typing && !e.metaKey && !e.ctrlKey) || (e.key === "k" && (e.metaKey || e.ctrlKey))) {
     e.preventDefault();
-    $("#search").focus();
+    openSearch();
   }
   if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
     if ($("#columns .add")) { e.preventDefault(); newTask(); }

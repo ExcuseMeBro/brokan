@@ -126,6 +126,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
+        .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
         .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
@@ -294,6 +295,17 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
         }))
     })
     .await
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+}
+
+/// Tasks of every project matching the search, for the search window.
+async fn search(State(home): Shared, Query(q): Query<SearchQuery>) -> Response {
+    with_store(home, move |_, s| s.search(&q.q, 30)).await
 }
 
 #[derive(Deserialize)]

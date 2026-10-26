@@ -452,6 +452,30 @@ impl Store {
         Ok(tasks)
     }
 
+    /// Tasks of any project whose key, title, description, tags or project hold every
+    /// word of `query`: open ones first, then the most recently changed. An empty query
+    /// gives the most recently changed tasks.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Task>> {
+        let words: Vec<String> = query.split_whitespace().take(10).map(|w| w.to_lowercase()).collect();
+        let mut sql = format!("{} WHERE 1", Self::TASK_SELECT);
+        for i in 0..words.len() {
+            sql.push_str(&format!(
+                " AND lower(p.slug || '#' || t.id || ' ' || t.title || ' ' || t.description || ' ' || t.tags) \
+                 LIKE ?{} ESCAPE '\\'",
+                i + 2
+            ));
+        }
+        sql.push_str(&format!(" ORDER BY t.status = ?1, t.updated_at DESC, t.id DESC LIMIT {limit}"));
+        let mut values: Vec<String> = vec![self.done_status().to_string()];
+        for w in &words {
+            let escaped = w.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            values.push(format!("%{escaped}%"));
+        }
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), Self::task_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn get_task(&self, id: i64) -> Result<Task> {
         let sql = format!("{} WHERE t.id = ?1", Self::TASK_SELECT);
         self.conn
@@ -917,6 +941,27 @@ mod tests {
         // A deleted project frees its repos.
         s.delete_project("api").unwrap();
         assert_eq!(s.link_repo("web", "me/api-docs").unwrap().repos, ["me/api-docs"]);
+    }
+
+    #[test]
+    fn search() {
+        let (_dir, s) = store();
+        let api = s.create_project("api", "", None).unwrap();
+        let web = s.create_project("web", "", None).unwrap();
+        let login = s.create_task(api.id, "Fix login", "Users loop on /login").unwrap();
+        let old = s.create_task(web.id, "Login page copy", "").unwrap();
+        s.update_task(old.id, TaskPatch { status: Some("done".into()), ..Default::default() }).unwrap();
+        let other = s.create_task(web.id, "Pricing 100%", "").unwrap();
+        s.update_task(other.id, TaskPatch { tags: Some("ui".into()), ..Default::default() }).unwrap();
+        let titles = |q: &str| s.search(q, 10).unwrap().into_iter().map(|t| t.title).collect::<Vec<_>>();
+        assert_eq!(titles("LOGIN"), ["Fix login", "Login page copy"], "any project, open first, done too");
+        assert_eq!(titles("login api"), ["Fix login"], "every word must match, the project too");
+        assert_eq!(titles(&format!("web#{}", other.id)), ["Pricing 100%"], "by key");
+        assert_eq!(titles("ui"), ["Pricing 100%"], "by tag");
+        assert_eq!(titles("100%"), ["Pricing 100%"], "% is a plain character");
+        assert!(titles("nothing-like-this").is_empty());
+        assert_eq!(s.search("", 10).unwrap().len(), 3, "no words: the latest changes");
+        assert_eq!(s.search("login", 1).unwrap()[0].id, login.id);
     }
 
     #[test]
