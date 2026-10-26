@@ -87,7 +87,7 @@ mcp_http = true        # MCP at /mcp
 
 | | |
 | --- | --- |
-| Program | 4.4 MB, SQLite included |
+| Program | 4.1 MB, SQLite included |
 | Memory | 4.5 MB idle, 11 MB with 3,000 tasks |
 | Start | 2 ms |
 | Board of 3,000 tasks | 17 ms to load in the browser |

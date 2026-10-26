@@ -11,11 +11,12 @@ readme = "README.md"
 keywords = ["kanban", "mcp", "agents", "todo", "board"]
 categories = ["command-line-utilities"]
 # Only what builds Kanzo: the README's screenshots and the repo's GitHub files stay out.
-exclude = ["/docs", "/.github", "/dist-workspace.toml", "/rustfmt.toml"]
+exclude = ["/docs", "/.github", "/.cargo", "/dist-workspace.toml", "/rustfmt.toml"]
 
 [dependencies]
 anyhow = "1.0.104"
-axum = "0.8.9"
+# Only the parts Kanzo uses: forms, logging and the other extractors stay out.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
 rmcp = { version = "=3.7.0", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
@@ -25,7 +26,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt", "macros", "net", "signal", "io-util", "time"] }
 tokio-util = "0.7.20"
-toml = "1.1.8"
+# Kanzo reads config.toml and never writes TOML.
+toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
