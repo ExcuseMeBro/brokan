@@ -241,7 +241,7 @@ function renderNav() {
       el("span", { class: "count" }, String(count)));
   $("#nav").replaceChildren(
     link("all", "All projects", open),
-    projects.length ? el("div", { class: "label" }, "Projects") : null,
+    ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
     ...projects.map((p) => link(p.slug, p.name, p.open, projectColor(p.slug))),
   );
 }
@@ -264,7 +264,7 @@ function renderHeader() {
   header.replaceChildren(
     el("h1", {}, p.name),
     el("span", { class: "sub mono" }, p.slug),
-    p.repo ? el("span", { class: "sub" }, el("a", { href: `https://github.com/${p.repo}`, target: "_blank", rel: "noopener" }, p.repo)) : null,
+    ...(p.repo ? [el("span", { class: "sub" }, el("a", { href: `https://github.com/${p.repo}`, target: "_blank", rel: "noopener" }, p.repo))] : []),
   );
 }
 
