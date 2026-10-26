@@ -66,6 +66,7 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.1-1.3-.3-2.5-1-3.5.3-1.2.3-2.4 0-3.5 0 0-1 0-3 1.5a12 12 0 0 0-8 0C6 2 5 2 5 2c-.3 1.2-.3 2.4 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.4.5-.7 1-.8 1.7-.2.6-.3 1.2-.2 1.8v4"/><path d="M9 18c-4.5 2-5-2-7-2"/>',
   sync: '<path d="M12 13v8"/><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="m8 17 4-4 4 4"/>',
   collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
@@ -460,15 +461,19 @@ function renderHeader() {
   const { projects, tasks } = state.board;
   const header = $("#header");
   if (!projects.length) { header.replaceChildren(); return; }
+  // Plain words for what each piece is: how much is open, and the repos on GitHub.
+  const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
   if (!p) {
+    const count = projects.reduce((n, p) => n + p.open, 0);
     header.replaceChildren(el("h1", {}, "All projects"),
-      el("span", { class: "sub" }, `${projects.reduce((n, p) => n + p.total, 0)} tasks across ${projects.length} projects`));
+      el("span", { class: "sub" }, `${open(count)} in ${projects.length} project${projects.length === 1 ? "" : "s"}`));
     return;
   }
   header.replaceChildren(
     el("h1", {}, p.name),
-    el("span", { class: "sub mono" }, p.slug),
-    ...p.repos.map((r) => el("span", { class: "sub" }, el("a", { href: `https://github.com/${r}`, target: "_blank", rel: "noopener" }, r))),
+    el("span", { class: "sub" }, open(p.open)),
+    ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
+                                    title: `Open ${r} on GitHub` }, icon("github"), r)),
   );
 }
 

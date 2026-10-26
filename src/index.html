@@ -142,8 +142,12 @@ header {
 header .info { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; flex: 1; min-width: 0; }
 header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
 header .sub { color: var(--muted); }
-header .sub a { color: inherit; text-decoration: none; }
-header .sub a:hover { color: var(--text); }
+header .repo-link {
+  display: inline-flex; align-items: center; gap: 6px; align-self: center; padding: 3px 10px 3px 8px;
+  border-radius: 99px; background: var(--hover); color: var(--muted); font-size: 12.5px; text-decoration: none;
+}
+header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
+header .repo-link .icon svg { width: 14px; height: 14px; }
 .columns {
   flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr);
   gap: 12px; padding: 0 24px 24px; overflow-x: auto;
