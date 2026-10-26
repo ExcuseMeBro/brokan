@@ -1,0 +1,31 @@
+name: Bug report
+description: Something in Kanzo does not work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. kanzo --home /tmp/k
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Kanzo version
+      description: The output of `kanzo --version`.
+      placeholder: kanzo 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: System, and browser or agent
+      placeholder: macOS 26, Safari; or Raspberry Pi OS, Claude Code
