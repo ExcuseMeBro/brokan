@@ -88,7 +88,7 @@ impl Ctx {
         let msg = match (self.repos.first(), known.is_empty()) {
             (Some(repo), false) => format!(
                 "No project is linked to {repo} (the git remote of {cwd}). Pass `project` (one of: {known}), \
-                 or link this repo by calling create_project with repo \"{repo}\"."
+                 link this repo to one with link_repo, or create a project for it with create_project and repo \"{repo}\"."
             ),
             (Some(repo), true) => format!(
                 "No project is linked to {repo} (the git remote of {cwd}), and there are no projects yet. \
@@ -208,6 +208,14 @@ struct AddCommentArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct LinkRepoArgs {
+    /// Project slug.
+    project: String,
+    /// GitHub repo as owner/repo.
+    repo: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct NextTaskArgs {
     /// Project slug, or "all" for any project. Defaults to the project of the current repo.
     project: Option<String>,
@@ -253,12 +261,13 @@ impl Kanzo {
                 if projects.is_empty() {
                     return Ok("No projects yet. Create one with create_project.".into());
                 }
-                let here = projects.iter().find(|p| p.repo.as_ref().is_some_and(|r| ctx.repos.contains(r)));
+                let here = projects.iter().find(|p| p.repos.iter().any(|r| ctx.repos.contains(r)));
                 Ok(projects
                     .iter()
                     .map(|p| {
                         let name = if p.name == p.slug { String::new() } else { format!(" \"{}\"", p.name) };
-                        let repo = p.repo.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
+                        let repo =
+                            if p.repos.is_empty() { String::new() } else { format!(" ({})", p.repos.join(", ")) };
                         let mark = if here.is_some_and(|h| h.id == p.id) { " <- current repo" } else { "" };
                         format!("{}{name}{repo}: {} open of {}{mark}", p.slug, p.open, p.total)
                     })
@@ -276,8 +285,18 @@ impl Kanzo {
         Ok(self
             .run(move |_, store| {
                 let p = store.create_project(&args.slug, args.name.as_deref().unwrap_or(""), args.repo.as_deref())?;
-                let repo = p.repo.as_deref().map(|r| format!(", linked to {r}")).unwrap_or_default();
+                let repo = p.repos.first().map(|r| format!(", linked to {r}")).unwrap_or_default();
                 Ok(format!("Created project {} ({}){repo}.", p.slug, p.name))
+            })
+            .await)
+    }
+
+    #[tool(description = "Link another GitHub repo to a project, so agents working in it find the project.")]
+    async fn link_repo(&self, Parameters(args): Parameters<LinkRepoArgs>) -> Result<CallToolResult, ErrorData> {
+        Ok(self
+            .run(move |_, store| {
+                let p = store.link_repo(&args.project, &args.repo)?;
+                Ok(format!("Project {} is linked to {}.", p.slug, p.repos.join(", ")))
             })
             .await)
     }

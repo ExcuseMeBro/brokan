@@ -97,7 +97,8 @@ fn collect(store: &Store, only: Option<&str>) -> Result<Board> {
 fn markdown(board: &Board) -> String {
     let mut md = format!("# Kanzo board\n\nExported {}.\n", short_time(&board.exported_at));
     for p in &board.projects {
-        let repo = p.project.repo.as_deref().map(|r| format!(" ([{r}](https://github.com/{r}))")).unwrap_or_default();
+        let links: Vec<String> = p.project.repos.iter().map(|r| format!("[{r}](https://github.com/{r})")).collect();
+        let repo = if links.is_empty() { String::new() } else { format!(" ({})", links.join(", ")) };
         let _ = write!(
             md,
             "\n## {} `{}`{repo}\n\n{} open of {} {}.\n",

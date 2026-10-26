@@ -19,6 +19,17 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE projects ADD COLUMN color TEXT;",
     // 3: a task's tags, comma-separated (see `clean_tags`).
     "ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '';",
+    // 4: any number of repos per project. Each repo belongs to one project. The old
+    // projects.repo column stays, empty: SQLite can only drop it by rebuilding the table.
+    "CREATE TABLE project_repos (
+         repo       TEXT PRIMARY KEY,
+         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE
+     );
+     CREATE INDEX project_repos_by_project ON project_repos(project_id);
+     INSERT INTO project_repos (repo, project_id) SELECT repo, id FROM projects WHERE repo IS NOT NULL;
+     UPDATE projects SET repo = NULL;
+     CREATE TRIGGER project_repos_insert AFTER INSERT ON project_repos BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER project_repos_delete AFTER DELETE ON project_repos BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
@@ -66,7 +77,8 @@ pub struct Project {
     pub id: i64,
     pub slug: String,
     pub name: String,
-    pub repo: Option<String>,
+    /// Linked GitHub repos as `owner/repo`, in the order they were linked.
+    pub repos: Vec<String>,
     /// One of `PROJECT_COLORS`, or `None` when never picked.
     pub color: Option<String>,
     pub created_at: String,
@@ -225,7 +237,9 @@ impl Store {
 
     // Projects
 
-    const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.repo, p.color, p.created_at,
+    const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name,
+            (SELECT group_concat(repo, ',' ORDER BY r.rowid) FROM project_repos r WHERE r.project_id = p.id),
+            p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id)
         FROM projects p";
@@ -235,7 +249,7 @@ impl Store {
             id: r.get(0)?,
             slug: r.get(1)?,
             name: r.get(2)?,
-            repo: r.get(3)?,
+            repos: r.get::<_, Option<String>>(3)?.map(|s| s.split(',').map(String::from).collect()).unwrap_or_default(),
             color: r.get(4)?,
             created_at: r.get(5)?,
             open: r.get(6)?,
@@ -261,7 +275,7 @@ impl Store {
 
     pub fn project_by_repo(&self, repo: &str) -> Result<Option<Project>> {
         match repo_from_url(repo) {
-            Some(repo) => self.project_where("p.repo = ?2", &repo),
+            Some(repo) => self.project_where("p.id = (SELECT project_id FROM project_repos WHERE repo = ?2)", &repo),
             None => Ok(None),
         }
     }
@@ -296,31 +310,72 @@ impl Store {
             "" => slug.clone(),
             n => n.to_string(),
         };
-        let repo = match repo.map(str::trim).filter(|r| !r.is_empty()) {
-            None => None,
-            Some(r) => Some(
-                repo_from_url(r).ok_or_else(|| Error::Invalid(format!("repo {r:?} should look like owner/repo")))?,
-            ),
-        };
+        let repo = repo.map(str::trim).filter(|r| !r.is_empty()).map(clean_repo).transpose()?;
         if self.project_by_slug(&slug)?.is_some() {
             return Err(Error::Invalid(format!("project {slug} already exists")));
         }
-        if let Some(r) = &repo
-            && let Some(other) = self.project_by_repo(r)?
-        {
-            return Err(Error::Invalid(format!("repo {r} is already linked to project {}", other.slug)));
+        if let Some(r) = &repo {
+            self.check_repo_free(r)?;
         }
+        let created = self.write(|c| {
+            c.execute("INSERT INTO projects (slug, name) VALUES (?1, ?2)", params![slug, name])?;
+            if let Some(r) = &repo {
+                c.execute(
+                    "INSERT INTO project_repos (repo, project_id) VALUES (?1, ?2)",
+                    params![r, c.last_insert_rowid()],
+                )?;
+            }
+            Ok(())
+        });
+        match created {
+            // Someone created the same project or linked the repo between our checks and the insert.
+            Err(Error::Db(rusqlite::Error::SqliteFailure(e, _)))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(Error::Invalid(format!("project {slug} or its repo already exists")))
+            }
+            other => other,
+        }?;
+        self.find_project(&slug)
+    }
+
+    /// Links another repo to a project. Each repo belongs to one project.
+    pub fn link_repo(&self, slug: &str, repo: &str) -> Result<Project> {
+        let project = self.find_project(slug)?;
+        let repo = clean_repo(repo)?;
+        if project.repos.contains(&repo) {
+            return Ok(project);
+        }
+        self.check_repo_free(&repo)?;
         match self
             .conn
-            .execute("INSERT INTO projects (slug, name, repo) VALUES (?1, ?2, ?3)", params![slug, name, repo])
+            .execute("INSERT INTO project_repos (repo, project_id) VALUES (?1, ?2)", params![repo, project.id])
         {
-            // Someone created the same project between our check and the insert.
             Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {
-                return Err(Error::Invalid(format!("project {slug} or its repo already exists")));
+                return Err(Error::Invalid(format!("repo {repo} is already linked to another project")));
             }
             other => other?,
         };
-        self.find_project(&slug)
+        self.find_project(&project.slug)
+    }
+
+    pub fn unlink_repo(&self, slug: &str, repo: &str) -> Result<Project> {
+        let project = self.find_project(slug)?;
+        let repo = repo_from_url(repo).unwrap_or_else(|| repo.trim().to_ascii_lowercase());
+        let removed = self
+            .conn
+            .execute("DELETE FROM project_repos WHERE repo = ?1 AND project_id = ?2", params![repo, project.id])?;
+        if removed == 0 {
+            return Err(Error::NotFound(format!("repo {repo} is not linked to project {}", project.slug)));
+        }
+        self.find_project(&project.slug)
+    }
+
+    fn check_repo_free(&self, repo: &str) -> Result<()> {
+        match self.project_by_repo(repo)? {
+            Some(other) => Err(Error::Invalid(format!("repo {repo} is already linked to project {}", other.slug))),
+            None => Ok(()),
+        }
     }
 
     pub fn set_project_color(&self, slug: &str, color: &str) -> Result<Project> {
@@ -635,6 +690,10 @@ pub fn clean_tags(input: &str) -> Vec<String> {
     tags
 }
 
+fn clean_repo(repo: &str) -> Result<String> {
+    repo_from_url(repo).ok_or_else(|| Error::Invalid(format!("repo {:?} should look like owner/repo", repo.trim())))
+}
+
 fn clean_title(title: &str) -> Result<String> {
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
@@ -710,7 +769,7 @@ mod tests {
     fn projects() {
         let (_dir, s) = store();
         let p = s.create_project("API", "API server", Some("https://github.com/Me/Api.git")).unwrap();
-        assert_eq!((p.slug.as_str(), p.repo.as_deref()), ("api", Some("me/api")));
+        assert_eq!((p.slug.as_str(), p.repos.as_slice()), ("api", ["me/api".to_string()].as_slice()));
         assert_eq!(s.find_project("me/api").unwrap().id, p.id);
         assert_eq!(s.project_by_repo("git@github.com:me/api.git").unwrap().unwrap().id, p.id);
         assert!(s.create_project("api", "", None).unwrap_err().to_string().contains("already exists"));
@@ -721,6 +780,49 @@ mod tests {
         assert_eq!(s.set_project_color("web", "teal").unwrap().color.as_deref(), Some("teal"));
         assert!(s.set_project_color("web", "#ff0000").is_err());
         assert!(s.find_project("nope").unwrap_err().to_string().contains("api, web"));
+    }
+
+    #[test]
+    fn many_repos_per_project() {
+        let (_dir, s) = store();
+        let api = s.create_project("api", "", Some("me/api")).unwrap();
+        s.create_project("web", "", None).unwrap();
+        assert_eq!(s.link_repo("api", "https://github.com/Me/API-docs.git").unwrap().repos, ["me/api", "me/api-docs"]);
+        assert_eq!(s.find_project("me/api-docs").unwrap().id, api.id);
+        assert_eq!(s.link_repo("api", "me/api").unwrap().repos.len(), 2, "linking twice changes nothing");
+        assert!(s.link_repo("web", "me/api-docs").unwrap_err().to_string().contains("already linked to project api"));
+        assert!(s.link_repo("api", "not a repo").is_err());
+        assert_eq!(s.unlink_repo("api", "me/api").unwrap().repos, ["me/api-docs"]);
+        assert!(s.project_by_repo("me/api").unwrap().is_none());
+        assert!(s.unlink_repo("api", "me/api").is_err());
+        // A deleted project frees its repos.
+        s.delete_project("api").unwrap();
+        assert_eq!(s.link_repo("web", "me/api-docs").unwrap().repos, ["me/api-docs"]);
+    }
+
+    #[test]
+    fn migration_moves_repos_to_their_own_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanzo.db");
+        {
+            // A board at schema version 3, from before projects could have several repos.
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..3] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO meta VALUES ('schema_version', '3');
+                 INSERT INTO projects (slug, name, repo) VALUES ('api', 'api', 'me/api'), ('web', 'web', NULL);",
+            )
+            .unwrap();
+        }
+        let statuses = ["todo", "doing", "review", "done"].map(String::from).to_vec();
+        let s = Store::open(&path, statuses, None).unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.find_project("api").unwrap().repos, ["me/api"]);
+        assert!(s.find_project("web").unwrap().repos.is_empty());
+        assert_eq!(s.find_project("me/api").unwrap().slug, "api");
     }
 
     #[test]

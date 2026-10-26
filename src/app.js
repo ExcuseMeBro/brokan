@@ -311,10 +311,28 @@ function toggleProjectMenu(p, button) {
       current ? icon("check") : null);
   }));
   drawSwatches();
+  // Linked repos, each with an unlink button, and a field to link another.
+  const repos = el("div", { class: "repos" });
+  const drawRepos = (list, focus) => {
+    const input = el("input", { class: "field", placeholder: "Link a repo: owner/repo", "aria-label": "Link a GitHub repo",
+                                autocomplete: "off", spellcheck: "false" });
+    input.addEventListener("keydown", async (e) => {
+      if (e.key !== "Enter" || !input.value.trim()) return;
+      const q = await changeRepo(p.slug, "POST", input.value);
+      if (q) drawRepos(q.repos, true);
+    });
+    repos.replaceChildren(...list.map((r) => el("div", { class: "repo" }, el("span", { class: "name" }, r),
+      el("button", { class: "unlink", title: `Unlink ${r}`, "aria-label": `Unlink ${r}`,
+                     onclick: async () => { const q = await changeRepo(p.slug, "DELETE", r); if (q) drawRepos(q.repos); } },
+        icon("close")))), input);
+    if (focus) input.focus();
+  };
+  drawRepos(p.repos);
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), "Delete project");
   const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
-    el("div", { class: "label" }, "Color"), swatches, el("div", { class: "sep" }), remove);
+    el("div", { class: "label" }, "Color"), swatches, el("div", { class: "label" }, "Repos"), repos,
+    el("div", { class: "sep" }), remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
@@ -322,6 +340,15 @@ function toggleProjectMenu(p, button) {
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   // Focus the menu itself, so Tab reaches its buttons without one looking selected.
   menu.focus();
+}
+
+// Links (POST) or unlinks (DELETE) a repo; returns the project, or null after showing the error.
+async function changeRepo(slug, method, repo) {
+  try {
+    const p = await api(method, `/projects/${encodeURIComponent(slug)}/repos`, { repo });
+    loadBoard();
+    return p;
+  } catch (err) { toast(err.message); return null; }
 }
 
 async function pickColor(slug, color) {
@@ -369,7 +396,7 @@ function renderHeader() {
   header.replaceChildren(
     el("h1", {}, p.name),
     el("span", { class: "sub mono" }, p.slug),
-    ...(p.repo ? [el("span", { class: "sub" }, el("a", { href: `https://github.com/${p.repo}`, target: "_blank", rel: "noopener" }, p.repo))] : []),
+    ...p.repos.map((r) => el("span", { class: "sub" }, el("a", { href: `https://github.com/${r}`, target: "_blank", rel: "noopener" }, r))),
   );
 }
 

@@ -43,7 +43,7 @@ codex mcp add kanzo -- kanzo mcp                 # Codex
 
 Other MCP clients: run `kanzo mcp` (apps like Raycast need the full path, from `which kanzo`), or use the running board at `http://localhost:4242/mcp`.
 
-Then ask: *"take the next task from kanzo and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in.
+Then ask: *"take the next task from kanzo and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.jpg">

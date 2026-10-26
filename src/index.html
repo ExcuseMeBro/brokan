@@ -87,6 +87,13 @@ aside {
 .menu .swatch:hover, .menu .swatch:focus-visible { transform: scale(1.15); }
 .menu .swatch .icon svg { width: 13px; height: 13px; stroke-width: 3; }
 .menu .sep { height: 1px; background: var(--border); margin: 0 4px 6px; }
+.menu .repos { display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 10px; }
+.menu .repo { display: flex; align-items: center; gap: 6px; padding: 2px 0 2px 4px; }
+.menu .repo .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.menu .repo .unlink { width: auto; padding: 4px; color: var(--faint); }
+.menu .repo .unlink:hover { color: var(--danger); background: var(--danger-bg); }
+.menu .repo .unlink .icon svg { width: 14px; height: 14px; }
+.menu .repos input { margin-top: 4px; padding: 6px 10px; border-radius: 10px; font-size: 13px; }
 .menu button.danger:hover, .menu button.danger:focus-visible { background: var(--danger-bg); }
 form.new-project { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 10px; }
 form.new-project .row { display: flex; gap: 6px; margin-top: 2px; }

@@ -123,6 +123,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/board", get(board))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
+        .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
         .route("/api/tasks/{id}/move", post(move_task))
@@ -305,6 +306,19 @@ struct ProjectPatch {
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
     with_store(home, move |_, s| s.set_project_color(&slug, &p.color)).await
+}
+
+#[derive(Deserialize)]
+struct RepoLink {
+    repo: String,
+}
+
+async fn link_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Json<RepoLink>) -> Response {
+    with_store(home, move |_, s| s.link_repo(&slug, &r.repo)).await
+}
+
+async fn unlink_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Json<RepoLink>) -> Response {
+    with_store(home, move |_, s| s.unlink_repo(&slug, &r.repo)).await
 }
 
 async fn delete_project(State(home): Shared, Path(slug): Path<String>) -> Response {
