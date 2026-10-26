@@ -25,12 +25,14 @@ const DONE_LISTED: usize = 20;
 const INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
 Tasks are written project#id, like api#12. When you leave out `project`, Kanzo uses the project \
 linked to the GitHub repo of the folder you are working in. A good loop: next_task to pick up work, \
-add_comment to report what you did, then update_task to move it to review.";
+add_comment to report what you did, then update_task to move it to review. Tag tasks when it helps, like \
+bug or ui: create_task and update_task take `tags`.";
 
 const HTTP_INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
 Tasks are written project#id, like api#12. Over HTTP Kanzo cannot see which folder you work in, so \
 pass `project` (see list_projects). A good loop: next_task to pick up work, add_comment to report \
-what you did, then update_task to move it to review.";
+what you did, then update_task to move it to review. Tag tasks when it helps, like \
+bug or ui: create_task and update_task take `tags`.";
 
 /// `kanzo mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
