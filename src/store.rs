@@ -30,6 +30,17 @@ const MIGRATIONS: &[&str] = &[
      UPDATE projects SET repo = NULL;
      CREATE TRIGGER project_repos_insert AFTER INSERT ON project_repos BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
      CREATE TRIGGER project_repos_delete AFTER DELETE ON project_repos BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
+    // 5: images attached to a task, or to one of its comments; the files are in images/.
+    "CREATE TABLE images (
+         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+         task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+         comment_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+         file       TEXT NOT NULL,
+         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+     );
+     CREATE INDEX images_by_task ON images(task_id);
+     CREATE TRIGGER images_insert AFTER INSERT ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER images_delete AFTER DELETE ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
@@ -116,6 +127,16 @@ pub struct Comment {
     pub author: String,
     pub body: String,
     pub created_at: String,
+}
+
+/// An image attached to a task, or to one of its comments.
+#[derive(Debug, Clone, Serialize)]
+pub struct Image {
+    pub id: i64,
+    pub task_id: i64,
+    pub comment_id: Option<i64>,
+    /// Its file name in the data folder's `images/`, like `6fec521a01297ab5.png`.
+    pub file: String,
 }
 
 /// Fields of a task to change; `None` leaves a field as it is.
@@ -630,21 +651,36 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn add_comment(&self, task_id: i64, author: &str, body: &str) -> Result<Comment> {
+    /// Adds a comment, with the images (files already in `images/`) attached to it.
+    /// A comment needs text, an image, or both.
+    pub fn add_comment(&self, task_id: i64, author: &str, body: &str, images: &[String]) -> Result<Comment> {
         let body = body.trim();
-        if body.is_empty() {
+        if body.is_empty() && images.is_empty() {
             return Err(Error::Invalid("comment body is empty".into()));
+        }
+        if let Some(bad) = images.iter().find(|f| !valid_image_file(f)) {
+            return Err(Error::Invalid(format!("{bad:?} is not an image Kanzo saved")));
         }
         let author = match author.trim() {
             "" => "me",
             a => a,
         };
         self.get_task(task_id)?;
-        self.conn.execute(
-            "INSERT INTO comments (task_id, author, body) VALUES (?1, ?2, ?3)",
-            params![task_id, author, body],
-        )?;
-        self.get_comment(self.conn.last_insert_rowid())
+        let id = self.write(|c| {
+            c.execute(
+                "INSERT INTO comments (task_id, author, body) VALUES (?1, ?2, ?3)",
+                params![task_id, author, body],
+            )?;
+            let id = c.last_insert_rowid();
+            for file in images {
+                c.execute(
+                    "INSERT INTO images (task_id, comment_id, file) VALUES (?1, ?2, ?3)",
+                    params![task_id, id, file],
+                )?;
+            }
+            Ok(id)
+        })?;
+        self.get_comment(id)
     }
 
     fn get_comment(&self, id: i64) -> Result<Comment> {
@@ -667,6 +703,89 @@ impl Store {
         let comment = self.get_comment(id)?;
         self.conn.execute("DELETE FROM comments WHERE id = ?1", [id])?;
         Ok(comment)
+    }
+
+    // Images
+
+    /// Attaches an image, already saved in `images/`, to a task.
+    pub fn add_image(&self, task_id: i64, file: &str) -> Result<Image> {
+        if !valid_image_file(file) {
+            return Err(Error::Invalid(format!("{file:?} is not an image Kanzo saved")));
+        }
+        self.get_task(task_id)?;
+        self.conn.execute("INSERT INTO images (task_id, file) VALUES (?1, ?2)", params![task_id, file])?;
+        Ok(Image { id: self.conn.last_insert_rowid(), task_id, comment_id: None, file: file.into() })
+    }
+
+    /// The images of a task and of its comments, oldest first.
+    pub fn list_images(&self, task_id: i64) -> Result<Vec<Image>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT id, task_id, comment_id, file FROM images WHERE task_id = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([task_id], |r| {
+            Ok(Image { id: r.get(0)?, task_id: r.get(1)?, comment_id: r.get(2)?, file: r.get(3)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Removes an image from its task or comment; returns it as it was.
+    pub fn delete_image(&self, id: i64) -> Result<Image> {
+        let image = self
+            .conn
+            .query_row("SELECT id, task_id, comment_id, file FROM images WHERE id = ?1", [id], |r| {
+                Ok(Image { id: r.get(0)?, task_id: r.get(1)?, comment_id: r.get(2)?, file: r.get(3)? })
+            })
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("no image {id}")))?;
+        self.conn.execute("DELETE FROM images WHERE id = ?1", [id])?;
+        Ok(image)
+    }
+
+    /// The image files attached to one image, comment, task (with its comments) or project.
+    pub fn image_files(&self, of: ImagesOf) -> Result<Vec<String>> {
+        let (sql, id) = match of {
+            ImagesOf::Image(id) => ("SELECT file FROM images WHERE id = ?1", id),
+            ImagesOf::Comment(id) => ("SELECT DISTINCT file FROM images WHERE comment_id = ?1", id),
+            ImagesOf::Task(id) => ("SELECT DISTINCT file FROM images WHERE task_id = ?1", id),
+            ImagesOf::Project(id) => {
+                ("SELECT DISTINCT i.file FROM images i JOIN tasks t ON t.id = i.task_id WHERE t.project_id = ?1", id)
+            }
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let rows = stmt.query_map([id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Of `files`, those no task or comment uses any more.
+    pub fn unused_images(&self, files: Vec<String>) -> Result<Vec<String>> {
+        let mut used = self.conn.prepare_cached("SELECT EXISTS (SELECT 1 FROM images WHERE file = ?1)")?;
+        let mut unused = Vec::new();
+        for file in files {
+            if !used.query_row([&file], |r| r.get::<_, bool>(0))? {
+                unused.push(file);
+            }
+        }
+        Ok(unused)
+    }
+}
+
+/// Whose images `Store::image_files` lists.
+pub enum ImagesOf {
+    Image(i64),
+    Comment(i64),
+    Task(i64),
+    Project(i64),
+}
+
+/// The name Kanzo gives a saved image: 16 hex digits and its type, like `6fec521a01297ab5.png`.
+pub fn valid_image_file(file: &str) -> bool {
+    match file.split_once('.') {
+        Some((hash, ext)) => {
+            hash.len() == 16
+                && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                && ["png", "jpg", "gif", "webp"].contains(&ext)
+        }
+        None => false,
     }
 }
 
@@ -801,6 +920,36 @@ mod tests {
     }
 
     #[test]
+    fn images() {
+        let (_dir, s) = store();
+        let p = s.create_project("api", "", None).unwrap();
+        let t = s.create_task(p.id, "Bug", "").unwrap();
+        let shot = "0123456789abcdef.png".to_string();
+        let on_task = s.add_image(t.id, &shot).unwrap();
+        assert!(s.add_image(t.id, "../../etc/passwd").is_err());
+        assert!(s.add_image(t.id + 1, &shot).is_err());
+        // A comment can be only images.
+        let c = s.add_comment(t.id, "me", "", &["fedcba9876543210.jpg".into(), shot.clone()]).unwrap();
+        assert!(s.add_comment(t.id, "me", "x", &["evil.svg".into()]).is_err());
+        let all: Vec<_> = s.list_images(t.id).unwrap().into_iter().map(|i| (i.comment_id, i.file)).collect();
+        assert_eq!(
+            all,
+            [(None, shot.clone()), (Some(c.id), "fedcba9876543210.jpg".into()), (Some(c.id), shot.clone())]
+        );
+        assert_eq!(s.image_files(ImagesOf::Task(t.id)).unwrap(), [shot.clone(), "fedcba9876543210.jpg".into()]);
+        assert_eq!(s.image_files(ImagesOf::Project(p.id)).unwrap().len(), 2);
+        // The same file twice: removing one attachment leaves it in use.
+        s.delete_image(on_task.id).unwrap();
+        assert!(s.unused_images(vec![shot.clone()]).unwrap().is_empty());
+        let files = s.image_files(ImagesOf::Comment(c.id)).unwrap();
+        s.delete_comment(c.id).unwrap();
+        assert!(s.list_images(t.id).unwrap().is_empty());
+        assert_eq!(s.unused_images(files).unwrap(), ["fedcba9876543210.jpg".to_string(), shot.clone()]);
+        assert!(valid_image_file("6fec521a01297ab5.webp"));
+        assert!(!valid_image_file("6FEC521A01297AB5.png") && !valid_image_file("6fec521a01297ab5.svg"));
+    }
+
+    #[test]
     fn migration_moves_repos_to_their_own_table() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("kanzo.db");
@@ -848,11 +997,11 @@ mod tests {
         assert_eq!((moved.key(), moved.status.as_str()), (format!("web#{}", t.id), "review"));
         let t = s.update_task(t.id, TaskPatch { project_id: Some(p.id), ..Default::default() }).unwrap();
 
-        s.add_comment(t.id, "claude-code", "Done, see PR").unwrap();
-        s.add_comment(t.id, "", "thanks").unwrap();
+        s.add_comment(t.id, "claude-code", "Done, see PR", &[]).unwrap();
+        s.add_comment(t.id, "", "thanks", &[]).unwrap();
         let comments = s.list_comments(t.id).unwrap();
         assert_eq!(comments.iter().map(|c| c.author.as_str()).collect::<Vec<_>>(), ["claude-code", "me"]);
-        assert!(s.add_comment(t.id, "me", " ").is_err());
+        assert!(s.add_comment(t.id, "me", " ", &[]).is_err());
         assert_eq!(s.get_task(t.id).unwrap().comments, 2);
         let tagged =
             s.update_task(t.id, TaskPatch { tags: Some(" Bug, UI,bug ,, needs  review".into()), ..Default::default() });
@@ -860,7 +1009,7 @@ mod tests {
         assert!(
             s.update_task(t.id, TaskPatch { tags: Some(" , ".into()), ..Default::default() }).unwrap().tags.is_empty()
         );
-        let gone = s.add_comment(t.id, "me", "typo").unwrap();
+        let gone = s.add_comment(t.id, "me", "typo", &[]).unwrap();
         assert_eq!(s.delete_comment(gone.id).unwrap().body, "typo");
         assert!(s.delete_comment(gone.id).is_err());
         assert_eq!(s.get_task(t.id).unwrap().comments, 2);
@@ -881,9 +1030,9 @@ mod tests {
         let api = s.create_project("api", "", Some("me/api")).unwrap();
         let web = s.create_project("web", "", None).unwrap();
         let t = s.create_task(api.id, "a", "").unwrap();
-        s.add_comment(t.id, "me", "hi").unwrap();
+        s.add_comment(t.id, "me", "hi", &[]).unwrap();
         let kept = s.create_task(web.id, "b", "").unwrap();
-        s.add_comment(kept.id, "me", "hello").unwrap();
+        s.add_comment(kept.id, "me", "hello", &[]).unwrap();
 
         assert_eq!(s.delete_project("api").unwrap().id, api.id);
         assert!(s.find_project("api").is_err());
@@ -948,7 +1097,7 @@ mod tests {
         let c1 = s.changes().unwrap();
         let t = s.create_task(p.id, "x", "").unwrap();
         let c2 = s.changes().unwrap();
-        s.add_comment(t.id, "me", "hi").unwrap();
+        s.add_comment(t.id, "me", "hi", &[]).unwrap();
         let c3 = s.changes().unwrap();
         assert!(c0 < c1 && c1 < c2 && c2 < c3);
     }

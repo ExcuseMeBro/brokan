@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::store::{self, Store};
+use crate::store::{self, ImagesOf, Store};
 
 pub const DEFAULT_PORT: u16 = 4242;
 
@@ -163,6 +163,22 @@ impl Home {
             }
         };
         Store::open(&self.db_path(), self.config.statuses.clone(), lock)
+    }
+
+    /// Runs `delete`, then deletes the image files of `of` that nothing uses any more:
+    /// the same image can be attached in several places, and is stored once.
+    pub fn deleting_images<T>(
+        &self,
+        store: &Store,
+        of: ImagesOf,
+        delete: impl FnOnce() -> store::Result<T>,
+    ) -> store::Result<T> {
+        let files = store.image_files(of)?;
+        let deleted = delete()?;
+        for file in store.unused_images(files)? {
+            let _ = fs::remove_file(self.dir.join("images").join(file));
+        }
+        Ok(deleted)
     }
 
     /// Blocks until no connection is open, and keeps new ones out until the file is dropped.

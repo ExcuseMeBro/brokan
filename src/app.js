@@ -623,7 +623,8 @@ async function openTask(id) {
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
   $("#p-comment").value = "";
-  $("#p-send").disabled = true;
+  pending = [];
+  renderPending();
   fit($("#p-comment"));
   updateHash();
   await refreshTask();
@@ -660,7 +661,7 @@ async function refreshTask() {
   }
   // Another task may have taken the panel meanwhile.
   if (state.task !== id) return;
-  const { task, comments } = data;
+  const { task, comments, images } = data;
   panelTask = task;
   $("#p-key").textContent = key(task);
   // Never overwrite what is being typed or picked.
@@ -676,14 +677,20 @@ async function refreshTask() {
   $("#p-created").replaceChildren(timeEl(task.created_at));
   $("#p-updated").replaceChildren(timeEl(task.updated_at));
   $("#p-comment-count").textContent = comments.length ? String(comments.length) : "";
+  $("#p-images").replaceChildren(...images.filter((i) => i.comment_id === null).map((i) =>
+    thumb(i.file, async () => {
+      try { await api("DELETE", `/images/${i.id}`); refreshTask(); } catch (err) { toast(err.message); }
+    })));
   $("#p-comments").replaceChildren(...comments.map((c) => {
     const body = el("div", { class: "md" });
     body.innerHTML = markdown(c.body);
+    const attached = images.filter((i) => i.comment_id === c.id);
     return el("div", { class: "comment" },
       el("div", { class: "who" }, el("b", {}, c.author), " · ", timeEl(c.created_at),
         el("button", { class: "remove", title: "Delete comment", "aria-label": "Delete comment",
                        onclick: () => deleteComment(c) }, icon("trash"))),
-      body);
+      c.body ? body : null,
+      attached.length ? el("div", { class: "thumbs" }, attached.map((i) => thumb(i.file))) : null);
   }));
 }
 
@@ -764,33 +771,78 @@ $("#p-desc").addEventListener("blur", (e) => {
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 
-// Pasting an image saves it in the data folder and types its path, the way a terminal
-// does, so agents can open it. Text pastes are left alone.
-async function pasteImages(e) {
-  const data = e.clipboardData;
-  const fromItems = data && data.items ? [...data.items].filter((i) => i.kind === "file").map((i) => i.getAsFile()) : [];
-  const images = (fromItems.length ? fromItems : [...((data && data.files) || [])]).filter((f) => f && f.type.startsWith("image/"));
-  if (!images.length) return;
-  e.preventDefault();
-  const field = e.target;
+// ---------- images ----------
+
+// Pasting or dropping an image attaches it, as in ChatGPT: to the task from the title or
+// the description, to the comment being written from the comment box. Text is left alone.
+let pending = []; // images waiting in the comment box, by file name
+
+function imagesIn(transfer) {
+  if (!transfer) return [];
+  const fromItems = transfer.items ? [...transfer.items].filter((i) => i.kind === "file").map((i) => i.getAsFile()) : [];
+  return (fromItems.length ? fromItems : [...(transfer.files || [])]).filter((f) => f && f.type.startsWith("image/"));
+}
+
+async function uploadImage(image) {
+  const res = await fetch("/api/images", { method: "POST", headers: { "Content-Type": image.type }, body: image });
+  const reply = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(reply.error || res.statusText);
+  return reply.file;
+}
+
+async function attachImages(images, toComment) {
+  if (!panelTask) return;
+  const task = panelTask.id;
   try {
-    const paths = [];
     for (const image of images) {
-      const res = await fetch("/api/images", { method: "POST", headers: { "Content-Type": image.type }, body: image });
-      const reply = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(reply.error || res.statusText);
-      paths.push(reply.path);
+      const file = await uploadImage(image);
+      if (toComment) {
+        pending.push(file);
+        renderPending();
+      } else {
+        await api("POST", `/tasks/${task}/images`, { file });
+        if (fresh === task) fresh = null;
+      }
     }
-    field.focus();
-    // Keep the path apart from the words around it.
-    const { value, selectionStart: start, selectionEnd: end } = field;
-    const before = start > 0 && !/\s/.test(value[start - 1]) ? " " : "";
-    const after = end < value.length && !/\s/.test(value[end]) ? " " : "";
-    field.setRangeText(before + paths.join(" ") + after, start, end, "end");
-    field.dispatchEvent(new Event("input"));
+    if (!toComment) refreshTask();
   } catch (err) { toast(err.message); }
 }
-for (const field of [$("#p-title"), $("#p-desc"), $("#p-comment")]) field.addEventListener("paste", pasteImages);
+
+// A thumbnail that opens the full image; with `onRemove`, an × to take it off.
+function thumb(file, onRemove) {
+  return el("div", { class: "thumb" },
+    el("a", { href: `/images/${file}`, target: "_blank", rel: "noopener" }, el("img", { src: `/images/${file}`, alt: "Attached image" })),
+    onRemove ? el("button", { type: "button", class: "remove-image", title: "Remove image", "aria-label": "Remove image", onclick: onRemove }, icon("close")) : null);
+}
+
+function renderPending() {
+  $("#p-pending").replaceChildren(...pending.map((file, i) => thumb(file, () => { pending.splice(i, 1); renderPending(); })));
+  $("#p-send").disabled = !$("#p-comment").value.trim() && !pending.length;
+}
+
+for (const field of [$("#p-title"), $("#p-desc"), $("#p-comment")]) {
+  field.addEventListener("paste", (e) => {
+    const images = imagesIn(e.clipboardData);
+    if (!images.length) return;
+    e.preventDefault();
+    attachImages(images, field.id === "p-comment");
+  });
+}
+for (const [zone, toComment] of [[$("#p-desc").closest(".section"), false], [$("#p-comment-form"), true]]) {
+  zone.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+    e.preventDefault();
+    zone.classList.add("dropping");
+  });
+  zone.addEventListener("dragleave", (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("dropping"); });
+  zone.addEventListener("drop", (e) => {
+    zone.classList.remove("dropping");
+    const images = imagesIn(e.dataTransfer);
+    if (!images.length) return;
+    e.preventDefault();
+    attachImages(images, toComment);
+  });
+}
 
 // Tags are typed comma-separated and tidied the way the server stores them.
 const cleanTags = (text) => [...new Set(text.split(",").map((t) => t.trim().replace(/\s+/g, " ").toLowerCase()).filter(Boolean))];
@@ -808,19 +860,20 @@ $("#p-tags").addEventListener("blur", (e) => {
 $("#p-comment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = $("#p-comment").value.trim();
-  if (!body || !panelTask) return;
+  if ((!body && !pending.length) || !panelTask) return;
   try {
-    await api("POST", `/tasks/${panelTask.id}/comments`, { body });
+    await api("POST", `/tasks/${panelTask.id}/comments`, { body, images: pending });
     if (fresh === panelTask.id) fresh = null;
     $("#p-comment").value = "";
-    $("#p-send").disabled = true;
+    pending = [];
+    renderPending();
     fit($("#p-comment"));
     await refreshTask();
     loadBoard();
   } catch (err) { toast(err.message); }
 });
 // The send button is live only once there is something to send.
-$("#p-comment").addEventListener("input", (e) => { $("#p-send").disabled = !e.target.value.trim(); fit(e.target); });
+$("#p-comment").addEventListener("input", (e) => { $("#p-send").disabled = !e.target.value.trim() && !pending.length; fit(e.target); });
 $("#p-comment").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("#p-comment-form").requestSubmit(); }
 });

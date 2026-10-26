@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
-use crate::store::{self, Error, Store, TaskPatch};
+use crate::store::{self, Error, ImagesOf, Store, TaskPatch};
 use crate::update;
 
 const INDEX: &str = include_str!("index.html");
@@ -122,6 +122,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
     app.route("/", get(|| async { Html(INDEX) }))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
+        .route("/images/{file}", get(image_file))
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
@@ -134,6 +135,8 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/{id}/comments", post(add_comment))
         .route("/api/comments/{id}", delete(delete_comment))
         .route("/api/images", post(save_image).layer(DefaultBodyLimit::max(IMAGE_LIMIT)))
+        .route("/api/images/{id}", delete(delete_image))
+        .route("/api/tasks/{id}/images", post(attach_image))
         .route("/api/update", get(update_status).post(update_now))
         .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
@@ -328,7 +331,11 @@ async fn unlink_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Jso
 }
 
 async fn delete_project(State(home): Shared, Path(slug): Path<String>) -> Response {
-    with_store(home, move |_, s| s.delete_project(&slug)).await
+    with_store(home, move |h, s| {
+        let project = s.find_project(&slug)?;
+        h.deleting_images(s, ImagesOf::Project(project.id), || s.delete_project(&slug))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -351,7 +358,8 @@ async fn get_task(State(home): Shared, Path(id): Path<i64>) -> Response {
     with_store(home, move |_, s| {
         let task = s.get_task(id)?;
         let comments = s.list_comments(id)?;
-        Ok(json!({ "task": task, "comments": comments }))
+        let images = s.list_images(id)?;
+        Ok(json!({ "task": task, "comments": comments, "images": images }))
     })
     .await
 }
@@ -387,25 +395,84 @@ async fn move_task(State(home): Shared, Path(id): Path<i64>, Json(m): Json<Move>
 }
 
 async fn delete_task(State(home): Shared, Path(id): Path<i64>) -> Response {
-    with_store(home, move |_, s| s.delete_task(id)).await
+    with_store(home, move |h, s| h.deleting_images(s, ImagesOf::Task(id), || s.delete_task(id))).await
 }
 
 #[derive(Deserialize)]
 struct NewComment {
+    #[serde(default)]
     body: String,
+    /// Files saved by `/api/images`, attached to the comment.
+    #[serde(default)]
+    images: Vec<String>,
 }
 
 async fn add_comment(State(home): Shared, Path(id): Path<i64>, Json(c): Json<NewComment>) -> Response {
-    with_store(home, move |_, s| s.add_comment(id, "me", &c.body)).await
+    with_store(home, move |h, s| {
+        for file in &c.images {
+            image_saved(h, file)?;
+        }
+        s.add_comment(id, "me", &c.body, &c.images)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct Attach {
+    file: String,
+}
+
+async fn attach_image(State(home): Shared, Path(id): Path<i64>, Json(a): Json<Attach>) -> Response {
+    with_store(home, move |h, s| {
+        image_saved(h, &a.file)?;
+        s.add_image(id, &a.file)
+    })
+    .await
+}
+
+/// Removes an image from its task or comment, and its file once nothing uses it.
+async fn delete_image(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |h, s| h.deleting_images(s, ImagesOf::Image(id), || s.delete_image(id))).await
+}
+
+/// Fails unless `file` is an image saved by `/api/images`.
+fn image_saved(home: &Home, file: &str) -> store::Result<()> {
+    if store::valid_image_file(file) && home.dir.join("images").join(file).is_file() {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!("no saved image {file:?}; paste it again")))
+    }
+}
+
+/// An attached image. Its name is its content's hash, so it never changes and can be cached for good.
+async fn image_file(State(home): Shared, Path(file): Path<String>) -> Response {
+    let mime = match file.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("png") => "image/png",
+        Some("jpg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if !store::valid_image_file(&file) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let path = home.dir.join("images").join(&file);
+    match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(Ok(bytes)) => {
+            ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], bytes)
+                .into_response()
+        }
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn delete_comment(State(home): Shared, Path(id): Path<i64>) -> Response {
-    with_store(home, move |_, s| s.delete_comment(id)).await
+    with_store(home, move |h, s| h.deleting_images(s, ImagesOf::Comment(id), || s.delete_comment(id))).await
 }
 
-/// Saves a pasted image in the data folder and answers with its path, which the board
-/// puts in the text the way a terminal does, so agents can open the image. Files are
-/// named by their content: the same image pasted twice is stored once.
+/// Saves a pasted or dropped image in the data folder's `images/` and answers with its
+/// file name and path; the board then attaches it to a task or a comment. Files are
+/// named by their content, so the same image saved twice is stored once.
 async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Response {
     let ext = match headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
         Some("image/png") => "png",
@@ -437,7 +504,10 @@ async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Res
     })
     .await;
     match saved {
-        Ok(Ok(path)) => Json(json!({ "path": path.display().to_string() })).into_response(),
+        Ok(Ok(path)) => {
+            let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            Json(json!({ "file": file, "path": path.display().to_string() })).into_response()
+        }
         Ok(Err(e)) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("cannot save the image: {e}") })))
                 .into_response()

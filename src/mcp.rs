@@ -17,7 +17,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
-use crate::store::{self, Comment, Error, Project, Store, Task, TaskPatch};
+use crate::store::{self, Error, Project, Store, Task, TaskPatch};
 
 /// The most done tasks list_tasks shows, newest first: an old board has thousands.
 const DONE_LISTED: usize = 20;
@@ -348,13 +348,12 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Show a task with its description and comments.")]
+    #[tool(description = "Show a task with its description, comments and the paths of its images.")]
     async fn get_task(&self, Parameters(args): Parameters<TaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
-            .run(move |_, store| {
+            .run(move |ctx, store| {
                 let task = args.id.find(store)?;
-                let comments = store.list_comments(task.id)?;
-                Ok(task_detail(&task, &comments))
+                task_detail(ctx, store, &task)
             })
             .await)
     }
@@ -410,7 +409,7 @@ impl Kanzo {
         Ok(self
             .run(move |_, store| {
                 let task = args.id.find(store)?;
-                store.add_comment(task.id, &author, &args.body)?;
+                store.add_comment(task.id, &author, &args.body, &[])?;
                 Ok(format!("Comment added to {} as {author}.", task.key()))
             })
             .await)
@@ -425,10 +424,7 @@ impl Kanzo {
                 let all = args.project.as_deref().is_some_and(|p| p.trim().eq_ignore_ascii_case("all"));
                 let project = if all { None } else { Some(ctx.project(store, args.project.as_deref())?) };
                 match store.next_task(project.as_ref().map(|p| p.id))? {
-                    Some(task) => {
-                        let comments = store.list_comments(task.id)?;
-                        Ok(format!("Moved to {}:\n{}", task.status, task_detail(&task, &comments)))
-                    }
+                    Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
                         Ok(format!("Nothing in {} for {scope}.", store.statuses()[0]))
@@ -438,12 +434,12 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Delete a task and its comments. This cannot be undone.")]
+    #[tool(description = "Delete a task with its comments and images. This cannot be undone.")]
     async fn delete_task(&self, Parameters(args): Parameters<TaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
-            .run(move |_, store| {
+            .run(move |ctx, store| {
                 let task = args.id.find(store)?;
-                store.delete_task(task.id)?;
+                ctx.home.deleting_images(store, store::ImagesOf::Task(task.id), || store.delete_task(task.id))?;
                 let comments = match task.comments {
                     0 => String::new(),
                     1 => " and its comment".into(),
@@ -488,7 +484,14 @@ fn tag_list(t: &Task) -> String {
     if t.tags.is_empty() { String::new() } else { format!(" {{{}}}", t.tags.join(", ")) }
 }
 
-fn task_detail(t: &Task, comments: &[Comment]) -> String {
+/// A task in full: description, comments, and the paths of its images, which agents can open.
+fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
+    let comments = store.list_comments(t.id)?;
+    let images = store.list_images(t.id)?;
+    let dir = ctx.home.dir.join("images");
+    let paths = |comment: Option<i64>| -> Vec<String> {
+        images.iter().filter(|i| i.comment_id == comment).map(|i| dir.join(&i.file).display().to_string()).collect()
+    };
     let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
     // The update time only when it says something the creation time does not.
     let updated = if updated == created { String::new() } else { format!(", updated {updated}") };
@@ -498,11 +501,21 @@ fn task_detail(t: &Task, comments: &[Comment]) -> String {
         out.push_str(&t.description);
         out.push('\n');
     }
+    let own = paths(None);
+    if !own.is_empty() {
+        out.push_str(&format!("\nImages: {}\n", own.join(", ")));
+    }
     if !comments.is_empty() {
         out.push_str(&format!("\nComments ({}):\n", comments.len()));
-        for c in comments {
-            out.push_str(&format!("- {}, {}: {}\n", c.author, short_time(&c.created_at), c.body));
+        for c in &comments {
+            let attached = paths(Some(c.id));
+            let mut text = c.body.clone();
+            if !attached.is_empty() {
+                let sep = if text.is_empty() { "" } else { " " };
+                text.push_str(&format!("{sep}[images: {}]", attached.join(", ")));
+            }
+            out.push_str(&format!("- {}, {}: {text}\n", c.author, short_time(&c.created_at)));
         }
     }
-    out.trim_end().to_string()
+    Ok(out.trim_end().to_string())
 }

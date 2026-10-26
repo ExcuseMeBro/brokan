@@ -37,6 +37,8 @@ struct TaskOut {
     title: String,
     description: String,
     tags: Vec<String>,
+    /// Paths of the images attached to the task and its comments.
+    images: Vec<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -44,13 +46,14 @@ struct TaskOut {
 }
 
 impl TaskOut {
-    fn new(task: Task, comments: Vec<Comment>) -> Self {
+    fn new(task: Task, comments: Vec<Comment>, images: Vec<String>) -> Self {
         Self {
             key: task.key(),
             id: task.id,
             title: task.title,
             description: task.description,
             tags: task.tags,
+            images,
             status: task.status,
             created_at: task.created_at,
             updated_at: task.updated_at,
@@ -61,7 +64,7 @@ impl TaskOut {
 
 pub fn export(home: &Home, format: Format, project: Option<&str>, output: Option<&Path>) -> Result<()> {
     let store = home.store()?;
-    let board = collect(&store, project)?;
+    let board = collect(&store, project, &home.dir.join("images"))?;
     let text = match format {
         Format::Json => serde_json::to_string_pretty(&board)? + "\n",
         Format::Markdown => markdown(&board),
@@ -77,7 +80,7 @@ pub fn export(home: &Home, format: Format, project: Option<&str>, output: Option
     Ok(())
 }
 
-fn collect(store: &Store, only: Option<&str>) -> Result<Board> {
+fn collect(store: &Store, only: Option<&str>, images: &Path) -> Result<Board> {
     let projects = match only {
         Some(slug) => vec![store.find_project(slug)?],
         None => store.list_projects()?,
@@ -87,7 +90,8 @@ fn collect(store: &Store, only: Option<&str>) -> Result<Board> {
         let mut tasks = Vec::new();
         for task in store.list_tasks(Some(project.id), None)? {
             let comments = store.list_comments(task.id)?;
-            tasks.push(TaskOut::new(task, comments));
+            let paths = store.list_images(task.id)?.into_iter().map(|i| images.join(i.file).display().to_string());
+            tasks.push(TaskOut::new(task, comments, paths.collect()));
         }
         out.push(ProjectOut { project, tasks });
     }
@@ -133,6 +137,9 @@ fn markdown(board: &Board) -> String {
                 if !t.tags.is_empty() {
                     let _ = writeln!(md, "Tags: {}.", t.tags.join(", "));
                 }
+                if !t.images.is_empty() {
+                    let _ = writeln!(md, "Images: {}.", t.images.join(", "));
+                }
                 if !t.description.is_empty() {
                     let _ = write!(md, "\n{}\n", t.description);
                 }
@@ -162,11 +169,11 @@ mod tests {
         let api = store.create_project("api", "API", Some("me/api")).unwrap();
         store.create_project("web", "Web", None).unwrap();
         let t = store.create_task(api.id, "Fix login", "Steps:\n1. log in").unwrap();
-        store.add_comment(t.id, "claude-code", "Found it\nin auth.rs").unwrap();
+        store.add_comment(t.id, "claude-code", "Found it\nin auth.rs", &[]).unwrap();
         let done = store.create_task(api.id, "Old work", "").unwrap();
         store.move_task(done.id, "done", None).unwrap();
 
-        let board = collect(&store, None).unwrap();
+        let board = collect(&store, None, Path::new("/k/images")).unwrap();
         let md = markdown(&board);
         assert!(md.contains("## API `api` ([me/api](https://github.com/me/api))"), "{md}");
         assert!(md.contains("### todo\n\n#### api#1 Fix login"), "{md}");
@@ -181,8 +188,8 @@ mod tests {
         assert_eq!(json["projects"][0]["tasks"][0]["key"], "api#1");
         assert_eq!(json["projects"][0]["tasks"][0]["comments"][0]["author"], "claude-code");
 
-        let only = collect(&store, Some("web")).unwrap();
+        let only = collect(&store, Some("web"), Path::new("/k/images")).unwrap();
         assert_eq!(only.projects.len(), 1);
-        assert!(collect(&store, Some("nope")).is_err());
+        assert!(collect(&store, Some("nope"), Path::new("/k/images")).is_err());
     }
 }

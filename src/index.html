@@ -235,6 +235,24 @@ header .sub a:hover { color: var(--text); }
 .comment .remove .icon svg { width: 14px; height: 14px; }
 @media (hover: none) { .comment .remove { visibility: visible; } }
 .comment .who b { color: var(--text); font-weight: 600; }
+/* Attached images: thumbnails that open the full image, with an × to remove. */
+.thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.thumbs:empty { display: none; }
+#p-images { margin-top: 10px; }
+.composer .thumbs { padding: 12px 12px 0; }
+.comment .thumbs { margin-top: 6px; }
+.thumb { position: relative; width: 72px; height: 72px; border-radius: 12px; overflow: hidden; background: var(--field); flex: none; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .remove-image {
+  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; padding: 4px; border: 0; border-radius: 50%;
+  background: rgba(0,0,0,.65); color: #fff; display: none;
+}
+.thumb:hover .remove-image, .thumb .remove-image:focus-visible { display: grid; place-items: center; }
+.thumb .remove-image .icon svg { width: 14px; height: 14px; }
+@media (hover: none) { .thumb .remove-image { display: grid; place-items: center; } }
+.section.dropping { background: var(--hover); border-radius: 12px; }
+.composer.dropping { background: var(--active); }
+
 /* The comment box, with its send button inside like a chat composer. */
 .composer { position: relative; margin-top: 6px; background: var(--field); border-radius: 20px; }
 .composer textarea {
@@ -334,11 +352,13 @@ header .sub a:hover { color: var(--text); }
     <div class="section">
       <h3>Description</h3>
       <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>
+      <div class="thumbs" id="p-images"></div>
     </div>
     <div class="section">
       <h3>Comments <span class="count" id="p-comment-count"></span></h3>
       <div id="p-comments"></div>
       <form class="composer" id="p-comment-form">
+        <div class="thumbs" id="p-pending"></div>
         <textarea id="p-comment" rows="2" placeholder="Add a comment"></textarea>
         <button class="send" id="p-send" type="submit" title="Send (⌘↵)" aria-label="Send comment" disabled><span class="icon" data-icon="send"></span></button>
       </form>
