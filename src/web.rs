@@ -291,6 +291,7 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
             "projects": s.list_projects()?,
             "tasks": tasks,
             "done_hidden": done_hidden,
+            "version": update::CURRENT,
             "changes": change_token(h, s)?,
         }))
     })
@@ -539,11 +540,19 @@ async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Res
     }
 }
 
-/// This version, and a newer released one if there is.
-async fn update_status() -> Response {
-    let latest = tokio::task::spawn_blocking(update::latest).await.ok().flatten();
-    let available = latest.filter(|v| update::newer(v));
-    Json(json!({ "current": update::CURRENT, "available": available })).into_response()
+#[derive(Deserialize)]
+struct UpdateQuery {
+    /// Present to check GitHub now rather than reuse today's answer.
+    now: Option<String>,
+}
+
+/// This version, the latest release (`null` when GitHub can't be reached) and, when
+/// that one is newer, `available`.
+async fn update_status(Query(q): Query<UpdateQuery>) -> Response {
+    let now = q.now.is_some();
+    let latest = tokio::task::spawn_blocking(move || update::latest(now)).await.ok().flatten();
+    let available = latest.clone().filter(|v| update::newer(v));
+    Json(json!({ "current": update::CURRENT, "latest": latest, "available": available })).into_response()
 }
 
 /// Installs the latest release over this program, answers, then starts it in place.

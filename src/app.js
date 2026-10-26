@@ -283,6 +283,7 @@ function setProject(slug) {
 }
 
 function render() {
+  if (!$("#version").disabled) $("#version").textContent = `v${state.board.version}`;
   renderNav();
   renderHeader();
   renderColumns();
@@ -1067,23 +1068,51 @@ schedulePoll();
 
 // ---------- update ----------
 
-// When a newer release is out, the sidebar offers it. The server checks at most every
-// few hours, installs it over itself and restarts; the page reloads once it is back.
+// Kanzo checks GitHub for a newer release once a day and offers it at the bottom of the
+// sidebar; clicking the version there asks right away. Installing replaces the running board
+// and restarts it, and the page reloads once it's back.
 async function checkUpdate() {
   try {
-    const { current, available } = await api("GET", "/update");
-    const button = $("#update");
-    button.hidden = !available;
-    if (!available) return;
-    $("#update-label").textContent = `Update to ${available}`;
-    button.title = `You have ${current}`;
-    button.onclick = () => installUpdate(current, available);
+    showUpdate(await api("GET", "/update"));
   } catch {}
 }
 
-async function installUpdate(current, available) {
-  if (!confirm(`Update Kanzo from ${current} to ${available}? The board restarts, which takes a few seconds.`)) return;
+function showUpdate({ current, available }) {
   const button = $("#update");
+  button.hidden = !available;
+  if (!available) return;
+  $("#update-label").textContent = `Update to ${available}`;
+  button.title = `You have ${current}`;
+  button.onclick = () => {
+    if (confirm(`Update Kanzo from ${current} to ${available}? The board restarts, which takes a few seconds.`)) installUpdate(available);
+  };
+}
+
+// The version at the bottom of the sidebar checks for updates when clicked.
+$("#version").addEventListener("click", async () => {
+  const button = $("#version");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    const status = await api("GET", "/update?now=1");
+    showUpdate(status);
+    if (status.available) {
+      if (confirm(`Kanzo ${status.available} is out (you have ${status.current}). Download and install it now? The board restarts.`)) {
+        installUpdate(status.available);
+      }
+    } else if (status.latest) {
+      toast(`Kanzo is up to date (${status.current})`);
+    } else {
+      toast("Can't reach GitHub to check for updates");
+    }
+  } catch (err) { toast(err.message); }
+  button.disabled = false;
+  button.textContent = state.board ? `v${state.board.version}` : "";
+});
+
+async function installUpdate(available) {
+  const button = $("#update");
+  button.hidden = false;
   button.disabled = true;
   $("#update-label").textContent = "Updating…";
   try {
@@ -1103,7 +1132,7 @@ async function installUpdate(current, available) {
 }
 
 checkUpdate();
-setInterval(checkUpdate, 6 * 60 * 60 * 1000);
+setInterval(checkUpdate, 24 * 60 * 60 * 1000);
 
 // Relative times ("5m ago") drift; refresh them now and then.
 setInterval(() => {

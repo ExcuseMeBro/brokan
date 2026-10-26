@@ -14,8 +14,8 @@ pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// Where releases are published; `KANZO_RELEASES_URL` points elsewhere, for tests.
 const RELEASES: &str = "https://github.com/emanuele-em/kanzo/releases/latest/download";
 
-/// How long a check for the latest version is reused.
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// How long a check for the latest version is reused: the board checks once a day.
+const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 static LATEST: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 
@@ -28,11 +28,12 @@ fn curl(url: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-/// The latest released version, checked at most every few hours; `None` when it
-/// can't be found, like offline.
-pub fn latest() -> Option<String> {
+/// The latest released version, checked at most once a day unless `now`; `None` when
+/// it can't be found, like offline.
+pub fn latest(now: bool) -> Option<String> {
     let mut cached = LATEST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, version)) = &*cached
+        && !now
         && at.elapsed() < CHECK_EVERY
     {
         return version.clone();

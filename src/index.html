@@ -102,6 +102,10 @@ aside {
 .update { margin-top: 8px; background: var(--hover); }
 .update:hover, .update:focus-visible { background: var(--active); }
 .update:disabled { opacity: .6; cursor: default; }
+.about { display: flex; align-items: center; gap: 8px; padding: 10px 10px 0; color: var(--faint); font-size: 12px; }
+.about .ghost { width: auto; margin-left: -6px; padding: 2px 6px; font-size: 12px; color: var(--faint); }
+.about .ghost:hover, .about .ghost:focus-visible { color: var(--text); }
+.about .ghost:disabled { cursor: default; }
 form.new-project { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 10px; }
 form.new-project .row { display: flex; gap: 6px; margin-top: 2px; }
 
@@ -329,7 +333,7 @@ header .sub a:hover { color: var(--text); }
   .nav { flex-direction: row; overflow-x: auto; }
   .nav a { width: auto; }
   .nav .label { display: none; }
-  #new-project-toggle, form.new-project { display: none; }
+  #new-project-toggle, form.new-project, .about { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
   header { padding: 12px; }
 }
@@ -354,6 +358,9 @@ header .sub a:hover { color: var(--text); }
   </form>
   <nav class="nav" id="nav"></nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
+  <div class="about">
+    <button class="ghost" id="version" title="Check for updates"></button>
+  </div>
 </aside>
 
 <main>
