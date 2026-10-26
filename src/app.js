@@ -336,6 +336,11 @@ function closeMenu() {
 document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".menu, .nav .more")) closeMenu();
 });
+// A click outside the task panel closes it. Cards are left to open their own task,
+// and the project menu to do its job.
+document.addEventListener("mousedown", (e) => {
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu")) closeTask();
+});
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
 $("#nav").addEventListener("scroll", closeMenu);
