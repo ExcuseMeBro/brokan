@@ -1,6 +1,7 @@
 //! The board as MCP tools: over stdio for `kanzo mcp`, and over HTTP at `/mcp` of the board.
 //! Replies are short plain text to save agents' tokens.
 
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
-use crate::store::{self, Error, Project, Store, Task, TaskPatch};
+use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
 
 /// The most done tasks list_tasks shows, newest first: an old board has thousands.
 const DONE_LISTED: usize = 20;
@@ -50,8 +51,10 @@ pub async fn serve(home: Home) -> Result<()> {
 pub fn http_service(home: Home, shutdown: CancellationToken) -> StreamableHttpService<Kanzo, LocalSessionManager> {
     let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new() });
     let config = StreamableHttpServerConfig::default().disable_allowed_hosts().with_cancellation_token(shutdown);
+    // rmcp makes a server per session, and for some requests; the tool list is built once.
+    let tool_router = Kanzo::tools();
     StreamableHttpService::new(
-        move || Ok(Kanzo { ctx: ctx.clone(), tool_router: Kanzo::tools() }),
+        move || Ok(Kanzo { ctx: ctx.clone(), tool_router: tool_router.clone() }),
         Default::default(),
         config,
     )
@@ -264,17 +267,23 @@ impl Kanzo {
                     return Ok("No projects yet. Create one with create_project.".into());
                 }
                 let here = projects.iter().find(|p| p.repos.iter().any(|r| ctx.repos.contains(r)));
-                Ok(projects
-                    .iter()
-                    .map(|p| {
-                        let name = if p.name == p.slug { String::new() } else { format!(" \"{}\"", p.name) };
-                        let repo =
-                            if p.repos.is_empty() { String::new() } else { format!(" ({})", p.repos.join(", ")) };
-                        let mark = if here.is_some_and(|h| h.id == p.id) { " <- current repo" } else { "" };
-                        format!("{}{name}{repo}: {} open of {}{mark}", p.slug, p.open, p.total)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"))
+                let mut out = String::new();
+                for p in &projects {
+                    out.push_str(&p.slug);
+                    if p.name != p.slug {
+                        let _ = write!(out, " \"{}\"", p.name);
+                    }
+                    if !p.repos.is_empty() {
+                        let _ = write!(out, " ({})", p.repos.join(", "));
+                    }
+                    let _ = write!(out, ": {} open of {}", p.open, p.total);
+                    if here.is_some_and(|h| h.id == p.id) {
+                        out.push_str(" <- current repo");
+                    }
+                    out.push('\n');
+                }
+                out.pop();
+                Ok(out)
             })
             .await)
     }
@@ -310,51 +319,48 @@ impl Kanzo {
                 let all = args.project.as_deref().is_some_and(|p| p.trim().eq_ignore_ascii_case("all"));
                 let project = if all { None } else { Some(ctx.project(store, args.project.as_deref())?) };
                 let status = args.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
-                let mut tasks = match status {
-                    Some("all") => store.list_tasks(project.as_ref().map(|p| p.id), None)?,
+                let only = match status {
+                    Some("all") | None => None,
+                    Some(s) if store.statuses().iter().any(|x| x == s) => Some(s),
                     Some(s) => {
-                        if !store.statuses().iter().any(|x| x == s) {
-                            return Err(Error::Invalid(format!(
-                                "unknown status {s:?}; use one of: {}, or all",
-                                store.statuses().join(", ")
-                            )));
-                        }
-                        store.list_tasks(project.as_ref().map(|p| p.id), Some(s))?
+                        return Err(Error::Invalid(format!(
+                            "unknown status {s:?}; use one of: {}, or all",
+                            store.statuses().join(", ")
+                        )));
                     }
-                    None => store.list_tasks(project.as_ref().map(|p| p.id), None)?,
                 };
-                let done = store.statuses().last().cloned().unwrap_or_default();
                 // Done tasks only pile up: without a status leave them out, with one keep
-                // the newest. They run oldest to newest, so drop from the front.
+                // the newest.
                 let keep = if status.is_none() { 0 } else { DONE_LISTED };
-                let mut hidden = tasks.iter().filter(|t| t.status == done).count().saturating_sub(keep);
-                let total_hidden = hidden;
-                tasks.retain(|t| {
-                    let old = hidden > 0 && t.status == done;
-                    hidden -= usize::from(old);
-                    !old
-                });
-                let hidden = total_hidden;
+                let (tasks, hidden) =
+                    store.list_tasks_keeping_done(project.as_ref().map(|p| p.id), only, Some(keep))?;
+                let done = store.statuses().last().map_or("", String::as_str);
+                let mut out = String::new();
                 // Tasks for a person are left out: agents leave them alone.
-                let people = tasks.iter().filter(|t| t.human).count();
-                tasks.retain(|t| !t.human);
-                let scope = project.as_ref().map_or("any project".to_string(), |p| p.slug.clone());
-                let mut out: Vec<String> = tasks.iter().map(task_line).collect();
+                let mut people = 0;
+                for t in &tasks {
+                    if t.human {
+                        people += 1;
+                    } else {
+                        task_line(&mut out, t);
+                        out.push('\n');
+                    }
+                }
                 if out.is_empty() {
-                    out.push(format!("No tasks in {scope}."));
+                    let scope = project.as_ref().map_or("any project", |p| p.slug.as_str());
+                    let _ = writeln!(out, "No tasks in {scope}.");
                 }
                 if people > 0 {
-                    out.push(format!(
-                        "({people} human {} not shown: for the user, not for agents)",
-                        plural(people, "task")
-                    ));
+                    let tasks = if people == 1 { "task" } else { "tasks" };
+                    let _ = writeln!(out, "({people} human {tasks} not shown: for the user, not for agents)");
                 }
                 if hidden > 0 && status.is_none() {
-                    out.push(format!("({hidden} {done} not shown; pass status \"{done}\" or \"all\")"));
+                    let _ = writeln!(out, "({hidden} {done} not shown; pass status \"{done}\" or \"all\")");
                 } else if hidden > 0 {
-                    out.push(format!("({hidden} older {done} not shown)"));
+                    let _ = writeln!(out, "({hidden} older {done} not shown)");
                 }
-                Ok(out.join("\n"))
+                out.pop();
+                Ok(out)
             })
             .await)
     }
@@ -474,30 +480,24 @@ impl ServerHandler for Kanzo {
     }
 }
 
-/// `2026-10-25T09:30:00Z` -> `2026-10-25 09:30 UTC`.
-pub(crate) fn short_time(ts: &str) -> String {
-    match (ts.get(..10), ts.get(11..16)) {
-        (Some(d), Some(t)) => format!("{d} {t} UTC"),
-        _ => ts.to_string(),
+/// `api#12 [todo] Fix login {bug} (2 comments)`.
+fn task_line(out: &mut String, t: &Task) {
+    let _ = write!(out, "{}#{} [{}] {}", t.project, t.id, t.status, t.title);
+    write_tags(out, t);
+    match t.comments {
+        0 => {}
+        1 => out.push_str(" (1 comment)"),
+        n => {
+            let _ = write!(out, " ({n} comments)");
+        }
     }
 }
 
-fn task_line(t: &Task) -> String {
-    let comments = match t.comments {
-        0 => String::new(),
-        1 => " (1 comment)".into(),
-        n => format!(" ({n} comments)"),
-    };
-    format!("{} [{}] {}{}{comments}", t.key(), t.status, t.title, tag_list(t))
-}
-
-fn plural(n: usize, word: &str) -> String {
-    if n == 1 { word.to_string() } else { format!("{word}s") }
-}
-
 /// ` {bug, ui}`, or nothing without tags.
-fn tag_list(t: &Task) -> String {
-    if t.tags.is_empty() { String::new() } else { format!(" {{{}}}", t.tags.join(", ")) }
+fn write_tags(out: &mut String, t: &Task) {
+    if !t.tags.is_empty() {
+        let _ = write!(out, " {{{}}}", t.tags.join(", "));
+    }
 }
 
 /// A task in full: description, comments, and the paths of its images, which agents can open.
@@ -509,31 +509,37 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
         images.iter().filter(|i| i.comment_id == comment).map(|i| dir.join(&i.file).display().to_string()).collect()
     };
     let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
+    let mut out = format!("{}#{} {}", t.project, t.id, t.title);
+    write_tags(&mut out, t);
+    let _ = write!(out, "\nstatus: {}", t.status);
+    if t.human {
+        out.push_str(", human: for the user, not for agents");
+    }
+    let _ = write!(out, ", created {created}");
     // The update time only when it says something the creation time does not.
-    let updated = if updated == created { String::new() } else { format!(", updated {updated}") };
-    let human = if t.human { ", human: for the user, not for agents" } else { "" };
-    let mut out =
-        format!("{} {}{}\nstatus: {}{human}, created {created}{updated}\n", t.key(), t.title, tag_list(t), t.status);
+    if updated != created {
+        let _ = write!(out, ", updated {updated}");
+    }
+    out.push('\n');
     if !t.description.is_empty() {
-        out.push('\n');
-        out.push_str(&t.description);
-        out.push('\n');
+        let _ = writeln!(out, "\n{}", t.description);
     }
     let own = paths(None);
     if !own.is_empty() {
-        out.push_str(&format!("\nImages: {}\n", own.join(", ")));
+        let _ = writeln!(out, "\nImages: {}", own.join(", "));
     }
     if !comments.is_empty() {
-        out.push_str(&format!("\nComments ({}):\n", comments.len()));
+        let _ = writeln!(out, "\nComments ({}):", comments.len());
         for c in &comments {
+            let _ = write!(out, "- {}, {}: {}", c.author, short_time(&c.created_at), c.body);
             let attached = paths(Some(c.id));
-            let mut text = c.body.clone();
             if !attached.is_empty() {
-                let sep = if text.is_empty() { "" } else { " " };
-                text.push_str(&format!("{sep}[images: {}]", attached.join(", ")));
+                let sep = if c.body.is_empty() { "" } else { " " };
+                let _ = write!(out, "{sep}[images: {}]", attached.join(", "));
             }
-            out.push_str(&format!("- {}, {}: {text}\n", c.author, short_time(&c.created_at)));
+            out.push('\n');
         }
     }
-    Ok(out.trim_end().to_string())
+    out.truncate(out.trim_end().len());
+    Ok(out)
 }

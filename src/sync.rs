@@ -26,10 +26,11 @@ impl std::fmt::Display for Diverged {
     }
 }
 
+impl std::error::Error for Diverged {}
+
 /// The URL of the repo the board syncs with, or `None` before it's set up.
 pub fn remote_url(home: &Home) -> Option<String> {
-    let remote = remote_name(&home.dir).ok()??;
-    git(&home.dir, false, &["remote", "get-url", &remote]).ok()
+    remote(&home.dir).ok()?.map(|(_, url)| url)
 }
 
 /// Points the board at the git repo `url`, once this machine can reach it: the first
@@ -62,9 +63,10 @@ pub fn set_remote(home: &Home, url: &str, prompt: bool) -> Result<String> {
             head.lines().find_map(|l| l.strip_prefix("ref: refs/heads/")?.split('\t').next()).unwrap_or("main");
         git(dir, prompt, &["init", "--quiet", "--initial-branch", branch])?;
     }
-    if remote_url(home).as_deref() != Some(url.as_str()) {
+    let current = remote(dir)?;
+    if current.as_ref().map(|(_, u)| u.as_str()) != Some(url.as_str()) {
         // Removing the old remote forgets its branches, so the next sync starts afresh.
-        if let Some(old) = remote_name(dir)? {
+        if let Some((old, _)) = current {
             git(dir, prompt, &["remote", "remove", &old])?;
         }
         git(dir, prompt, &["remote", "add", "origin", &url])?;
@@ -104,16 +106,28 @@ fn candidates(url: &str) -> Vec<String> {
     vec![format!("git@github.com:{repo}.git"), format!("https://github.com/{repo}.git")]
 }
 
-/// The remote the board syncs with: `origin`, or the only one there is.
-fn remote_name(dir: &Path) -> Result<Option<String>> {
+/// The remote the board syncs with, `origin` or the only one there is, and its URL;
+/// `None` before sync is set up. One `git remote -v` gives both.
+fn remote(dir: &Path) -> Result<Option<(String, String)>> {
     if !dir.join(".git").exists() {
         return Ok(None);
     }
-    let remotes = git(dir, false, &["remote"])?;
-    Ok(remotes.lines().find(|r| *r == "origin").or_else(|| remotes.lines().next()).map(String::from))
+    let out = git(dir, false, &["remote", "-v"])?;
+    let mut found = None;
+    for line in out.lines() {
+        let Some((name, url)) = line.split_once('\t').and_then(|(n, rest)| Some((n, rest.strip_suffix(" (fetch)")?)))
+        else {
+            continue;
+        };
+        if name == "origin" || found.is_none() {
+            found = Some((name.to_string(), url.to_string()));
+        }
+        if name == "origin" {
+            break;
+        }
+    }
+    Ok(found)
 }
-
-impl std::error::Error for Diverged {}
 
 /// Commits the board, then pulls or pushes it, and says what it did. With `prompt`
 /// false, as from the board's button, git never waits for a password; a missing
@@ -122,7 +136,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     let dir = &home.dir;
     let git = |args: &[&str]| git(dir, prompt, args);
     let git_ok = |args: &[&str]| git_ok(dir, prompt, args);
-    let Some(remote) = remote_name(dir)? else {
+    let Some((remote, _)) = remote(dir)? else {
         bail!(
             "Sync isn't set up yet. Create an empty private repo, on GitHub for example, then press the \
              sync button on the board and paste its URL, or run:\n  kanzo sync --repo <url>"
@@ -182,9 +196,9 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     }
 
     let counts = git(&["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])?;
-    let (ahead, behind) = match counts.split_whitespace().collect::<Vec<_>>()[..] {
-        [a, b] => (a.parse::<u32>()?, b.parse::<u32>()?),
-        _ => bail!("unexpected git output: {counts}"),
+    let mut numbers = counts.split_whitespace().map(str::parse::<u32>);
+    let (Some(Ok(ahead)), Some(Ok(behind)), None) = (numbers.next(), numbers.next(), numbers.next()) else {
+        bail!("unexpected git output: {counts}");
     };
 
     Ok(match (ahead, behind, keep) {

@@ -190,12 +190,12 @@ impl Guard {
         if port.is_some_and(|p| p.parse() != Ok(self.port)) {
             return false;
         }
-        let name = name.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
+        let name = name.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
         let ip = name.parse::<IpAddr>().ok();
-        if name == "localhost" || ip.is_some_and(|ip| ip.is_loopback()) {
+        if name.eq_ignore_ascii_case("localhost") || ip.is_some_and(|ip| ip.is_loopback()) {
             return true;
         }
-        self.lan && (ip.is_some() || self.names.contains(&name))
+        self.lan && (ip.is_some() || self.names.iter().any(|n| n.eq_ignore_ascii_case(name)))
     }
 }
 
@@ -206,7 +206,13 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
     let ok = {
         let header = |name| req.headers().get(name).and_then(|h: &HeaderValue| h.to_str().ok());
         let host = header(header::HOST).unwrap_or("");
-        guard.allows(host) && header(header::ORIGIN).is_none_or(|o| o.eq_ignore_ascii_case(&format!("http://{host}")))
+        // The Origin a page from this board sends: http:// and the same host.
+        let same_origin = |o: &str| {
+            o.len() == host.len() + 7
+                && o.as_bytes()[..7].eq_ignore_ascii_case(b"http://")
+                && o.as_bytes()[7..].eq_ignore_ascii_case(host.as_bytes())
+        };
+        guard.allows(host) && header(header::ORIGIN).is_none_or(same_origin)
     };
     let mut res = if ok {
         next.run(req).await
@@ -253,8 +259,13 @@ fn change_token(home: &Home, s: &Store) -> store::Result<String> {
     Ok(format!("{}-{}", s.changes()?, home.db_identity()))
 }
 
+#[derive(Serialize)]
+struct Changes {
+    changes: String,
+}
+
 async fn changes(State(home): Shared) -> Response {
-    with_store(home, |h, s| Ok(json!({ "changes": change_token(h, s)? }))).await
+    with_store(home, |h, s| Ok(Changes { changes: change_token(h, s)? })).await
 }
 
 /// Done tasks the board gets unless it asks for all: the newest, which are all it shows.
@@ -268,33 +279,33 @@ struct BoardQuery {
     done: Option<String>,
 }
 
+/// The whole board, serialized straight from the store's rows.
+#[derive(Serialize)]
+struct Board {
+    changes: String,
+    done_hidden: usize,
+    projects: Vec<store::Project>,
+    statuses: Vec<String>,
+    tasks: Vec<store::Task>,
+    version: &'static str,
+}
+
 async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
     with_store(home, move |h, s| {
         let project = match q.project.as_deref().filter(|p| !p.is_empty() && *p != "all") {
             Some(slug) => Some(s.find_project(slug)?),
             None => None,
         };
-        let mut tasks = s.list_tasks(project.map(|p| p.id), None)?;
-        let done = s.statuses().last().expect("config has at least two statuses");
-        let mut done_hidden = 0;
-        if q.done.as_deref() != Some("all") {
-            // Done tasks run oldest to newest; drop the oldest.
-            done_hidden = tasks.iter().filter(|t| t.status == *done).count().saturating_sub(DONE_SHOWN);
-            let mut drop = done_hidden;
-            tasks.retain(|t| {
-                let old = drop > 0 && t.status == *done;
-                drop -= usize::from(old);
-                !old
-            });
-        }
-        Ok(json!({
-            "statuses": s.statuses(),
-            "projects": s.list_projects()?,
-            "tasks": tasks,
-            "done_hidden": done_hidden,
-            "version": update::CURRENT,
-            "changes": change_token(h, s)?,
-        }))
+        let keep_done = (q.done.as_deref() != Some("all")).then_some(DONE_SHOWN);
+        let (tasks, done_hidden) = s.list_tasks_keeping_done(project.map(|p| p.id), None, keep_done)?;
+        Ok(Board {
+            changes: change_token(h, s)?,
+            done_hidden,
+            projects: s.list_projects()?,
+            statuses: s.statuses().to_vec(),
+            tasks,
+            version: update::CURRENT,
+        })
     })
     .await
 }
@@ -330,14 +341,14 @@ struct ProjectPatch {
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
     with_store(home, move |_, s| {
-        let mut project = s.find_project(&slug)?;
+        let mut project = None;
         if let Some(name) = &p.name {
-            project = s.rename_project(&slug, name)?;
+            project = Some(s.rename_project(&slug, name)?);
         }
         if let Some(color) = &p.color {
-            project = s.set_project_color(&slug, color)?;
+            project = Some(s.set_project_color(&slug, color)?);
         }
-        Ok(project)
+        project.map_or_else(|| s.find_project(&slug), Ok)
     })
     .await
 }
@@ -379,12 +390,16 @@ async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     .await
 }
 
+#[derive(Serialize)]
+struct TaskReply {
+    comments: Vec<store::Comment>,
+    images: Vec<store::Image>,
+    task: store::Task,
+}
+
 async fn get_task(State(home): Shared, Path(id): Path<i64>) -> Response {
     with_store(home, move |_, s| {
-        let task = s.get_task(id)?;
-        let comments = s.list_comments(id)?;
-        let images = s.list_images(id)?;
-        Ok(json!({ "task": task, "comments": comments, "images": images }))
+        Ok(TaskReply { comments: s.list_comments(id)?, images: s.list_images(id)?, task: s.get_task(id)? })
     })
     .await
 }

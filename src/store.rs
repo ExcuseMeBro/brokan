@@ -52,7 +52,7 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
-pub const PROJECT_COLORS: &[&str] = &["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
+const PROJECT_COLORS: &[&str] = &["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -416,7 +416,7 @@ impl Store {
 
     /// Renames a project. Its slug, and so its task keys like api#12, stay.
     pub fn rename_project(&self, slug: &str, name: &str) -> Result<Project> {
-        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name = squash(name);
         if name.is_empty() {
             return Err(Error::Invalid("project name is empty".into()));
         }
@@ -467,16 +467,45 @@ impl Store {
     /// Tasks in board order: by column as configured, then by position.
     /// Tasks whose status is no longer in the config sort last.
     pub fn list_tasks(&self, project_id: Option<i64>, status: Option<&str>) -> Result<Vec<Task>> {
+        Ok(self.list_tasks_keeping_done(project_id, status, None)?.0)
+    }
+
+    /// `list_tasks`, but of the done column, which only grows, just the newest `keep_done`
+    /// tasks, read from the database without the rest; also says how many were left out.
+    pub fn list_tasks_keeping_done(
+        &self,
+        project_id: Option<i64>,
+        status: Option<&str>,
+        keep_done: Option<usize>,
+    ) -> Result<(Vec<Task>, usize)> {
+        let done = self.done_status();
+        // SQLite reads a negative LIMIT as no limit.
+        let limit = keep_done.map_or(-1, |n| n as i64);
         let sql = format!(
-            "{} WHERE (?1 IS NULL OR t.project_id = ?1) AND (?2 IS NULL OR t.status = ?2) ORDER BY t.position",
+            "{} WHERE (?1 IS NULL OR t.project_id = ?1) AND (?2 IS NULL OR t.status = ?2)
+               AND (t.status <> ?3 OR t.id IN (SELECT id FROM tasks WHERE status = ?3
+                    AND (?1 IS NULL OR project_id = ?1) ORDER BY position DESC LIMIT ?4))
+             ORDER BY t.position",
             Self::TASK_SELECT
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let mut tasks: Vec<Task> =
-            stmt.query_map(params![project_id, status], Self::task_row)?.collect::<rusqlite::Result<_>>()?;
+        let mut tasks: Vec<Task> = stmt
+            .query_map(params![project_id, status, done, limit], Self::task_row)?
+            .collect::<rusqlite::Result<_>>()?;
         let column = |t: &Task| self.statuses.iter().position(|s| *s == t.status).unwrap_or(usize::MAX);
         tasks.sort_by_key(column);
-        Ok(tasks)
+        let hidden = match keep_done {
+            Some(keep) if status.is_none_or(|s| s == done) => {
+                let all: i64 = self.conn.query_row(
+                    "SELECT count(*) FROM tasks WHERE status = ?1 AND (?2 IS NULL OR project_id = ?2)",
+                    params![done, project_id],
+                    |r| r.get(0),
+                )?;
+                usize::try_from(all).unwrap_or(0).saturating_sub(keep)
+            }
+            _ => 0,
+        };
+        Ok((tasks, hidden))
     }
 
     /// Tasks of any project whose key, title, description, tags or project hold every
@@ -612,18 +641,19 @@ impl Store {
         self.write(|c| {
             let current = self.get_task(id)?;
             let before = before.filter(|b| *b != id);
-            let anchor: Option<f64> = match before {
+            // The task to go above, with its position, if it's in that column.
+            let anchor: Option<(i64, f64)> = match before {
                 Some(b) => c
                     .query_row("SELECT position FROM tasks WHERE id = ?1 AND status = ?2", params![b, status], |r| {
                         r.get(0)
                     })
-                    .optional()?,
+                    .optional()?
+                    .map(|p| (b, p)),
                 None => None,
             };
             let position = match anchor {
                 None => Self::end_of_column(c, status, id)?,
-                Some(mut next) => {
-                    let before = before.expect("anchor comes from before");
+                Some((before, mut next)) => {
                     let prev_of = |next: f64| -> Result<Option<f64>> {
                         Ok(c.query_row(
                             "SELECT max(position) FROM tasks WHERE status = ?1 AND position < ?2 AND id <> ?3",
@@ -659,8 +689,9 @@ impl Store {
             .prepare("SELECT id FROM tasks WHERE status = ?1 ORDER BY position")?
             .query_map([status], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
+        let mut update = c.prepare("UPDATE tasks SET position = ?1 WHERE id = ?2")?;
         for (i, id) in ids.iter().enumerate() {
-            c.execute("UPDATE tasks SET position = ?1 WHERE id = ?2", params![(i + 1) as f64, id])?;
+            update.execute(params![(i + 1) as f64, id])?;
         }
         Ok(())
     }
@@ -704,10 +735,12 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, task_id, author, body, created_at FROM comments WHERE task_id = ?1 ORDER BY id",
         )?;
-        let rows = stmt.query_map([task_id], |r| {
-            Ok(Comment { id: r.get(0)?, task_id: r.get(1)?, author: r.get(2)?, body: r.get(3)?, created_at: r.get(4)? })
-        })?;
+        let rows = stmt.query_map([task_id], Self::comment_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn comment_row(r: &Row) -> rusqlite::Result<Comment> {
+        Ok(Comment { id: r.get(0)?, task_id: r.get(1)?, author: r.get(2)?, body: r.get(3)?, created_at: r.get(4)? })
     }
 
     /// Adds a comment, with the images (files already in `images/`) attached to it.
@@ -731,11 +764,9 @@ impl Store {
                 params![task_id, author, body],
             )?;
             let id = c.last_insert_rowid();
+            let mut insert = c.prepare("INSERT INTO images (task_id, comment_id, file) VALUES (?1, ?2, ?3)")?;
             for file in images {
-                c.execute(
-                    "INSERT INTO images (task_id, comment_id, file) VALUES (?1, ?2, ?3)",
-                    params![task_id, id, file],
-                )?;
+                insert.execute(params![task_id, id, file])?;
             }
             Ok(id)
         })?;
@@ -744,15 +775,11 @@ impl Store {
 
     fn get_comment(&self, id: i64) -> Result<Comment> {
         self.conn
-            .query_row("SELECT id, task_id, author, body, created_at FROM comments WHERE id = ?1", [id], |r| {
-                Ok(Comment {
-                    id: r.get(0)?,
-                    task_id: r.get(1)?,
-                    author: r.get(2)?,
-                    body: r.get(3)?,
-                    created_at: r.get(4)?,
-                })
-            })
+            .query_row(
+                "SELECT id, task_id, author, body, created_at FROM comments WHERE id = ?1",
+                [id],
+                Self::comment_row,
+            )
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("no comment {id}")))
     }
@@ -781,19 +808,19 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare_cached("SELECT id, task_id, comment_id, file FROM images WHERE task_id = ?1 ORDER BY id")?;
-        let rows = stmt.query_map([task_id], |r| {
-            Ok(Image { id: r.get(0)?, task_id: r.get(1)?, comment_id: r.get(2)?, file: r.get(3)? })
-        })?;
+        let rows = stmt.query_map([task_id], Self::image_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn image_row(r: &Row) -> rusqlite::Result<Image> {
+        Ok(Image { id: r.get(0)?, task_id: r.get(1)?, comment_id: r.get(2)?, file: r.get(3)? })
     }
 
     /// Removes an image from its task or comment; returns it as it was.
     pub fn delete_image(&self, id: i64) -> Result<Image> {
         let image = self
             .conn
-            .query_row("SELECT id, task_id, comment_id, file FROM images WHERE id = ?1", [id], |r| {
-                Ok(Image { id: r.get(0)?, task_id: r.get(1)?, comment_id: r.get(2)?, file: r.get(3)? })
-            })
+            .query_row("SELECT id, task_id, comment_id, file FROM images WHERE id = ?1", [id], Self::image_row)
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("no image {id}")))?;
         self.conn.execute("DELETE FROM images WHERE id = ?1", [id])?;
@@ -856,11 +883,19 @@ fn valid_slug(s: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// `2026-10-25T09:30:00Z` -> `2026-10-25 09:30 UTC`.
+pub fn short_time(ts: &str) -> String {
+    match (ts.get(..10), ts.get(11..16)) {
+        (Some(d), Some(t)) => format!("{d} {t} UTC"),
+        _ => ts.to_string(),
+    }
+}
+
 /// `" Bug, UI,bug ,, needs  review"` -> `["bug", "ui", "needs review"]`.
-pub fn clean_tags(input: &str) -> Vec<String> {
+fn clean_tags(input: &str) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
     for tag in input.split(',') {
-        let tag = tag.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let tag = squash(tag).to_lowercase();
         if !tag.is_empty() && !tags.contains(&tag) {
             tags.push(tag);
         }
@@ -872,8 +907,20 @@ fn clean_repo(repo: &str) -> Result<String> {
     repo_from_url(repo).ok_or_else(|| Error::Invalid(format!("repo {:?} should look like owner/repo", repo.trim())))
 }
 
+/// `"  a   b "` -> `"a b"`: words joined by single spaces.
+fn squash(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
+}
+
 fn clean_title(title: &str) -> Result<String> {
-    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = squash(title);
     if title.is_empty() {
         return Err(Error::Invalid("task title is empty".into()));
     }
@@ -881,7 +928,7 @@ fn clean_title(title: &str) -> Result<String> {
 }
 
 /// Splits `api#12`, `#12` or `12` into an optional project slug and the task id.
-pub fn parse_task_key(key: &str) -> Result<(Option<String>, i64)> {
+fn parse_task_key(key: &str) -> Result<(Option<String>, i64)> {
     let key = key.trim();
     let (slug, num) = match key.rsplit_once('#') {
         Some((s, n)) => (Some(s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty()), n),
@@ -941,6 +988,24 @@ mod tests {
         let v: String =
             s.conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, MIGRATIONS.len().to_string());
+    }
+
+    #[test]
+    fn keeps_only_the_newest_done_tasks() {
+        let (_dir, s) = store();
+        let p = s.create_project("api", "", None).unwrap();
+        s.create_task(p.id, "open", "").unwrap();
+        for title in ["d1", "d2", "d3", "d4"] {
+            let t = s.create_task(p.id, title, "").unwrap();
+            s.move_task(t.id, "done", None).unwrap();
+        }
+        let (tasks, hidden) = s.list_tasks_keeping_done(None, None, Some(2)).unwrap();
+        assert_eq!((titles(&tasks), hidden), (vec!["open", "d3", "d4"], 2));
+        let (tasks, hidden) = s.list_tasks_keeping_done(Some(p.id), Some("done"), Some(0)).unwrap();
+        assert_eq!((tasks.len(), hidden), (0, 4));
+        assert_eq!(s.list_tasks_keeping_done(None, Some("todo"), Some(0)).unwrap().1, 0);
+        let (all, hidden) = s.list_tasks_keeping_done(None, None, None).unwrap();
+        assert_eq!((titles(&all), hidden), (vec!["open", "d1", "d2", "d3", "d4"], 0));
     }
 
     #[test]

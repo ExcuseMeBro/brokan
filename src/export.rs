@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::home::Home;
-use crate::mcp::short_time;
+use crate::store::short_time;
 use crate::store::{Comment, Project, Store, Task};
 
 #[derive(Clone, Copy, clap::ValueEnum)]

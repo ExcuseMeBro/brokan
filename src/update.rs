@@ -73,7 +73,7 @@ pub fn install() -> Result<PathBuf, String> {
         .env("KANZO_INSTALL_DIR", &dir)
         .env("KANZO_NO_MODIFY_PATH", "1")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run the installer: {e}"))?;
