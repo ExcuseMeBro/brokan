@@ -126,8 +126,9 @@ pub struct Kanzo {
     tool_router: ToolRouter<Self>,
 }
 
-/// A task, as `api#12` or just `12`.
-#[derive(Deserialize, JsonSchema)]
+/// A task, as `api#12` or just `12`. Agents are told it is a string, which keeps the
+/// tool schemas short; a bare number is accepted too.
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum TaskKey {
     Number(i64),
@@ -164,6 +165,7 @@ struct ListTasksArgs {
 #[derive(Deserialize, JsonSchema)]
 struct TaskArgs {
     /// Task id, like api#12 or 12.
+    #[schemars(with = "String")]
     id: TaskKey,
 }
 
@@ -179,6 +181,7 @@ struct CreateTaskArgs {
 #[derive(Deserialize, JsonSchema)]
 struct UpdateTaskArgs {
     /// Task id, like api#12 or 12.
+    #[schemars(with = "String")]
     id: TaskKey,
     title: Option<String>,
     /// Markdown; replaces the whole description.
@@ -190,6 +193,7 @@ struct UpdateTaskArgs {
 #[derive(Deserialize, JsonSchema)]
 struct AddCommentArgs {
     /// Task id, like api#12 or 12.
+    #[schemars(with = "String")]
     id: TaskKey,
     /// Markdown.
     body: String,
