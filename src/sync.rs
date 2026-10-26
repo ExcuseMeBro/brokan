@@ -35,7 +35,7 @@ pub fn sync(home: &Home, keep: Option<Keep>) -> Result<()> {
     let lock = home.lock_exclusive()?;
     {
         let store = crate::store::Store::open(&home.db_path(), home.config.statuses.clone(), None)?;
-        store.checkpoint()?;
+        store.settle()?;
     }
     git(dir, &["add", "--all"])?;
     if !git_ok(dir, &["diff", "--cached", "--quiet"]) {

@@ -25,10 +25,10 @@ mcp_http = true
 "#;
 
 const GITIGNORE: &str = "\
-# SQLite temporary files; kanzo sync folds them into kanzo.db first.
+# SQLite temporary files; kanzo sync makes sure kanzo.db is complete without them.
+kanzo.db-journal
 kanzo.db-wal
 kanzo.db-shm
-kanzo.db-journal
 # Local to this machine.
 kanzo.lock
 *.bak
