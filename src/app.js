@@ -99,17 +99,28 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Code spans, links and bare URLs are swapped for placeholders as soon as they are
+// rendered, so later rules never see, or rewrite, the HTML they produced. The input
+// is already HTML-escaped, so it holds no tags or raw quotes of its own.
 function inline(s) {
-  const codes = [];
-  s = s.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+  const saved = [];
+  const keep = (html) => `\u0000${saved.push(html) - 1}\u0000`;
+  const link = (url, text) => keep(`<a href="${url}" target="_blank" rel="noopener">${text}</a>`);
   s = s
-    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+    .replace(/\u0000/g, "")
+    .replace(/`([^`]+)`/g, (_, code) => keep(`<code>${code}</code>`))
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)\u0000]+)\)/g, (_, text, url) => link(url, emphasis(text)))
+    .replace(/(^|[\s(])(https?:\/\/[^\s)\u0000]+)/g, (_, before, url) => before + link(url, url));
+  const restore = (html) => html.replace(/\u0000(\d+)\u0000/g, (_, i) => restore(saved[i]));
+  return restore(emphasis(s));
+}
+
+function emphasis(s) {
+  return s
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^\w*])\*(?!\s)(.+?)\*(?!\w)/g, "$1<em>$2</em>")
     .replace(/(^|[^\w])_(?!\s)(.+?)_(?!\w)/g, "$1<em>$2</em>")
     .replace(/~~(.+?)~~/g, "<del>$1</del>");
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
 }
 
 function markdown(src) {
