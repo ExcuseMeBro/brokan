@@ -19,6 +19,9 @@ use tokio_util::sync::CancellationToken;
 use crate::home::Home;
 use crate::store::{self, Comment, Error, Project, Store, Task, TaskPatch};
 
+/// The most done tasks list_tasks shows, newest first: an old board has thousands.
+const DONE_LISTED: usize = 20;
+
 const INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
 Tasks are written project#id, like api#12. When you leave out `project`, Kanzo uses the project \
 linked to the GitHub repo of the folder you are working in. A good loop: next_task to pick up work, \
@@ -157,7 +160,7 @@ struct CreateProjectArgs {
 struct ListTasksArgs {
     /// Project slug, or "all" for every project. Defaults to the project of the current repo.
     project: Option<String>,
-    /// Only this column. Without it, done tasks are left out; "all" includes them.
+    /// Only this column. Without it, done tasks are left out; "all" includes them. Shows the newest 20 done.
     status: Option<String>,
 }
 
@@ -296,20 +299,26 @@ impl Kanzo {
                     None => store.list_tasks(project.as_ref().map(|p| p.id), None)?,
                 };
                 let done = store.statuses().last().cloned().unwrap_or_default();
-                let hidden = if status.is_none() {
-                    let before = tasks.len();
-                    tasks.retain(|t| t.status != done);
-                    before - tasks.len()
-                } else {
-                    0
-                };
+                // Done tasks only pile up: without a status leave them out, with one keep
+                // the newest. They run oldest to newest, so drop from the front.
+                let keep = if status.is_none() { 0 } else { DONE_LISTED };
+                let mut hidden = tasks.iter().filter(|t| t.status == done).count().saturating_sub(keep);
+                let total_hidden = hidden;
+                tasks.retain(|t| {
+                    let old = hidden > 0 && t.status == done;
+                    hidden -= usize::from(old);
+                    !old
+                });
+                let hidden = total_hidden;
                 let scope = project.as_ref().map_or("any project".to_string(), |p| p.slug.clone());
                 let mut out: Vec<String> = tasks.iter().map(task_line).collect();
                 if out.is_empty() {
                     out.push(format!("No tasks in {scope}."));
                 }
-                if hidden > 0 {
+                if hidden > 0 && status.is_none() {
                     out.push(format!("({hidden} {done} not shown; pass status \"{done}\" or \"all\")"));
+                } else if hidden > 0 {
+                    out.push(format!("({hidden} older {done} not shown)"));
                 }
                 Ok(out.join("\n"))
             })
