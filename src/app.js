@@ -68,6 +68,7 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
 };
 
 function icon(name, color) {
@@ -581,6 +582,8 @@ async function openTask(id) {
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
   $("#p-comment").value = "";
+  $("#p-send").disabled = true;
+  fit($("#p-comment"));
   updateHash();
   await refreshTask();
   if (state.task !== id) return;
@@ -714,10 +717,14 @@ $("#p-comment-form").addEventListener("submit", async (e) => {
     await api("POST", `/tasks/${panelTask.id}/comments`, { body });
     if (fresh === panelTask.id) fresh = null;
     $("#p-comment").value = "";
+    $("#p-send").disabled = true;
+    fit($("#p-comment"));
     await refreshTask();
     loadBoard();
   } catch (err) { toast(err.message); }
 });
+// The send button is live only once there is something to send.
+$("#p-comment").addEventListener("input", (e) => { $("#p-send").disabled = !e.target.value.trim(); fit(e.target); });
 $("#p-comment").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("#p-comment-form").requestSubmit(); }
 });

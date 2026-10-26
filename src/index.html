@@ -108,8 +108,6 @@ select.field:hover { background-color: var(--hover); }
 .btn:hover, .btn:focus-visible { background: var(--active); }
 .btn.primary { background: var(--accent); color: var(--accent-text); }
 .btn.primary:hover, .btn.primary:focus-visible { opacity: .85; }
-.btn.danger { background: none; color: var(--danger); padding-left: 12px; padding-right: 12px; }
-.btn.danger:hover, .btn.danger:focus-visible { background: var(--danger-bg); }
 
 /* Main board */
 main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -186,6 +184,7 @@ header .sub a:hover { color: var(--text); }
 .panel .top .spacer { flex: 1; }
 .panel .top .ghost { width: auto; padding: 6px; color: var(--muted); }
 .panel .top .ghost:hover { color: var(--text); }
+.panel .top .ghost.danger:hover { color: var(--danger); background: var(--danger-bg); }
 /* The project, shown as a tag; picking another one moves the task. */
 .panel .project-pick select {
   appearance: none; -webkit-appearance: none; border: 0; background: none; padding: 0; margin: 0;
@@ -202,7 +201,6 @@ header .sub a:hover { color: var(--text); }
 }
 .panel .inline:hover, .panel .inline:focus { background: var(--hover); }
 .panel .title-input { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
-.panel .desc-input { min-height: 3.4em; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
 .props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
 .props span { color: var(--text); }
@@ -215,9 +213,19 @@ header .sub a:hover { color: var(--text); }
 .comment:first-child { padding-top: 0; }
 .comment .who { font-size: 12px; color: var(--faint); margin-bottom: 2px; }
 .comment .who b { color: var(--text); font-weight: 600; }
-.new-comment { margin-top: 6px; }
-.new-comment textarea { min-height: 76px; resize: vertical; border-radius: 18px; padding: 12px 14px; }
-.new-comment .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; color: var(--faint); font-size: 12px; }
+/* The comment box, with its send button inside like a chat composer. */
+.composer { position: relative; margin-top: 6px; background: var(--field); border-radius: 20px; }
+.composer textarea {
+  display: block; width: 100%; min-height: 84px; max-height: 50vh; resize: none; border: 0; background: none;
+  padding: 12px 52px 12px 16px;
+}
+.composer textarea::placeholder { color: var(--faint); }
+.composer .send {
+  position: absolute; right: 8px; bottom: 8px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: var(--accent); color: var(--accent-text);
+}
+.composer .send:disabled { opacity: .25; cursor: default; }
+.composer .send .icon svg { width: 16px; height: 16px; stroke-width: 2.2; }
 
 /* Rendered Markdown */
 .md > :first-child { margin-top: 0; }
@@ -289,6 +297,7 @@ header .sub a:hover { color: var(--text); }
     <span class="key mono" id="p-key"></span>
     <span id="p-project"></span>
     <span class="spacer"></span>
+    <button class="ghost danger" id="p-delete" title="Delete task" aria-label="Delete task"><span class="icon" data-icon="trash"></span></button>
     <button class="ghost" id="p-close" title="Close (Esc)" aria-label="Close"><span class="icon" data-icon="close"></span></button>
   </div>
   <div class="body">
@@ -300,17 +309,16 @@ header .sub a:hover { color: var(--text); }
     </div>
     <div class="section">
       <h3>Description</h3>
-      <textarea class="inline desc-input" id="p-desc" rows="2" placeholder="Add a description (Markdown)"></textarea>
+      <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>
     </div>
     <div class="section">
       <h3>Comments <span class="count" id="p-comment-count"></span></h3>
       <div id="p-comments"></div>
-      <form class="new-comment" id="p-comment-form">
-        <textarea class="field" id="p-comment" placeholder="Add a comment (Markdown)"></textarea>
-        <div class="actions"><span>⌘↵ to send</span><button class="btn primary" type="submit">Comment</button></div>
+      <form class="composer" id="p-comment-form">
+        <textarea id="p-comment" rows="2" placeholder="Add a comment"></textarea>
+        <button class="send" id="p-send" type="submit" title="Send (⌘↵)" aria-label="Send comment" disabled><span class="icon" data-icon="send"></span></button>
       </form>
     </div>
-    <div><button class="btn danger" id="p-delete">Delete task</button></div>
   </div>
 </div>
 
