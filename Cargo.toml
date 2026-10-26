@@ -1,6 +1,6 @@
 [package]
 name = "kanzo"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.89"
 description = "A local kanban board for you and your agents, with an MCP server"
