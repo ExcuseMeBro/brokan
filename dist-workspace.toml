@@ -35,5 +35,7 @@ aarch64-apple-darwin = "macos-26"
 x86_64-apple-darwin = "macos-26-intel"
 x86_64-unknown-linux-musl = "ubuntu-26.04"
 aarch64-unknown-linux-musl = "ubuntu-26.04-arm"
-armv7-unknown-linux-musleabihf = "ubuntu-26.04"
-arm-unknown-linux-musleabihf = "ubuntu-26.04"
+# dist does not know ubuntu-26.04 yet and would take it for the target itself,
+# skipping the cross-compiler; say these two build on x64.
+armv7-unknown-linux-musleabihf = { runner = "ubuntu-26.04", host = "x86_64-unknown-linux-gnu" }
+arm-unknown-linux-musleabihf = { runner = "ubuntu-26.04", host = "x86_64-unknown-linux-gnu" }
