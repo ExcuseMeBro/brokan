@@ -1,6 +1,6 @@
 //! `kanzo`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -54,12 +54,31 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     }
     // Cancelling this also ends open MCP streams, which would otherwise hold up shutdown.
     let shutdown = CancellationToken::new();
-    axum::serve(listener, router(home, guard, shutdown.clone()))
-        .with_graceful_shutdown(async move {
-            stop_signal().await;
-            shutdown.cancel();
-        })
-        .await?;
+    let app = router(home, guard, shutdown.clone());
+    let serve = |listener| {
+        let stop = shutdown.clone();
+        axum::serve(listener, app.clone()).with_graceful_shutdown(async move { stop.cancelled().await }).into_future()
+    };
+    // `localhost` is ::1 before 127.0.0.1 on many Linux systems, and not every
+    // client (busybox wget, older Node) falls back, so listen on ::1 as well.
+    let v6 = match listen {
+        IpAddr::V4(ip) if ip.is_loopback() || ip.is_unspecified() => {
+            tokio::net::TcpListener::bind(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port)).await.ok()
+        }
+        _ => None,
+    };
+    let stopper = shutdown.clone();
+    tokio::spawn(async move {
+        stop_signal().await;
+        stopper.cancel();
+    });
+    match v6 {
+        Some(v6) => {
+            let (a, b) = tokio::join!(serve(listener), serve(v6));
+            a.and(b)?;
+        }
+        None => serve(listener).await?,
+    }
     Ok(())
 }
 
