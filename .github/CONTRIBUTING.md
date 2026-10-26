@@ -4,6 +4,7 @@ Thanks for helping. Kanzo is small on purpose: every change is weighed by how li
 
 - **A bug or an idea:** open an issue first for anything bigger than a small fix, so we can agree on the approach.
 - **A security problem:** don't open an issue; see [SECURITY](SECURITY.md).
+- **License:** Kanzo is under the [AGPL-3.0](../LICENSE), and so is what you contribute.
 
 ## Build and test
 

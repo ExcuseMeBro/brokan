@@ -71,4 +71,4 @@ Replies are short plain text, not JSON. Token counts are estimated at 4 characte
 
 The [guide](docs/guide.md) covers running Kanzo in the background, opening it from other devices, MCP over HTTP, syncing between laptops, export and settings.
 
-To contribute, see [CONTRIBUTING](.github/CONTRIBUTING.md); to report a vulnerability, [SECURITY](.github/SECURITY.md). Kanzo is [MIT licensed](LICENSE).
+To contribute, see [CONTRIBUTING](.github/CONTRIBUTING.md); to report a vulnerability, [SECURITY](.github/SECURITY.md). Kanzo is free software under the [AGPL-3.0](LICENSE): use it, change it and share it; if you offer a changed version to others over a network, share its source too.
