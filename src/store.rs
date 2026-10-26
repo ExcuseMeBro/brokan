@@ -21,13 +21,15 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 pub enum Error {
     NotFound(String),
     Invalid(String),
+    /// Another process holds the data folder for longer than we wait, like a long `kanzo sync`.
+    Busy(String),
     Db(rusqlite::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotFound(m) | Error::Invalid(m) => f.write_str(m),
+            Error::NotFound(m) | Error::Invalid(m) | Error::Busy(m) => f.write_str(m),
             Error::Db(e) => write!(f, "database error: {e}"),
         }
     }

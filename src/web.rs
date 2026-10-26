@@ -99,22 +99,22 @@ async fn with_store<T: Serialize + Send + 'static>(
     f: impl FnOnce(&Store) -> store::Result<T> + Send + 'static,
 ) -> Response {
     let outcome = tokio::task::spawn_blocking(move || {
-        let store = home.store().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-        f(&store).map_err(|e| {
-            let code = match e {
-                Error::NotFound(_) => StatusCode::NOT_FOUND,
-                Error::Invalid(_) => StatusCode::BAD_REQUEST,
-                Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (code, e.to_string())
-        })
+        let store = home.store()?;
+        f(&store)
     })
-    .await
-    .unwrap_or_else(|e| Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())));
-    match outcome {
-        Ok(v) => Json(v).into_response(),
-        Err((code, error)) => (code, Json(json!({ "error": error }))).into_response(),
-    }
+    .await;
+    let error = match outcome {
+        Ok(Ok(v)) => return Json(v).into_response(),
+        Ok(Err(e)) => e,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    };
+    let code = match error {
+        Error::NotFound(_) => StatusCode::NOT_FOUND,
+        Error::Invalid(_) => StatusCode::BAD_REQUEST,
+        Error::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (code, Json(json!({ "error": error.to_string() }))).into_response()
 }
 
 async fn changes(State(home): Shared) -> Response {

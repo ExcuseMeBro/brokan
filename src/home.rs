@@ -1,12 +1,13 @@
 //! The data folder: where it is, what it holds, and the settings in `config.toml`.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::store::Store;
+use crate::store::{self, Store};
 
 pub const DEFAULT_PORT: u16 = 4242;
 
@@ -36,6 +37,9 @@ kanzo.lock
 ._*
 .DS_Store
 ";
+
+/// How long an operation waits for `kanzo sync` before giving up with "busy".
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -116,12 +120,25 @@ impl Home {
 
     /// Opens a fresh connection. Callers keep it for one operation only, so a
     /// database replaced by `kanzo sync` is picked up on the next one. It holds
-    /// a shared lock on `kanzo.lock`, so sync can wait for it to finish.
-    pub fn store(&self) -> Result<Store> {
-        let lock = self.lock_file()?;
-        // Some filesystems (exFAT, network shares) have no locks; go on without.
-        let lock = lock.lock_shared().ok().map(|_| lock);
-        Ok(Store::open(&self.db_path(), self.config.statuses.clone(), lock)?)
+    /// a shared lock on `kanzo.lock`, so sync can wait for it to finish; while
+    /// sync holds the lock, this waits up to `LOCK_WAIT` and then reports busy.
+    pub fn store(&self) -> store::Result<Store> {
+        let lock = self.lock_file().map_err(|e| store::Error::Invalid(format!("{e:#}")))?;
+        let deadline = Instant::now() + LOCK_WAIT;
+        let lock = loop {
+            match lock.try_lock_shared() {
+                Ok(()) => break Some(lock),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25))
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(store::Error::Busy("kanzo sync is updating the board; try again in a moment".into()));
+                }
+                // Some filesystems (exFAT, network shares) have no locks; go on without.
+                Err(TryLockError::Error(_)) => break None,
+            }
+        };
+        Store::open(&self.db_path(), self.config.statuses.clone(), lock)
     }
 
     /// Blocks until no connection is open, and keeps new ones out until the file is dropped.
