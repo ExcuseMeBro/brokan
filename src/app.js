@@ -208,7 +208,9 @@ function updateHash() {
 }
 
 function readHash() {
-  const [slug, task] = decodeURIComponent(location.hash.slice(1)).split("/");
+  let hash = location.hash.slice(1);
+  try { hash = decodeURIComponent(hash); } catch {}
+  const [slug, task] = hash.split("/");
   return { slug: slug || null, task: Number(task) || null };
 }
 
