@@ -13,10 +13,13 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # The newest LTS Ubuntu and the newest macOS.
+        os: [ubuntu-26.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      # The latest stable Rust, not whichever one the runner image ships.
+      - run: rustup update stable --no-self-update && rustup default stable
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
