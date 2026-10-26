@@ -13,8 +13,8 @@
 Kanzo is a kanban board in your browser and an MCP server in one small program, so you and your coding agents work on the same tasks. The whole board is one folder, and a private git repo keeps it in step on every machine you use: no account, no server.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/board-dark.jpg">
-  <img alt="The Kanzo board: a project with todo, doing, review and done columns" src="docs/img/board-light.jpg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/board-dark.gif">
+  <img alt="The Kanzo board: agents move cards while you watch, and ⌘K finds a task in any project" src="docs/img/board-light.gif">
 </picture>
 
 ## Install
@@ -58,8 +58,8 @@ Other MCP clients: run `kanzo mcp` (apps like Raycast need the full path, from `
 Then ask: *"take the next task from kanzo and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.jpg">
-  <img alt="A task open on the board, with a description and comments from Claude Code" src="docs/img/task-light.jpg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.gif">
+  <img alt="A task open on the board: Claude Code reports its work in a comment, and you reply" src="docs/img/task-light.gif">
 </picture>
 
 ## Your board on every machine
