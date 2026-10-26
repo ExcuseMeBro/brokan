@@ -47,6 +47,9 @@ enum Command {
     },
     /// Commit the data folder and pull or push it with its git remote
     Sync {
+        /// Sync with this git repo from now on, like https://github.com/you/kanzo-data or you/kanzo-data
+        #[arg(long, value_name = "URL")]
+        repo: Option<String>,
         /// When both sides changed, keep this machine's board and overwrite the remote
         #[arg(long, conflicts_with = "keep_remote")]
         keep_local: bool,
@@ -114,13 +117,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("Kanzo data folder ready at {}", home.dir.display());
             Ok(())
         }
-        Some(Command::Sync { keep_local, keep_remote }) => {
+        Some(Command::Sync { repo, keep_local, keep_remote }) => {
+            if let Some(url) = repo {
+                println!("The board syncs with {}.", sync::set_remote(&home, &url, true)?);
+            }
             let keep = match (keep_local, keep_remote) {
                 (true, _) => Some(sync::Keep::Local),
                 (_, true) => Some(sync::Keep::Remote),
                 _ => None,
             };
-            sync::sync(&home, keep)
+            println!("{}", sync::sync(&home, keep, true)?);
+            Ok(())
         }
         Some(Command::Export { format, project, output }) => {
             export::export(&home, format, project.as_deref(), output.as_deref())

@@ -66,6 +66,7 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  sync: '<path d="M12 13v8"/><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="m8 17 4-4 4 4"/>',
   collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
@@ -423,7 +424,7 @@ document.addEventListener("mousedown", (e) => {
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, #search-dialog")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, #search-dialog, #sync-dialog")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -1066,6 +1067,109 @@ function schedulePoll() {
 }
 schedulePoll();
 
+// ---------- sync ----------
+
+// The sync button runs `kanzo sync`: it commits the board and pulls or pushes it through
+// the data folder's git remote. When both machines changed it, the board asks which to keep.
+async function syncNow(keep) {
+  const button = $("#sync");
+  button.disabled = true;
+  button.classList.add("syncing");
+  let diverged = null;
+  try {
+    const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep }) });
+    const reply = await res.json().catch(() => ({}));
+    if (res.ok) { toast(reply.message); loadBoard(); }
+    else if (reply.diverged) diverged = reply;
+    else toast(reply.error || res.statusText);
+  } catch (err) { toast(err.message); }
+  button.disabled = false;
+  button.classList.remove("syncing");
+  if (diverged) chooseSide(diverged);
+}
+
+function chooseSide({ first }) {
+  const repo = repoName(syncRemote);
+  if (first) {
+    // A repo another machine already syncs with: most likely, this machine is joining it.
+    if (confirm(`${repo} already has a board. Use it on this machine?\n\nThis machine's current board is kept in kanzo.db.bak.`)) syncNow("remote");
+    else if (confirm(`Replace the board in ${repo} with this machine's board instead?`)) syncNow("local");
+    return;
+  }
+  if (confirm("This machine and another one both changed the board since the last sync, and boards can't be merged.\n\nKeep THIS machine's board, and overwrite the other one?")) syncNow("local");
+  else if (confirm("Take the other machine's board instead? This machine's board is kept in kanzo.db.bak.")) syncNow("remote");
+}
+
+// The repo the board syncs with, shown at the bottom of the sidebar; null before it's set up.
+let syncRemote = null;
+
+// "you/kanzo-data" from any of its URLs.
+function repoName(url) {
+  return (url || "").replace(/\.git$/, "").split(/[/:]/).filter(Boolean).slice(-2).join("/");
+}
+
+function showSyncRemote(remote) {
+  syncRemote = remote;
+  $("#sync-repo").hidden = !remote;
+  $("#sync-repo-name").textContent = repoName(remote);
+  $("#sync-repo").title = remote ? `Syncs with ${remote}. Click to change.` : "";
+}
+
+async function loadSyncRemote() {
+  try { showSyncRemote((await api("GET", "/sync")).remote); } catch {}
+  return syncRemote;
+}
+
+// Sync asks for a repo the first time; after that, the repo in the sidebar changes it.
+function openSyncDialog() {
+  closeMenu();
+  $("#sync-dialog").hidden = false;
+  $("#sync-title").textContent = syncRemote ? "Sync with another repo" : "Sync your board";
+  $("#sync-create").hidden = !!syncRemote;
+  $("#sync-url").value = syncRemote || "";
+  $("#sync-error").hidden = true;
+  $("#sync-url").focus();
+  $("#sync-url").select();
+}
+
+function closeSyncDialog() {
+  $("#sync-dialog").hidden = true;
+}
+
+$("#sync-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const save = $("#sync-save");
+  save.disabled = true;
+  save.textContent = "Checking…";
+  try {
+    const res = await fetch("/api/sync", { method: "PUT", headers: { "Content-Type": "application/json" },
+                                           body: JSON.stringify({ url: $("#sync-url").value }) });
+    const reply = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showSyncRemote(reply.remote);
+      closeSyncDialog();
+      syncNow();
+    } else {
+      $("#sync-error").textContent = reply.error || res.statusText;
+      $("#sync-error").hidden = false;
+    }
+  } catch (err) {
+    $("#sync-error").textContent = err.message;
+    $("#sync-error").hidden = false;
+  }
+  save.disabled = false;
+  save.textContent = "Save and sync";
+});
+$("#sync-cancel").addEventListener("click", closeSyncDialog);
+$("#sync-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "sync-dialog") closeSyncDialog(); });
+$("#sync-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closeSyncDialog(); } });
+
+$("#sync").addEventListener("click", async () => {
+  if (await loadSyncRemote()) syncNow();
+  else openSyncDialog();
+});
+$("#sync-repo").addEventListener("click", openSyncDialog);
+
 // ---------- update ----------
 
 // Kanzo checks GitHub for a newer release once a day and offers it at the bottom of the
@@ -1133,6 +1237,7 @@ async function installUpdate(available) {
 
 checkUpdate();
 setInterval(checkUpdate, 24 * 60 * 60 * 1000);
+loadSyncRemote();
 
 // Relative times ("5m ago") drift; refresh them now and then.
 setInterval(() => {

@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
 use crate::store::{self, Error, ImagesOf, Store, TaskPatch};
-use crate::update;
+use crate::{sync, update};
 
 const INDEX: &str = include_str!("index.html");
 /// The largest image the board takes from a paste.
@@ -139,6 +139,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/images/{id}", delete(delete_image))
         .route("/api/tasks/{id}/images", post(attach_image))
         .route("/api/update", get(update_status).post(update_now))
+        .route("/api/sync", get(sync_status).post(sync_now).put(sync_repo))
         .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
 }
@@ -536,6 +537,52 @@ async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Res
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("cannot save the image: {e}") })))
                 .into_response()
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SyncRequest {
+    /// "local" or "remote", once the board has asked which side to keep.
+    #[serde(default)]
+    keep: Option<String>,
+}
+
+/// The board's sync button: the same as `kanzo sync`, without git ever prompting. When
+/// both sides changed, answers 409 with `diverged`, and the board asks which side to keep.
+async fn sync_now(State(home): Shared, Json(r): Json<SyncRequest>) -> Response {
+    let keep = match r.keep.as_deref() {
+        Some("local") => Some(sync::Keep::Local),
+        Some("remote") => Some(sync::Keep::Remote),
+        _ => None,
+    };
+    match tokio::task::spawn_blocking(move || sync::sync(&home, keep, false)).await {
+        Ok(Ok(message)) => Json(json!({ "message": message })).into_response(),
+        Ok(Err(e)) => match e.downcast_ref::<sync::Diverged>() {
+            Some(d) => (StatusCode::CONFLICT, Json(json!({ "error": d.message, "diverged": true, "first": d.first })))
+                .into_response(),
+            None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e:#}") }))).into_response(),
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// The repo the board syncs with, `null` before sync is set up.
+async fn sync_status(State(home): Shared) -> Response {
+    let remote = tokio::task::spawn_blocking(move || sync::remote_url(&home)).await.ok().flatten();
+    Json(json!({ "remote": remote })).into_response()
+}
+
+#[derive(Deserialize)]
+struct SyncRepo {
+    url: String,
+}
+
+/// Sets up sync with a repo, or moves it to another one.
+async fn sync_repo(State(home): Shared, Json(r): Json<SyncRepo>) -> Response {
+    match tokio::task::spawn_blocking(move || sync::set_remote(&home, &r.url, false)).await {
+        Ok(Ok(remote)) => Json(json!({ "remote": remote })).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("{e:#}") }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }

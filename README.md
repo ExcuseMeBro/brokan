@@ -32,7 +32,7 @@ For macOS and Linux, including every Raspberry Pi. Or build it: `cargo install -
 | `kanzo` | Starts the board at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
 | `kanzo service install` | Keeps the board running and starts it at login; `uninstall` removes it |
 | `kanzo mcp` | The MCP server for agents: they start it, not you |
-| `kanzo sync` | Commits the board and pulls or pushes it; `--keep-local` or `--keep-remote` when both sides changed |
+| `kanzo sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
 | `kanzo export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
 | `kanzo init` | Creates the data folder; the first run does this too |
 | `kanzo --version` | Prints the version |
