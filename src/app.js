@@ -66,6 +66,8 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
+  expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
@@ -476,16 +478,20 @@ function renderColumns() {
   if (state.layout !== layout) {
     state.layout = layout;
     columns.replaceChildren(...statuses.map((status, i) => {
+      const last = i === statuses.length - 1;
       const col = el("section", { class: "column", "data-status": status },
         el("h2", {}, el("span", { class: "dot", style: `background:${statusColor(status)}` }), status,
           el("span", { class: "count" }),
           // At the top, so a long column never hides it.
-          i === 0 ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null),
+          i === 0 ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null,
+          last ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setDoneCollapsed(!doneCollapsed()); } }) : null),
         el("div", { class: "cards" }),
       );
       wireDrop(col, col.querySelector(".cards"), status);
+      if (last) col.addEventListener("click", () => { if (doneCollapsed()) setDoneCollapsed(false); });
       return col;
     }));
+    showDoneCollapsed();
   }
 
   // During a drag the DOM is being moved by hand; refresh once it ends.
@@ -504,6 +510,31 @@ function renderColumns() {
       : null;
     col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.map((t) => card(t, all)));
   }
+}
+
+// The done column only grows; it starts collapsed to a thin strip, as in Trello or Linear,
+// and each browser remembers the choice. Cards can still be dropped on the strip.
+function doneCollapsed() {
+  return localStorageGet("kanzo.doneCollapsed") !== "0";
+}
+
+function setDoneCollapsed(collapsed) {
+  try { localStorage.setItem("kanzo.doneCollapsed", collapsed ? "1" : "0"); } catch {}
+  showDoneCollapsed();
+}
+
+function showDoneCollapsed() {
+  const columns = $("#columns");
+  const cols = [...columns.querySelectorAll(".column")];
+  if (!cols.length) return;
+  const collapsed = doneCollapsed();
+  const done = cols[cols.length - 1];
+  done.classList.toggle("collapsed", collapsed);
+  const button = done.querySelector(".collapse");
+  button.replaceChildren(icon(collapsed ? "expand" : "collapse"));
+  button.title = collapsed ? `Show ${done.dataset.status}` : `Collapse ${done.dataset.status}`;
+  button.setAttribute("aria-label", button.title);
+  columns.style.gridTemplateColumns = cols.map((c) => (c === done && collapsed ? "48px" : "minmax(260px, 1fr)")).join(" ");
 }
 
 // A description as one line of plain text for a card: Markdown markers dropped, lines joined.

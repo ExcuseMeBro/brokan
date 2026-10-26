@@ -145,6 +145,17 @@ header .sub a:hover { color: var(--text); }
   margin: 0; padding: 14px 16px 10px; display: flex; align-items: center; gap: 8px;
 }
 .column h2 .count { color: var(--faint); font-weight: 400; }
+.column h2 .collapse {
+  margin: -6px -6px -6px auto; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 8px;
+  background: none; color: var(--faint);
+}
+.column h2 .collapse:hover, .column h2 .collapse:focus-visible { background: var(--hover); color: var(--text); }
+/* A collapsed done column: a thin strip, name written downwards, that expands on a click. */
+.column.collapsed { cursor: pointer; }
+.column.collapsed:hover { background: var(--hover); }
+.column.collapsed h2 { writing-mode: vertical-rl; padding: 12px 0; align-items: center; gap: 10px; }
+.column.collapsed h2 .collapse { margin: 0 0 4px; order: -1; }
+.column.collapsed .cards { display: none; }
 .cards { flex: 0 1 auto; overflow-y: auto; padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 6px; min-height: 8px; }
 .card {
   background: var(--card); border: 1px solid var(--card-border); border-radius: 14px; padding: 10px 12px;
