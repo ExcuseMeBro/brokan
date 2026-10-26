@@ -590,23 +590,24 @@ pub fn parse_task_key(key: &str) -> Result<(Option<String>, i64)> {
 
 /// Normalises a GitHub repo given as `owner/repo` or as any git remote URL
 /// (`https://github.com/owner/repo.git`, `git@github.com:owner/repo`, ...) to lowercase `owner/repo`.
+/// A browser URL like `https://github.com/owner/repo/tree/main` gives `owner/repo` too.
 pub fn repo_from_url(input: &str) -> Option<String> {
-    let s = input.trim().trim_end_matches('/');
-    let s = s.strip_suffix(".git").unwrap_or(s);
-    let path = if let Some((_, rest)) = s.split_once("://") {
-        // scheme://[user@]host[:port]/owner/repo
-        rest.split_once('/')?.1
+    let s = input.trim();
+    let (path, bare) = if let Some((_, rest)) = s.split_once("://") {
+        // scheme://[user@]host[:port]/owner/repo...
+        (rest.split_once('/')?.1, false)
     } else if let Some((_, rest)) = s.split_once(':') {
         // user@host:owner/repo
-        rest
+        (rest, false)
     } else {
-        s
+        (s, true)
     };
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
-    if parts.len() < 2 || (path == s && parts.len() != 2) {
+    if parts.len() < 2 || (bare && parts.len() != 2) {
         return None;
     }
-    let (owner, repo) = (parts[parts.len() - 2], parts[parts.len() - 1]);
+    let owner = parts[0];
+    let repo = parts[1].strip_suffix(".git").unwrap_or(parts[1]);
     let ok = |p: &str| p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     (ok(owner) && ok(repo)).then(|| format!("{owner}/{repo}").to_ascii_lowercase())
 }
@@ -761,6 +762,9 @@ mod tests {
             "git@github.com:owner/repo.git",
             "ssh://git@github.com/owner/repo.git",
             "git@github-work:owner/repo.git",
+            "https://github.com/owner/repo/",
+            "https://github.com/owner/repo/tree/main",
+            "https://github.com/owner/repo/pull/3",
         ] {
             assert_eq!(repo_from_url(url).as_deref(), Some("owner/repo"), "{url}");
         }
