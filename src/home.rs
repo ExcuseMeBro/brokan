@@ -32,6 +32,9 @@ kanzo.db-shm
 # Local to this machine.
 kanzo.lock
 *.bak
+# macOS metadata (AppleDouble files appear on exFAT drives).
+._*
+.DS_Store
 ";
 
 #[derive(Debug, Clone, Deserialize)]
