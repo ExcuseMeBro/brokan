@@ -1,6 +1,20 @@
 // The Kanzo board. Plain JavaScript, no build step; served at /app.js.
 "use strict";
 
+// The board runs on browsers back to Safari 13.1, Chrome 80 and Firefox 78. These
+// two are newer than that, and are all it needs on top.
+if (!Element.prototype.replaceChildren) {
+  Element.prototype.replaceChildren = function (...nodes) {
+    this.textContent = "";
+    this.append(...nodes);
+  };
+}
+if (!HTMLFormElement.prototype.requestSubmit) {
+  HTMLFormElement.prototype.requestSubmit = function () {
+    if (this.reportValidity()) this.dispatchEvent(new Event("submit", { cancelable: true }));
+  };
+}
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const STATUS_COLORS = ["#8a8a83", "#3b82f6", "#e8a317", "#2f9e44", "#ae3ec9", "#e8590c"];
 
