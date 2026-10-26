@@ -4,6 +4,7 @@ mod mcp;
 mod service;
 mod store;
 mod sync;
+mod update;
 mod web;
 
 use std::path::PathBuf;

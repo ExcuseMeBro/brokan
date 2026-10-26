@@ -67,6 +67,7 @@ const ICONS = {
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
 };
 
@@ -899,6 +900,46 @@ function schedulePoll() {
   setTimeout(poll, 2000);
 }
 schedulePoll();
+
+// ---------- update ----------
+
+// When a newer release is out, the sidebar offers it. The server checks at most every
+// few hours, installs it over itself and restarts; the page reloads once it is back.
+async function checkUpdate() {
+  try {
+    const { current, available } = await api("GET", "/update");
+    const button = $("#update");
+    button.hidden = !available;
+    if (!available) return;
+    $("#update-label").textContent = `Update to ${available}`;
+    button.title = `You have ${current}`;
+    button.onclick = () => installUpdate(current, available);
+  } catch {}
+}
+
+async function installUpdate(current, available) {
+  if (!confirm(`Update Kanzo from ${current} to ${available}? The board restarts, which takes a few seconds.`)) return;
+  const button = $("#update");
+  button.disabled = true;
+  $("#update-label").textContent = "Updating…";
+  try {
+    await api("POST", "/update");
+  } catch (err) {
+    toast(err.message);
+    button.disabled = false;
+    $("#update-label").textContent = `Update to ${available}`;
+    return;
+  }
+  // The old program answered, then gives way to the new one: wait for it, then reload.
+  await new Promise((r) => setTimeout(r, 1500));
+  for (let i = 0; i < 60; i++) {
+    try { await api("GET", "/update"); break; } catch { await new Promise((r) => setTimeout(r, 1000)); }
+  }
+  location.reload();
+}
+
+checkUpdate();
+setInterval(checkUpdate, 6 * 60 * 60 * 1000);
 
 // Relative times ("5m ago") drift; refresh them now and then.
 setInterval(() => {

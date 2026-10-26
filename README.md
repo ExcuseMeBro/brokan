@@ -36,6 +36,8 @@ kanzo service install    # keep it running and start it at login
 
 Paste an image into a task and Kanzo saves it in `~/kanzo/images` and types its path, like a terminal does, so your agents can open it.
 
+When a new version is out, the sidebar offers it: one click installs it and restarts the board.
+
 ## Connect your agents
 
 ```sh

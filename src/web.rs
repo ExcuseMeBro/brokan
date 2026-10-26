@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
 use crate::store::{self, Error, Store, TaskPatch};
+use crate::update;
 
 const INDEX: &str = include_str!("index.html");
 /// The largest image the board takes from a paste.
@@ -133,6 +134,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/{id}/comments", post(add_comment))
         .route("/api/comments/{id}", delete(delete_comment))
         .route("/api/images", post(save_image).layer(DefaultBodyLimit::max(IMAGE_LIMIT)))
+        .route("/api/update", get(update_status).post(update_now))
         .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
 }
@@ -440,6 +442,30 @@ async fn save_image(State(home): Shared, headers: HeaderMap, body: Bytes) -> Res
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("cannot save the image: {e}") })))
                 .into_response()
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+/// This version, and a newer released one if there is.
+async fn update_status() -> Response {
+    let latest = tokio::task::spawn_blocking(update::latest).await.ok().flatten();
+    let available = latest.filter(|v| update::newer(v));
+    Json(json!({ "current": update::CURRENT, "available": available })).into_response()
+}
+
+/// Installs the latest release over this program, answers, then starts it in place.
+async fn update_now() -> Response {
+    match tokio::task::spawn_blocking(update::install).await {
+        Ok(Ok(exe)) => {
+            tokio::spawn(async move {
+                // Let the answer reach the board first.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let e = update::restart(&exe);
+                eprintln!("kanzo: updated, but cannot restart: {e}");
+            });
+            Json(json!({ "restarting": true })).into_response()
+        }
+        Ok(Err(error)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": error }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
