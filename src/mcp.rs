@@ -23,13 +23,15 @@ use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
 /// The most done tasks list_tasks shows, newest first: an old board has thousands.
 const DONE_LISTED: usize = 20;
 
-const INSTRUCTIONS: &str = "The user's kanban board, for all their projects. Tasks look like api#12. \
-Without `project`, Kanzo uses the project linked to this folder's GitHub repo. A good loop: next_task, \
-add_comment with what you did, then update_task to review. Leave tasks marked human to the user.";
+const INSTRUCTIONS: &str = "The user's kanban board, on this machine, for all their projects. Tasks look like \
+api#12. Without `project`, Kanzo uses the project linked to this folder's GitHub repo. Keep it current unasked: \
+doing when you start a task, comments on what you did, review when you finish or get stuck. Leave done and \
+human tasks to the user.";
 
-const HTTP_INSTRUCTIONS: &str = "The user's kanban board, for all their projects. Tasks look like api#12. \
-Over HTTP Kanzo can't see your folder, so pass `project` (see list_projects). A good loop: next_task, \
-add_comment with what you did, then update_task to review. Leave tasks marked human to the user.";
+const HTTP_INSTRUCTIONS: &str = "The user's kanban board, on their machine, for all their projects. Tasks look \
+like api#12. Over HTTP Kanzo can't see your folder, so pass `project` (see list_projects). Keep it current \
+unasked: doing when you start a task, comments on what you did, review when you finish or get stuck. Leave \
+done and human tasks to the user.";
 
 /// `kanzo mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
