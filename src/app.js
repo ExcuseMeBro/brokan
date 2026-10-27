@@ -457,7 +457,7 @@ document.addEventListener("mousedown", (e) => {
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, #search-dialog, #sync-dialog")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -700,20 +700,20 @@ window.addEventListener("pagehide", () => {
 // ---------- new project ----------
 
 function showNewProject() {
-  $("#new-project-toggle").hidden = true;
-  $("#new-project").hidden = false;
+  $("#project-dialog").hidden = false;
   $("#new-project [name=slug]").focus();
 }
 
 function hideNewProject() {
   $("#new-project").reset();
-  $("#new-project").hidden = true;
-  $("#new-project-toggle").hidden = false;
+  $("#project-dialog").hidden = true;
 }
 
 $("#new-task").addEventListener("click", newTask);
 $("#new-project-toggle").addEventListener("click", showNewProject);
 $("#new-project-cancel").addEventListener("click", hideNewProject);
+$("#project-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "project-dialog") hideNewProject(); });
+$("#project-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); hideNewProject(); } });
 $("#new-project").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
@@ -784,6 +784,7 @@ async function refreshTask() {
   for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description], [$("#p-tags"), task.tags.join(", ")]]) {
     if (document.activeElement !== field) { field.value = value; fit(field); }
   }
+  showDesc();
   const status = $("#p-status");
   const statuses = state.board ? state.board.statuses : [task.status];
   status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
@@ -868,7 +869,7 @@ for (const field of [$("#p-title"), $("#p-desc")]) field.addEventListener("input
 $("#p-title").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); closeTask(); }
   // The title is one line: Enter, like Tab, goes on to the description.
-  else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) { e.preventDefault(); $("#p-desc").focus(); }
+  else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) { e.preventDefault(); editDesc(); }
   else if (e.key === "Escape") cancelField(e, panelTask ? panelTask.title : "");
 });
 $("#p-title").addEventListener("blur", (e) => {
@@ -884,7 +885,30 @@ $("#p-desc").addEventListener("keydown", (e) => {
 });
 $("#p-desc").addEventListener("blur", (e) => {
   if (panelTask && e.target.value.trim() !== panelTask.description) patchTask({ description: e.target.value });
+  showDesc();
 });
+
+// The description shows rendered, like a comment, and turns into its textarea to edit.
+// Empty, the textarea stays, so its placeholder has something to click.
+function showDesc() {
+  const desc = $("#p-desc"), view = $("#p-desc-view");
+  const editing = document.activeElement === desc || !desc.value.trim();
+  desc.hidden = !editing;
+  view.hidden = editing;
+  if (!editing) view.innerHTML = markdown(desc.value);
+}
+
+function editDesc() {
+  const desc = $("#p-desc");
+  $("#p-desc-view").hidden = true;
+  desc.hidden = false;
+  fit(desc);
+  desc.focus();
+}
+
+// A click on a link opens it instead of editing.
+$("#p-desc-view").addEventListener("mousedown", (e) => { if (e.target.closest("a")) e.preventDefault(); });
+$("#p-desc-view").addEventListener("focus", editDesc);
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 $("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));

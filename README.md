@@ -24,7 +24,7 @@ Kanzo is a kanban board in your browser and an MCP server in one small program, 
 curl -LsSf https://github.com/emanuele-em/kanzo/releases/latest/download/kanzo-installer.sh | sh
 ```
 
-For macOS and Linux, including every Raspberry Pi. Or with Cargo:
+For macOS and Linux, including every Raspberry Pi. Every release is signed by GitHub: check a download with `gh attestation verify <file> --repo emanuele-em/kanzo`. Or with Cargo:
 
 ```sh
 cargo install kanzo
@@ -78,6 +78,8 @@ A laptop, a desktop, a Raspberry Pi: they all share one board through a private 
 3. On each other machine, do the same with the same URL: Kanzo offers to use the board that's already there.
 
 From then on, press sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, use Change sync repo in Settings.
+
+Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:4242/mcp`, passing the project by name.
 
 ## Settings
 

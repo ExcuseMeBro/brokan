@@ -656,6 +656,7 @@ dependencies = [
  "axum",
  "clap",
  "dirs",
+ "libc",
  "rmcp",
  "rusqlite",
  "schemars",
