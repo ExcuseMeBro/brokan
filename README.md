@@ -47,6 +47,8 @@ Every command takes `--home <dir>` to use another data folder.
 
 `n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
 
+Need somewhere to park ideas? Turn on the Backlog column in Settings, at the bottom of the sidebar: agents leave its tasks alone until you move them to `todo`.
+
 Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Agents get its file path and can open it.
 
 When a new version is out, the sidebar offers it: one click installs it and restarts the board.
@@ -72,10 +74,10 @@ Then ask: *"take the next task from kanzo and do it."* The agent moves the card 
 A laptop, a desktop, a Raspberry Pi: they all share one board through a private git repo you own.
 
 1. [Create an empty private repo](https://github.com/new?name=kanzo-data&visibility=private) on GitHub, or anywhere git can push.
-2. Press the sync button in the sidebar and paste its URL. Kanzo makes `~/kanzo` a git repo and pushes the board.
+2. Open Settings at the bottom of the sidebar, press Sync and paste its URL. Kanzo makes `~/kanzo` a git repo and pushes the board.
 3. On each other machine, do the same with the same URL: Kanzo offers to use the board that's already there.
 
-From then on, press sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, click its name at the bottom of the sidebar.
+From then on, press sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, use Change sync repo in Settings.
 
 ## Settings
 

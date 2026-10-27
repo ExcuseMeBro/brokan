@@ -27,7 +27,7 @@ const state = {
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
   allDone: false,        // show every card in the done column
-  menu: null,            // slug of the project whose "⋯" menu is open
+  menu: null,            // slug of the project whose "⋯" menu is open, or "settings"
 };
 
 // ---------- helpers ----------
@@ -73,6 +73,7 @@ const ICONS = {
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
 };
 
@@ -316,7 +317,6 @@ function setProject(slug) {
 }
 
 function render() {
-  if (!$("#version").disabled) $("#version").textContent = `v${state.board.version}`;
   renderNav();
   renderHeader();
   renderColumns();
@@ -447,11 +447,12 @@ function closeMenu() {
   state.menu = null;
   document.querySelector(".menu")?.remove();
   document.querySelectorAll(".nav .menu-open").forEach((i) => i.classList.remove("menu-open"));
+  $("#settings").classList.remove("open");
 }
 
-// A click elsewhere closes the menu; one on a "⋯" button is left to toggle it.
+// A click elsewhere closes the menu; one on a "⋯" or the settings button is left to toggle it.
 document.addEventListener("mousedown", (e) => {
-  if (!e.target.closest(".menu, .nav .more")) closeMenu();
+  if (!e.target.closest(".menu, .nav .more, #settings")) closeMenu();
 });
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
@@ -1119,7 +1120,7 @@ schedulePoll();
 // The sync button runs `kanzo sync`: it commits the board and pulls or pushes it through
 // the data folder's git remote. When both machines changed it, the board asks which to keep.
 async function syncNow(keep) {
-  const button = $("#sync");
+  const button = $("#settings");
   button.disabled = true;
   button.classList.add("syncing");
   let diverged = null;
@@ -1147,7 +1148,7 @@ function chooseSide({ first }) {
   else if (confirm("Take the other machine's board instead? This machine's board is kept in kanzo.db.bak.")) syncNow("remote");
 }
 
-// The repo the board syncs with, shown at the bottom of the sidebar; null before it's set up.
+// The repo the board syncs with, shown in the settings menu; null before it's set up.
 let syncRemote = null;
 
 // "you/kanzo-data" from any of its URLs.
@@ -1155,19 +1156,12 @@ function repoName(url) {
   return (url || "").replace(/\.git$/, "").split(/[/:]/).filter(Boolean).slice(-2).join("/");
 }
 
-function showSyncRemote(remote) {
-  syncRemote = remote;
-  $("#sync-repo").hidden = !remote;
-  $("#sync-repo-name").textContent = repoName(remote);
-  $("#sync-repo").title = remote ? `Syncs with ${remote}. Click to change.` : "";
-}
-
 async function loadSyncRemote() {
-  try { showSyncRemote((await api("GET", "/sync")).remote); } catch {}
+  try { syncRemote = (await api("GET", "/sync")).remote; } catch {}
   return syncRemote;
 }
 
-// Sync asks for a repo the first time; after that, the repo in the sidebar changes it.
+// Sync asks for a repo the first time; after that, the repo in the settings menu changes it.
 function openSyncDialog() {
   closeMenu();
   $("#sync-dialog").hidden = false;
@@ -1193,7 +1187,7 @@ $("#sync-form").addEventListener("submit", async (e) => {
                                            body: JSON.stringify({ url: $("#sync-url").value }) });
     const reply = await res.json().catch(() => ({}));
     if (res.ok) {
-      showSyncRemote(reply.remote);
+      syncRemote = reply.remote;
       closeSyncDialog();
       syncNow();
     } else {
@@ -1211,17 +1205,53 @@ $("#sync-cancel").addEventListener("click", closeSyncDialog);
 $("#sync-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "sync-dialog") closeSyncDialog(); });
 $("#sync-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closeSyncDialog(); } });
 
-$("#sync").addEventListener("click", async () => {
+async function sync() {
+  closeMenu();
   if (await loadSyncRemote()) syncNow();
   else openSyncDialog();
-});
-$("#sync-repo").addEventListener("click", openSyncDialog);
+}
+
+// ---------- settings ----------
+
+// The settings menu at the bottom of the sidebar, as in ChatGPT: sync, the backlog
+// column, and the version, which checks for updates.
+function toggleSettings() {
+  const wasOpen = state.menu === "settings";
+  closeMenu();
+  if (wasOpen || !state.board) return;
+  state.menu = "settings";
+  const button = $("#settings");
+  button.classList.add("open");
+  const backlog = el("input", { type: "checkbox", "aria-label": "Backlog column" });
+  backlog.checked = state.board.statuses.includes("backlog");
+  backlog.addEventListener("change", async () => {
+    try {
+      await api("PATCH", "/settings", { backlog: backlog.checked });
+      loadBoard();
+    } catch (err) { backlog.checked = !backlog.checked; toast(err.message); }
+  });
+  const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
+    el("button", { onclick: sync }, icon("sync"), "Sync", el("span", { class: "value" }, syncRemote ? repoName(syncRemote) : "Set up")),
+    syncRemote ? el("button", { onclick: openSyncDialog }, icon("rename"), "Change sync repo") : null,
+    el("label", { class: "option", title: "A column before todo, for tasks agents leave alone" },
+      icon("board"), "Backlog column", el("span", { class: "switch" }, backlog, el("span"))),
+    el("div", { class: "sep" }),
+    el("button", { onclick: checkForUpdates }, icon("update"), "Check for updates", el("span", { class: "value" }, `v${state.board.version}`)));
+  document.body.append(menu);
+  const r = button.getBoundingClientRect();
+  menu.style.width = `${r.width}px`;
+  menu.style.left = `${r.left}px`;
+  menu.style.top = `${r.top - 6 - menu.offsetHeight}px`;
+  menu.focus();
+}
+
+$("#settings").addEventListener("click", toggleSettings);
 
 // ---------- update ----------
 
 // Kanzo checks GitHub for a newer release once a day and offers it at the bottom of the
-// sidebar; clicking the version there asks right away. Installing replaces the running board
-// and restarts it, and the page reloads once it's back.
+// sidebar; the settings menu asks right away. Installing replaces the running board and
+// restarts it, and the page reloads once it's back.
 async function checkUpdate() {
   try {
     showUpdate(await api("GET", "/update"));
@@ -1239,11 +1269,9 @@ function showUpdate({ current, available }) {
   };
 }
 
-// The version at the bottom of the sidebar checks for updates when clicked.
-$("#version").addEventListener("click", async () => {
-  const button = $("#version");
-  button.disabled = true;
-  button.textContent = "Checking…";
+async function checkForUpdates() {
+  closeMenu();
+  toast("Checking for updates…");
   try {
     const status = await api("GET", "/update?now=1");
     showUpdate(status);
@@ -1257,9 +1285,7 @@ $("#version").addEventListener("click", async () => {
       toast("Can't reach GitHub to check for updates");
     }
   } catch (err) { toast(err.message); }
-  button.disabled = false;
-  button.textContent = state.board ? `v${state.board.version}` : "";
-});
+}
 
 async function installUpdate(available) {
   const button = $("#update");
