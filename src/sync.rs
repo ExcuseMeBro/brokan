@@ -215,11 +215,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             format!("Pushed this machine's changes to {upstream}.")
         }
         (0, _, _) => {
-            {
-                let _lock = home.lock_exclusive()?;
-                git(&["merge", "--quiet", "--ff-only", "@{upstream}"])?;
-            }
-            home.store()?.migrate()?;
+            replace(home, || git(&["merge", "--quiet", "--ff-only", "@{upstream}"]))?;
             format!("Pulled the latest board from {upstream}.")
         }
         (_, _, None) => {
@@ -245,16 +241,26 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             format!("Overwrote {upstream} with this machine's board.")
         }
         (_, _, Some(Keep::Remote)) => {
-            {
-                let _lock = home.lock_exclusive()?;
+            replace(home, || {
                 std::fs::copy(home.db_path(), dir.join("kanzo.db.bak")).context("cannot back up kanzo.db")?;
-                git(&["reset", "--quiet", "--hard", "@{upstream}"])?;
-            }
-            home.store()?.migrate()?;
+                git(&["reset", "--quiet", "--hard", "@{upstream}"])
+            })?;
             format!("Took the board from {upstream}; this machine's old board is in kanzo.db.bak.")
         }
     };
     Ok(format!("{done}{note}"))
+}
+
+/// Lets `pull` replace kanzo.db while no connection is open, then brings it up to date
+/// before any can open it. A migration that fails rolls back, leaving the board as pulled.
+fn replace<T>(home: &Home, pull: impl FnOnce() -> Result<T>) -> Result<()> {
+    let _lock = home.lock_exclusive()?;
+    // Rolls back a write a crashed process left in kanzo.db-journal, which SQLite
+    // would otherwise apply to the pulled file.
+    Store::open(&home.db_path(), None)?.settle()?;
+    pull()?;
+    Store::open(&home.db_path(), None)?.migrate()?;
+    Ok(())
 }
 
 /// Git in `dir`; without `prompt` it fails rather than ask for a password or passphrase.
