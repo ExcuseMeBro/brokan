@@ -457,7 +457,7 @@ document.addEventListener("mousedown", (e) => {
 // A click outside the task panel closes it. Cards are left to open their own task,
 // and the project menu to do its job.
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, #search-dialog, #sync-dialog")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
@@ -700,20 +700,20 @@ window.addEventListener("pagehide", () => {
 // ---------- new project ----------
 
 function showNewProject() {
-  $("#new-project-toggle").hidden = true;
-  $("#new-project").hidden = false;
+  $("#project-dialog").hidden = false;
   $("#new-project [name=slug]").focus();
 }
 
 function hideNewProject() {
   $("#new-project").reset();
-  $("#new-project").hidden = true;
-  $("#new-project-toggle").hidden = false;
+  $("#project-dialog").hidden = true;
 }
 
 $("#new-task").addEventListener("click", newTask);
 $("#new-project-toggle").addEventListener("click", showNewProject);
 $("#new-project-cancel").addEventListener("click", hideNewProject);
+$("#project-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "project-dialog") hideNewProject(); });
+$("#project-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); hideNewProject(); } });
 $("#new-project").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
