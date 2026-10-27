@@ -1,6 +1,7 @@
 //! The data folder: where it is, what it holds, and the settings in `config.toml`.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -43,6 +44,8 @@ kanzo.lock
 
 /// How long an operation waits for `kanzo sync` before giving up with "busy".
 const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+pub const NO_LOCKS: &str = "This folder doesn't support file locks: don't sync while agents are working.";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -133,8 +136,14 @@ impl Home {
                 Err(TryLockError::WouldBlock) => {
                     return Err(store::Error::Busy("kanzo sync is updating the board; try again in a moment".into()));
                 }
-                // Some filesystems (exFAT, network shares) have no locks; go on without.
-                Err(TryLockError::Error(_)) => break None,
+                Err(TryLockError::Error(e)) if unsupported(&e) => {
+                    static WARN: std::sync::Once = std::sync::Once::new();
+                    WARN.call_once(|| eprintln!("kanzo: {NO_LOCKS}"));
+                    break None;
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(store::Error::Invalid(format!("cannot lock kanzo.lock: {e}")));
+                }
             }
         };
         Store::open(&self.db_path(), lock)
@@ -157,9 +166,14 @@ impl Home {
     }
 
     /// Blocks until no connection is open, and keeps new ones out until the file is dropped.
+    /// `None` when the filesystem has no locks.
     pub fn lock_exclusive(&self) -> Result<Option<File>> {
         let lock = self.lock_file()?;
-        Ok(lock.lock().ok().map(|_| lock))
+        match lock.lock() {
+            Ok(()) => Ok(Some(lock)),
+            Err(e) if unsupported(&e) => Ok(None),
+            Err(e) => Err(e).context("cannot lock kanzo.lock"),
+        }
     }
 
     fn lock_file(&self) -> Result<File> {
@@ -171,6 +185,15 @@ impl Home {
             .open(&path)
             .with_context(|| format!("cannot open {}", path.display()))
     }
+}
+
+/// Some filesystems (exFAT, network shares) have no file locks: Kanzo goes on without.
+fn unsupported(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::ENOLCK)) {
+        return true;
+    }
+    e.kind() == io::ErrorKind::Unsupported
 }
 
 fn write_if_missing(path: &Path, contents: &str) -> Result<()> {

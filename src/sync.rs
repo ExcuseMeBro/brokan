@@ -5,7 +5,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::home::Home;
+use crate::home::{Home, NO_LOCKS};
+use crate::store::Store;
 
 pub enum Keep {
     Local,
@@ -151,11 +152,13 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     // Wait for open connections to finish and keep new ones out while the
     // database is staged. The lock is held only while git reads or replaces
     // kanzo.db, never across a commit (hooks, signing prompts) or the network.
-    {
-        let _lock = home.lock_exclusive()?;
-        crate::store::Store::open(&home.db_path(), None)?.settle()?;
+    let note = {
+        let lock = home.lock_exclusive()?;
+        Store::open(&home.db_path(), None)?.settle()?;
         git(&["add", "--all"])?;
-    }
+        if lock.is_some() { String::new() } else { format!("\n{NO_LOCKS}") }
+    };
+
     if !git_ok(&["diff", "--cached", "--quiet"]) {
         let message = format!("kanzo sync from {}", hostname());
         // A machine where git doesn't know the user yet still syncs.
@@ -178,7 +181,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         match &others[..] {
             [] => {
                 git(&["push", "--quiet", "--set-upstream", &remote, &branch])?;
-                return Ok(format!("Pushed the board to {remote}/{branch} for the first time."));
+                return Ok(format!("Pushed the board to {remote}/{branch} for the first time.{note}"));
             }
             // The repo's board is on another branch, like master: follow it, rather than
             // start a second board next to it.
@@ -205,7 +208,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         bail!("unexpected git output: {counts}");
     };
 
-    Ok(match (ahead, behind, keep) {
+    let done = match (ahead, behind, keep) {
         (0, 0, _) => format!("Already in sync with {upstream}."),
         (_, 0, _) => {
             git(&["push", "--quiet"])?;
@@ -250,7 +253,8 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             home.store()?.migrate()?;
             format!("Took the board from {upstream}; this machine's old board is in kanzo.db.bak.")
         }
-    })
+    };
+    Ok(format!("{done}{note}"))
 }
 
 /// Git in `dir`; without `prompt` it fails rather than ask for a password or passphrase.
