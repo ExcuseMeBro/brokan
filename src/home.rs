@@ -43,7 +43,7 @@ kanzo.lock
 ";
 
 /// How long an operation waits for `kanzo sync` before giving up with "busy".
-const LOCK_WAIT: Duration = Duration::from_secs(10);
+const LOCK_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
 
 pub const NO_LOCKS: &str = "This folder doesn't support file locks: don't sync while agents are working.";
 
@@ -226,5 +226,31 @@ mod tests {
         fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"doing\", \"done\"]\n").unwrap();
         let home = Home::open(tmp.path().to_path_buf()).unwrap();
         assert_eq!(home.store().unwrap().statuses(), ["todo", "doing", "review", "done"]);
+    }
+
+    #[test]
+    fn waits_for_sync_then_reports_busy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        let lock = home.lock_exclusive().unwrap();
+        assert!(matches!(home.store(), Err(store::Error::Busy(_))));
+
+        // An operation started during a replacement waits, then goes on once it's done.
+        let waiting = std::thread::spawn({
+            let home = home.clone();
+            move || home.store().map(|s| s.statuses().len())
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!waiting.is_finished());
+        drop(lock);
+        assert_eq!(waiting.join().unwrap().unwrap(), 4);
+    }
+
+    #[test]
+    fn no_lock_only_when_unsupported() {
+        assert!(unsupported(&io::Error::from(io::ErrorKind::Unsupported)));
+        #[cfg(unix)]
+        assert!(unsupported(&io::Error::from_raw_os_error(libc::ENOLCK)));
+        assert!(!unsupported(&io::Error::from(io::ErrorKind::PermissionDenied)));
     }
 }

@@ -158,7 +158,6 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         git(&["add", "--all"])?;
         if lock.is_some() { String::new() } else { format!("\n{NO_LOCKS}") }
     };
-
     if !git_ok(&["diff", "--cached", "--quiet"]) {
         let message = format!("kanzo sync from {}", hostname());
         // A machine where git doesn't know the user yet still syncs.
@@ -305,6 +304,24 @@ fn hostname() -> String {
 mod tests {
     use super::*;
 
+    /// A machine's data folder, syncing with the bare repo `remote`.
+    fn machine(dir: &Path, remote: &Path) -> Home {
+        let home = Home::open(dir.to_path_buf()).unwrap();
+        set_remote(&home, remote.to_str().unwrap(), false).unwrap();
+        home
+    }
+
+    fn two_machines(tmp: &Path) -> (Home, Home) {
+        let remote = tmp.join("remote.git");
+        git(tmp, false, &["init", "--quiet", "--bare", remote.to_str().unwrap()]).unwrap();
+        let a = machine(&tmp.join("a"), &remote);
+        sync(&a, None, false).unwrap();
+        let b = machine(&tmp.join("b"), &remote);
+        b.store().unwrap().create_project("local", "", None).unwrap();
+        sync(&b, Some(Keep::Remote), false).unwrap();
+        (a, b)
+    }
+
     #[test]
     fn refuses_options_as_urls() {
         let tmp = tempfile::tempdir().unwrap();
@@ -312,6 +329,36 @@ mod tests {
         let err = set_remote(&home, "--upload-pack=touch pwned;", false).unwrap_err();
         assert!(err.to_string().contains("starts with '-'"));
         assert!(!tmp.path().join("pwned").exists());
+    }
+
+    #[test]
+    fn keep_remote_keeps_the_old_board() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, b) = two_machines(tmp.path());
+        assert!(b.store().unwrap().list_projects().unwrap().is_empty());
+        // The old board is in kanzo.db.bak, and in the commit sync made before resetting.
+        let bak = Store::open(&b.dir.join("kanzo.db.bak"), None).unwrap();
+        assert_eq!(bak.list_projects().unwrap()[0].slug, "local");
+        let old = git(&b.dir, false, &["log", "-1", "--format=%s", "HEAD@{1}"]).unwrap();
+        assert!(old.starts_with("kanzo sync from"));
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_the_pulled_board() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = two_machines(tmp.path());
+        let db = rusqlite::Connection::open(a.db_path()).unwrap();
+        db.execute("UPDATE meta SET value = '999' WHERE key IN ('schema_version', 'compatible')", []).unwrap();
+        drop(db);
+        sync(&a, None, false).unwrap();
+
+        let newer = "saved by a newer version of Kanzo";
+        assert!(sync(&b, None, false).unwrap_err().to_string().contains(newer));
+        let db = rusqlite::Connection::open(b.db_path()).unwrap();
+        let version: String =
+            db.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, "999");
+        assert!(format!("{:#}", Home::open(b.dir.clone()).unwrap_err()).contains(newer));
     }
 
     #[test]
