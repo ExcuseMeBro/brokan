@@ -43,10 +43,14 @@ pub fn set_remote(home: &Home, url: &str, prompt: bool) -> Result<String> {
     if url.is_empty() {
         bail!("Paste the URL of a git repository, like https://github.com/you/kanzo-data");
     }
+    // Git would read it as an option, like --upload-pack, which runs a command.
+    if url.starts_with('-') {
+        bail!("That's not a repo URL: it starts with '-'.");
+    }
     let mut failure = String::new();
     let mut found = None;
     for candidate in candidates(url) {
-        match git(dir, prompt, &["ls-remote", "--symref", &candidate, "HEAD"]) {
+        match git(dir, prompt, &["ls-remote", "--symref", "--", &candidate, "HEAD"]) {
             Ok(out) => {
                 found = Some((candidate, out));
                 break;
@@ -69,7 +73,7 @@ pub fn set_remote(home: &Home, url: &str, prompt: bool) -> Result<String> {
         if let Some((old, _)) = current {
             git(dir, prompt, &["remote", "remove", &old])?;
         }
-        git(dir, prompt, &["remote", "add", "origin", &url])?;
+        git(dir, prompt, &["remote", "add", "--", "origin", &url])?;
     }
     Ok(url)
 }
@@ -290,6 +294,15 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_options_as_urls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        let err = set_remote(&home, "--upload-pack=touch pwned;", false).unwrap_err();
+        assert!(err.to_string().contains("starts with '-'"));
+        assert!(!tmp.path().join("pwned").exists());
+    }
 
     #[test]
     fn urls() {
