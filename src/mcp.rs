@@ -180,6 +180,8 @@ struct CreateTaskArgs {
     project: Option<String>,
     /// Comma-separated.
     tags: Option<String>,
+    /// Column, like backlog; defaults to todo.
+    status: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -386,7 +388,10 @@ impl Kanzo {
         Ok(self
             .run(move |ctx, store| {
                 let project = ctx.project(store, args.project.as_deref())?;
-                let mut t = store.create_task(project.id, &args.title, args.description.as_deref().unwrap_or(""))?;
+                let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+                let status = status.as_deref().unwrap_or(&store.columns().inbox);
+                let description = args.description.as_deref().unwrap_or("");
+                let mut t = store.create_task_in(project.id, status, &args.title, description)?;
                 if args.tags.is_some() {
                     t = store.update_task(t.id, TaskPatch { tags: args.tags, ..Default::default() })?;
                 }

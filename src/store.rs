@@ -595,9 +595,16 @@ impl Store {
         Ok(max.map_or(1.0, |m| m.floor() + 1.0))
     }
 
+    /// Adds a task at the bottom of the inbox column; a shorthand for tests.
+    #[cfg(test)]
     pub fn create_task(&self, project_id: i64, title: &str, description: &str) -> Result<Task> {
+        self.create_task_in(project_id, &self.columns.inbox, title, description)
+    }
+
+    /// Adds a task at the bottom of `status`.
+    pub fn create_task_in(&self, project_id: i64, status: &str, title: &str, description: &str) -> Result<Task> {
         let title = clean_title(title)?;
-        let status = &self.columns.inbox;
+        self.check_status(status)?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
@@ -1299,10 +1306,10 @@ mod tests {
         let columns = Columns { inbox: "todo".into(), working: "doing".into(), ..Columns::new(statuses) };
         let (_dir, s) = store_with(columns);
         let api = s.create_project("api", "", None).unwrap();
-        let backlog = s.create_task(api.id, "later", "").unwrap();
-        assert_eq!(backlog.status, "todo");
-        s.move_task(backlog.id, "backlog", None).unwrap();
-        s.create_task(api.id, "now", "").unwrap();
+        let backlog = s.create_task_in(api.id, "backlog", "later", "").unwrap();
+        assert_eq!(backlog.status, "backlog");
+        assert!(s.create_task_in(api.id, "nope", "x", "").is_err());
+        assert_eq!(s.create_task(api.id, "now", "").unwrap().status, "todo");
 
         let t = s.next_task(None).unwrap().unwrap();
         assert_eq!((t.title.as_str(), t.status.as_str()), ("now", "doing"));

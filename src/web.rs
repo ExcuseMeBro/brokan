@@ -384,12 +384,15 @@ struct NewTask {
     title: String,
     #[serde(default)]
     description: String,
+    /// The column; the inbox when left out.
+    status: Option<String>,
 }
 
 async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     with_store(home, move |_, s| {
         let project = s.find_project(&t.project)?;
-        s.create_task(project.id, &t.title, &t.description)
+        let status = t.status.as_deref().unwrap_or(&s.columns().inbox);
+        s.create_task_in(project.id, status, &t.title, &t.description)
     })
     .await
 }
