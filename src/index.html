@@ -107,11 +107,7 @@ aside {
 .update:disabled { opacity: .6; cursor: default; }
 #settings { margin-top: 8px; color: var(--muted); }
 #settings:hover, #settings:focus-visible, #settings.open { color: var(--text); }
-/* The settings menu: a row with a value or a switch on its right. */
-.menu .option { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: pointer; }
-.menu .option:hover { background: var(--hover); }
-.menu .value { margin-left: auto; padding-left: 12px; color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.menu .switch { margin-left: auto; }
+.menu .value { margin-left: auto; padding-left: 12px; color: var(--faint); font-size: 12px; }
 
 /* Controls */
 input.field, textarea.field, select.field {
@@ -334,15 +330,36 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .results { overflow-y: auto; padding: 6px; }
 .dialog-window {
   width: min(520px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 22px 22px 18px;
-  background: var(--menu); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
 }
 .dialog-window h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .dialog-window p { margin: 0; color: var(--muted); line-height: 1.45; }
-.dialog-window .error { color: var(--danger); white-space: pre-line; font-size: 13px; }
 .dialog-window .row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-.dialog-window .row a { margin-right: auto; color: var(--muted); font-size: 13px; }
-.dialog-window .row a:hover { color: var(--text); }
-.dialog-window .btn:disabled { opacity: .6; cursor: default; }
+/* The settings window, as in Claude's: categories on the left, their settings on the right. */
+.settings-window {
+  width: min(760px, 100%); height: min(460px, 76vh); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
+}
+.settings-head { display: flex; align-items: center; padding: 12px 14px 12px 22px; border-bottom: 1px solid var(--border); }
+.settings-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.settings-head .ghost { width: auto; margin-left: auto; padding: 6px; color: var(--muted); }
+.settings-head .ghost:hover, .settings-head .ghost:focus-visible { color: var(--text); }
+.settings-body { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: 0; }
+#settings-nav { display: flex; flex-direction: column; gap: 2px; padding: 12px; background: var(--sidebar); border-right: 1px solid var(--border); }
+#settings-nav .active { background: var(--active); }
+.settings-pane { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; overflow-y: auto; }
+.settings-pane h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.settings-pane p { margin: 0; color: var(--muted); line-height: 1.45; }
+.settings-pane .error { color: var(--danger); white-space: pre-line; font-size: 13px; }
+.settings-pane .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.settings-pane .row a { color: var(--muted); font-size: 13px; }
+.settings-pane .row a:hover { color: var(--text); }
+.settings-pane .row .btn { margin-left: auto; }
+.settings-pane .btn:disabled { opacity: .6; cursor: default; }
+.setting { display: flex; align-items: center; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.setting .text span { color: var(--muted); font-size: 13px; }
+label.setting { cursor: pointer; }
 .results .label { color: var(--faint); font-size: 12px; padding: 8px 12px 4px; }
 .results .note { color: var(--faint); padding: 14px 12px; }
 .result {
@@ -370,6 +387,8 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   .nav .label { display: none; }
   #new-project-toggle { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
+  .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  #settings-nav { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
   header { padding: 12px; }
 }
 </style>
@@ -430,18 +449,44 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   </div>
 </div>
 
-<div class="search-dialog" id="sync-dialog" hidden>
-  <form class="dialog-window" id="sync-form" role="dialog" aria-labelledby="sync-title">
-    <h2 id="sync-title">Sync your board</h2>
-    <p>Keep this board the same on all your machines through a private git repo you own. Use the same repo on each machine.</p>
-    <input class="field" id="sync-url" placeholder="https://github.com/you/kanzo-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
-    <p class="error" id="sync-error" hidden></p>
-    <div class="row">
-      <a id="sync-create" href="https://github.com/new?name=kanzo-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>
-      <button class="btn" type="button" id="sync-cancel">Cancel</button>
-      <button class="btn primary" type="submit" id="sync-save">Save and sync</button>
+<div class="search-dialog" id="settings-dialog" hidden>
+  <div class="settings-window" role="dialog" aria-labelledby="settings-title">
+    <div class="settings-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="ghost" id="settings-close" title="Close (Esc)" aria-label="Close"><span class="icon" data-icon="close"></span></button>
     </div>
-  </form>
+    <div class="settings-body">
+      <nav id="settings-nav">
+        <button class="ghost" data-section="board"><span class="icon" data-icon="board"></span>Board</button>
+        <button class="ghost" data-section="sync"><span class="icon" data-icon="sync"></span>Sync</button>
+        <button class="ghost" data-section="about"><span class="icon" data-icon="info"></span>About</button>
+      </nav>
+      <section class="settings-pane" data-section="board">
+        <h3>Board</h3>
+        <label class="setting">
+          <span class="text">Backlog column<span>A column before todo, for tasks agents leave alone</span></span>
+          <span class="switch"><input type="checkbox" id="settings-backlog" aria-label="Backlog column"><span></span></span>
+        </label>
+      </section>
+      <form class="settings-pane" data-section="sync" id="sync-form">
+        <h3>Sync</h3>
+        <p>Keep this board the same on all your machines through a private git repo you own. Use the same repo on each machine.</p>
+        <input class="field" id="sync-url" placeholder="https://github.com/you/kanzo-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
+        <p class="error" id="sync-error" hidden></p>
+        <div class="row">
+          <a id="sync-create" href="https://github.com/new?name=kanzo-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>
+          <button class="btn primary" type="submit" id="sync-save">Save and sync</button>
+        </div>
+      </form>
+      <section class="settings-pane" data-section="about">
+        <h3>About</h3>
+        <div class="setting">
+          <span class="text">Version<span id="settings-version"></span></span>
+          <button class="btn" id="settings-update">Check for updates</button>
+        </div>
+      </section>
+    </div>
+  </div>
 </div>
 <div class="search-dialog" id="project-dialog" hidden>
   <form class="dialog-window" id="new-project" role="dialog" aria-labelledby="project-title">

@@ -75,6 +75,7 @@ const ICONS = {
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
 };
 
 function icon(name, color) {
@@ -450,7 +451,7 @@ function closeMenu() {
   $("#settings").classList.remove("open");
 }
 
-// A click elsewhere closes the menu; one on a "⋯" or the settings button is left to toggle it.
+// A click elsewhere closes the menu; one on a "⋯" or the Settings button is left to toggle it.
 document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".menu, .nav .more, #settings")) closeMenu();
 });
@@ -1141,12 +1142,14 @@ schedulePoll();
 
 // ---------- sync ----------
 
-// The sync button runs `kanzo sync`: it commits the board and pulls or pushes it through
-// the data folder's git remote. When both machines changed it, the board asks which to keep.
+// Sync runs `kanzo sync`: it commits the board and pulls or pushes it through the data
+// folder's git remote. When both machines changed it, the board asks which to keep.
+let syncing = false;
+
 async function syncNow(keep) {
-  const button = $("#settings");
-  button.disabled = true;
-  button.classList.add("syncing");
+  if (syncing) return;
+  syncing = true;
+  toast("Syncing…");
   let diverged = null;
   try {
     const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep }) });
@@ -1155,8 +1158,7 @@ async function syncNow(keep) {
     else if (reply.diverged) diverged = reply;
     else toast(reply.error || res.statusText);
   } catch (err) { toast(err.message); }
-  button.disabled = false;
-  button.classList.remove("syncing");
+  syncing = false;
   if (diverged) chooseSide(diverged);
 }
 
@@ -1172,7 +1174,7 @@ function chooseSide({ first }) {
   else if (confirm("Take the other machine's board instead? This machine's board is kept in kanzo.db.bak.")) syncNow("remote");
 }
 
-// The repo the board syncs with, shown in the settings menu; null before it's set up.
+// The repo the board syncs with; null before it's set up.
 let syncRemote = null;
 
 // "you/kanzo-data" from any of its URLs.
@@ -1185,20 +1187,11 @@ async function loadSyncRemote() {
   return syncRemote;
 }
 
-// Sync asks for a repo the first time; after that, the repo in the settings menu changes it.
-function openSyncDialog() {
+// Sync asks for a repo, in Settings, the first time.
+async function sync() {
   closeMenu();
-  $("#sync-dialog").hidden = false;
-  $("#sync-title").textContent = syncRemote ? "Sync with another repo" : "Sync your board";
-  $("#sync-create").hidden = !!syncRemote;
-  $("#sync-url").value = syncRemote || "";
-  $("#sync-error").hidden = true;
-  $("#sync-url").focus();
-  $("#sync-url").select();
-}
-
-function closeSyncDialog() {
-  $("#sync-dialog").hidden = true;
+  if (await loadSyncRemote()) syncNow();
+  else openSettings("sync");
 }
 
 $("#sync-form").addEventListener("submit", async (e) => {
@@ -1212,7 +1205,7 @@ $("#sync-form").addEventListener("submit", async (e) => {
     const reply = await res.json().catch(() => ({}));
     if (res.ok) {
       syncRemote = reply.remote;
-      closeSyncDialog();
+      closeSettings();
       syncNow();
     } else {
       $("#sync-error").textContent = reply.error || res.statusText;
@@ -1225,42 +1218,23 @@ $("#sync-form").addEventListener("submit", async (e) => {
   save.disabled = false;
   save.textContent = "Save and sync";
 });
-$("#sync-cancel").addEventListener("click", closeSyncDialog);
-$("#sync-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "sync-dialog") closeSyncDialog(); });
-$("#sync-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closeSyncDialog(); } });
 
-async function sync() {
-  closeMenu();
-  if (await loadSyncRemote()) syncNow();
-  else openSyncDialog();
-}
+// ---------- menu and settings ----------
 
-// ---------- settings ----------
-
-// The settings menu at the bottom of the sidebar, as in ChatGPT: sync, the backlog
-// column, and the version, which checks for updates.
-function toggleSettings() {
+// The Settings button at the bottom of the sidebar opens a menu, as in Claude: Settings,
+// Check for updates and Sync.
+function toggleSettingsMenu() {
   const wasOpen = state.menu === "settings";
   closeMenu();
   if (wasOpen || !state.board) return;
   state.menu = "settings";
   const button = $("#settings");
   button.classList.add("open");
-  const backlog = el("input", { type: "checkbox", "aria-label": "Backlog column" });
-  backlog.checked = state.board.statuses.includes("backlog");
-  backlog.addEventListener("change", async () => {
-    try {
-      await api("PATCH", "/settings", { backlog: backlog.checked });
-      loadBoard();
-    } catch (err) { backlog.checked = !backlog.checked; toast(err.message); }
-  });
   const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
-    el("button", { onclick: sync }, icon("sync"), "Sync", el("span", { class: "value" }, syncRemote ? repoName(syncRemote) : "Set up")),
-    syncRemote ? el("button", { onclick: openSyncDialog }, icon("rename"), "Change sync repo") : null,
-    el("label", { class: "option", title: "A column before todo, for tasks agents leave alone" },
-      icon("board"), "Backlog column", el("span", { class: "switch" }, backlog, el("span"))),
-    el("div", { class: "sep" }),
-    el("button", { onclick: checkForUpdates }, icon("update"), "Check for updates", el("span", { class: "value" }, `v${state.board.version}`)));
+    el("button", { onclick: () => openSettings() }, icon("settings"), "Settings"),
+    el("button", { onclick: () => { closeMenu(); checkForUpdates(); } }, icon("update"), "Check for updates",
+      el("span", { class: "value" }, `v${state.board.version}`)),
+    el("button", { onclick: sync }, icon("sync"), "Sync"));
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   menu.style.width = `${r.width}px`;
@@ -1269,12 +1243,51 @@ function toggleSettings() {
   menu.focus();
 }
 
-$("#settings").addEventListener("click", toggleSettings);
+$("#settings").addEventListener("click", toggleSettingsMenu);
+
+// The settings window, as in Claude's: categories on the left, their settings on the right.
+function openSettings(section = "board") {
+  closeMenu();
+  $("#settings-backlog").checked = state.board?.statuses.includes("backlog") ?? false;
+  $("#sync-url").value = syncRemote || "";
+  $("#sync-create").hidden = !!syncRemote;
+  $("#sync-error").hidden = true;
+  $("#settings-version").textContent = state.board ? `Kanzo ${state.board.version}` : "";
+  showSection(section);
+  $("#settings-dialog").hidden = false;
+  if (section === "sync") $("#sync-url").focus();
+  else $("#settings-close").focus();
+}
+
+function showSection(section) {
+  document.querySelectorAll("#settings-nav button").forEach((b) => b.classList.toggle("active", b.dataset.section === section));
+  document.querySelectorAll(".settings-pane").forEach((p) => { p.hidden = p.dataset.section !== section; });
+}
+
+function closeSettings() {
+  $("#settings-dialog").hidden = true;
+}
+
+$("#settings-nav").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) showSection(b.dataset.section);
+});
+$("#settings-close").addEventListener("click", closeSettings);
+$("#settings-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "settings-dialog") closeSettings(); });
+$("#settings-dialog").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closeSettings(); } });
+$("#settings-backlog").addEventListener("change", async (e) => {
+  const box = e.target;
+  try {
+    await api("PATCH", "/settings", { backlog: box.checked });
+    loadBoard();
+  } catch (err) { box.checked = !box.checked; toast(err.message); }
+});
+$("#settings-update").addEventListener("click", checkForUpdates);
 
 // ---------- update ----------
 
 // Kanzo checks GitHub for a newer release once a day and offers it at the bottom of the
-// sidebar; the settings menu asks right away. Installing replaces the running board and
+// sidebar; its menu asks right away. Installing replaces the running board and
 // restarts it, and the page reloads once it's back.
 async function checkUpdate() {
   try {
@@ -1294,7 +1307,6 @@ function showUpdate({ current, available }) {
 }
 
 async function checkForUpdates() {
-  closeMenu();
   toast("Checking for updates…");
   try {
     const status = await api("GET", "/update?now=1");

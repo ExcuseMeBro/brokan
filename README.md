@@ -74,10 +74,10 @@ Then ask: *"take the next task from kanzo and do it."* The agent moves the card 
 A laptop, a desktop, a Raspberry Pi: they all share one board through a private git repo you own.
 
 1. [Create an empty private repo](https://github.com/new?name=kanzo-data&visibility=private) on GitHub, or anywhere git can push.
-2. Open Settings at the bottom of the sidebar, press Sync and paste its URL. Kanzo makes `~/kanzo` a git repo and pushes the board.
+2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. Kanzo makes `~/kanzo` a git repo and pushes the board.
 3. On each other machine, do the same with the same URL: Kanzo offers to use the board that's already there.
 
-From then on, press sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, use Change sync repo in Settings.
+From then on, choose Sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, change it in Settings, under Sync.
 
 Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:4242/mcp`, passing the project by name.
 
