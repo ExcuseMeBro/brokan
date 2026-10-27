@@ -182,6 +182,8 @@ struct CreateTaskArgs {
     project: Option<String>,
     /// Comma-separated.
     tags: Option<String>,
+    /// Column; defaults to todo.
+    status: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -383,12 +385,14 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Add a task to todo.")]
+    #[tool(description = "Add a task, to todo unless you pass status.")]
     async fn create_task(&self, Parameters(args): Parameters<CreateTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
                 let project = ctx.project(store, args.project.as_deref())?;
-                let mut t = store.create_task(project.id, &args.title, args.description.as_deref().unwrap_or(""))?;
+                let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+                let description = args.description.as_deref().unwrap_or("");
+                let mut t = store.create_task_in(project.id, status.as_deref(), &args.title, description)?;
                 if args.tags.is_some() {
                     t = store.update_task(t.id, TaskPatch { tags: args.tags, ..Default::default() })?;
                 }
@@ -451,7 +455,7 @@ impl Kanzo {
                     Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
-                        Ok(format!("Nothing in {} for {scope}.", store.statuses()[0]))
+                        Ok(format!("Nothing in todo for {scope}."))
                     }
                 }
             })

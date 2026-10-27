@@ -105,14 +105,13 @@ aside {
 .update { margin-top: 8px; background: var(--hover); }
 .update:hover, .update:focus-visible { background: var(--active); }
 .update:disabled { opacity: .6; cursor: default; }
-.about { display: flex; align-items: center; gap: 8px; padding: 10px 10px 0; color: var(--faint); font-size: 12px; }
-.about .ghost { width: auto; margin-left: -6px; padding: 2px 6px; font-size: 12px; color: var(--faint); }
-.about .ghost:hover, .about .ghost:focus-visible { color: var(--text); }
-.about .ghost:disabled { cursor: default; }
-#sync-repo { display: inline-flex; align-items: center; gap: 5px; margin: 0 -6px 0 auto; min-width: 0; }
-#sync-repo[hidden] { display: none; }
-#sync-repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#sync-repo .icon svg { width: 13px; height: 13px; }
+#settings { margin-top: 8px; color: var(--muted); }
+#settings:hover, #settings:focus-visible, #settings.open { color: var(--text); }
+/* The settings menu: a row with a value or a switch on its right. */
+.menu .option { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+.menu .option:hover { background: var(--hover); }
+.menu .value { margin-left: auto; padding-left: 12px; color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu .switch { margin-left: auto; }
 form.new-project { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 10px; }
 form.new-project .row { display: flex; gap: 6px; margin-top: 2px; }
 
@@ -148,6 +147,8 @@ header .repo-link {
 }
 header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
 header .repo-link .icon svg { width: 14px; height: 14px; }
+#new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
+#new-task .icon svg { width: 16px; height: 16px; }
 .columns {
   flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr);
   gap: 12px; padding: 0 24px 24px; overflow-x: auto;
@@ -167,7 +168,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   background: none; color: var(--faint);
 }
 .column h2 .collapse:hover, .column h2 .collapse:focus-visible { background: var(--hover); color: var(--text); }
-/* A collapsed done column: a thin strip, name written downwards, that expands on a click. */
+/* A collapsed column: a thin strip, name written downwards, that expands on a click. */
 .column.collapsed { cursor: pointer; }
 .column.collapsed:hover { background: var(--hover); }
 .column.collapsed h2 { writing-mode: vertical-rl; padding: 12px 0; align-items: center; gap: 10px; }
@@ -216,11 +217,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 }
 .tag .dot { width: 6px; height: 6px; }
 .drop-line { height: 2px; background: var(--text); border-radius: 2px; margin: -4px 4px; }
-.column h2 .add {
-  margin: -6px -6px -6px auto; width: 30px; height: 30px; padding: 6px; border: 0; border-radius: 8px;
-  background: none; color: var(--muted);
-}
-.column h2 .add:hover, .column h2 .add:focus-visible { background: var(--hover); color: var(--text); }
 .empty {
   margin: auto; text-align: center; color: var(--muted); max-width: 380px; padding: 40px 20px;
 }
@@ -373,7 +369,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   .nav { flex-direction: row; overflow-x: auto; }
   .nav a { width: auto; }
   .nav .label { display: none; }
-  #new-project-toggle, form.new-project, .about { display: none; }
+  #new-project-toggle, form.new-project { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
   header { padding: 12px; }
 }
@@ -384,7 +380,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   <div class="brand">
     <img src="/logo.png" alt="">
     Kanzo
-    <button class="ghost" id="sync" title="Sync with your other machines" aria-label="Sync"><span class="icon" data-icon="sync"></span></button>
     <button class="ghost" id="search-open" title="Search (/ or ⌘K)" aria-label="Search tasks"><span class="icon" data-icon="search"></span></button>
   </div>
   <button class="ghost" id="new-project-toggle"><span class="icon" data-icon="newProject"></span>New project</button>
@@ -399,15 +394,13 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   </form>
   <nav class="nav" id="nav"></nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
-  <div class="about">
-    <button class="ghost" id="version" title="Check for updates"></button>
-    <button class="ghost" id="sync-repo" hidden><span class="icon" data-icon="sync"></span><span id="sync-repo-name"></span></button>
-  </div>
+  <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
 </aside>
 
 <main>
   <header>
     <div class="info" id="header"></div>
+    <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
 </main>

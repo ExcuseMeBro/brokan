@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::store::{self, ImagesOf, Store};
@@ -22,10 +22,6 @@ port = 4242
 # Raspberry Pi with no screen. There are no logins: anyone who can reach the
 # port can read and change the board, and use its MCP endpoint.
 listen = "127.0.0.1"
-
-# Board columns, left to right. New tasks go in the first one;
-# tasks in the last one count as done.
-statuses = ["todo", "doing", "review", "done"]
 
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
 # that cannot start `kanzo mcp` themselves.
@@ -53,36 +49,16 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 pub struct Config {
     pub port: u16,
     pub listen: IpAddr,
-    pub statuses: Vec<String>,
+    /// Before 0.2 this set the columns; they're fixed now, with an optional backlog
+    /// switched on from the board. Still read, so older files keep working.
+    #[serde(rename = "statuses")]
+    _statuses: Option<toml::Value>,
     pub mcp_http: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            port: DEFAULT_PORT,
-            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            statuses: ["todo", "doing", "review", "done"].map(String::from).to_vec(),
-            mcp_http: true,
-        }
-    }
-}
-
-impl Config {
-    fn validate(&self) -> Result<()> {
-        if self.statuses.len() < 2 {
-            bail!("config.toml: `statuses` needs at least two columns");
-        }
-        for (i, s) in self.statuses.iter().enumerate() {
-            if s.is_empty() || !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-            {
-                bail!("config.toml: status {s:?} must be lowercase letters, digits, - or _");
-            }
-            if self.statuses[..i].contains(s) {
-                bail!("config.toml: status {s:?} is listed twice");
-            }
-        }
-        Ok(())
+        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true }
     }
 }
 
@@ -116,7 +92,6 @@ impl Home {
         let path = dir.join("config.toml");
         let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let config: Config = toml::from_str(&text).with_context(|| format!("{} is not valid", path.display()))?;
-        config.validate()?;
 
         let home = Self { dir, config };
         home.store()?.migrate()?;
@@ -162,7 +137,7 @@ impl Home {
                 Err(TryLockError::Error(_)) => break None,
             }
         };
-        Store::open(&self.db_path(), self.config.statuses.clone(), lock)
+        Store::open(&self.db_path(), lock)
     }
 
     /// Runs `delete`, then deletes the image files of `of` that nothing uses any more:
@@ -218,16 +193,15 @@ mod tests {
         assert!(dir.join(".gitignore").exists());
         assert!(dir.join("kanzo.db").exists());
         assert_eq!(home.config.port, DEFAULT_PORT);
-        assert_eq!(home.config.statuses, ["todo", "doing", "review", "done"]);
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());
     }
 
     #[test]
-    fn rejects_bad_statuses() {
+    fn statuses_from_before_0_2_are_ignored() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"todo\"]\n").unwrap();
-        let err = Home::open(tmp.path().to_path_buf()).unwrap_err();
-        assert!(err.to_string().contains("listed twice"), "{err}");
+        fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"doing\", \"done\"]\n").unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        assert_eq!(home.store().unwrap().statuses(), ["todo", "doing", "review", "done"]);
     }
 }
