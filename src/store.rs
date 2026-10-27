@@ -162,41 +162,23 @@ pub struct TaskPatch {
     pub human: Option<bool>,
 }
 
-/// The board's columns, from `config.toml`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Columns {
-    /// Left to right; tasks in the last one count as done.
-    pub statuses: Vec<String>,
-    /// Columns the board starts collapsed.
-    pub collapsed: Vec<String>,
-    /// Where new tasks go, and where agents take the next task from.
-    pub inbox: String,
-    /// Where an agent's next task moves to.
-    pub working: String,
-}
+/// The board's columns, left to right. New tasks go in todo, agents take theirs from
+/// there and move them to doing, and tasks in done count as done.
+const STATUSES: [&str; 4] = ["todo", "doing", "review", "done"];
 
-impl Columns {
-    /// New tasks in the first column, agents move them to the second, done starts collapsed.
-    pub fn new(statuses: Vec<String>) -> Self {
-        Self {
-            collapsed: statuses.last().cloned().into_iter().collect(),
-            inbox: statuses[0].clone(),
-            working: statuses[1].clone(),
-            statuses,
-        }
-    }
-}
+/// An optional column before todo, for tasks that agents leave alone.
+pub const BACKLOG: &str = "backlog";
 
 pub struct Store {
     conn: Connection,
-    columns: Columns,
+    statuses: Vec<String>,
     /// Held while the connection is open; declared after `conn` so it is released after it closes.
     _lock: Option<std::fs::File>,
 }
 
 impl Store {
     /// Opens the database. `lock` is kept until the store is dropped (see `Home::store`).
-    pub fn open(path: &Path, columns: Columns, lock: Option<std::fs::File>) -> Result<Self> {
+    pub fn open(path: &Path, lock: Option<std::fs::File>) -> Result<Self> {
         let conn = Connection::open(path)?;
         // The board and any number of agents share this file; wait instead of failing.
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -206,19 +188,39 @@ impl Store {
         // when a board loses power.
         conn.pragma_update_and_check(None, "journal_mode", "TRUNCATE", |_| Ok(()))?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        Ok(Self { conn, columns, _lock: lock })
+        // Before the first migration there is no meta table, and so no backlog.
+        let backlog = conn
+            .query_row("SELECT value FROM meta WHERE key = 'backlog'", [], |r| r.get::<_, String>(0))
+            .is_ok_and(|v| v == "1");
+        let statuses = backlog.then_some(BACKLOG).into_iter().chain(STATUSES).map(String::from).collect();
+        Ok(Self { conn, statuses, _lock: lock })
     }
 
     pub fn statuses(&self) -> &[String] {
-        &self.columns.statuses
-    }
-
-    pub fn columns(&self) -> &Columns {
-        &self.columns
+        &self.statuses
     }
 
     fn done_status(&self) -> &str {
-        self.columns.statuses.last().expect("config has at least two statuses")
+        STATUSES[3]
+    }
+
+    /// Shows or hides the backlog column. It must be empty to hide it, or its
+    /// tasks would vanish from the board.
+    pub fn set_backlog(&self, on: bool) -> Result<()> {
+        self.write(|c| {
+            let left: i64 = c.query_row("SELECT count(*) FROM tasks WHERE status = ?1", [BACKLOG], |r| r.get(0))?;
+            if !on && left > 0 {
+                let tasks = if left == 1 { "task" } else { "tasks" };
+                return Err(Error::Invalid(format!("move the {left} {tasks} out of backlog first")));
+            }
+            c.execute(
+                "INSERT INTO meta (key, value) VALUES ('backlog', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [if on { "1" } else { "0" }],
+            )?;
+            // Other open boards redraw their columns.
+            c.execute("UPDATE meta SET value = value + 1 WHERE key = 'changes'", [])?;
+            Ok(())
+        })
     }
 
     /// Runs `f` in an immediate transaction, so concurrent writers queue up
@@ -595,15 +597,22 @@ impl Store {
         Ok(max.map_or(1.0, |m| m.floor() + 1.0))
     }
 
-    /// Adds a task at the bottom of the inbox column; a shorthand for tests.
+    /// Adds a task at the bottom of todo; a shorthand for tests.
     #[cfg(test)]
     pub fn create_task(&self, project_id: i64, title: &str, description: &str) -> Result<Task> {
-        self.create_task_in(project_id, &self.columns.inbox, title, description)
+        self.create_task_in(project_id, None, title, description)
     }
 
-    /// Adds a task at the bottom of `status`.
-    pub fn create_task_in(&self, project_id: i64, status: &str, title: &str, description: &str) -> Result<Task> {
+    /// Adds a task at the bottom of `status`, todo when left out.
+    pub fn create_task_in(
+        &self,
+        project_id: i64,
+        status: Option<&str>,
+        title: &str,
+        description: &str,
+    ) -> Result<Task> {
         let title = clean_title(title)?;
+        let status = status.unwrap_or(STATUSES[0]);
         self.check_status(status)?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
@@ -728,11 +737,10 @@ impl Store {
         Ok(())
     }
 
-    /// Takes the top task of the inbox column that isn't for a person, and moves it to
-    /// the bottom of the working one.
+    /// Takes the top task of todo that isn't for a person, and moves it to the bottom
+    /// of doing.
     pub fn next_task(&self, project_id: Option<i64>) -> Result<Option<Task>> {
-        let from = &self.columns.inbox;
-        let to = &self.columns.working;
+        let [from, to, ..] = STATUSES;
         let id = self.write(|c| {
             let id: Option<i64> = c
                 .query_row(
@@ -1002,12 +1010,8 @@ mod tests {
     use super::*;
 
     fn store() -> (tempfile::TempDir, Store) {
-        store_with(Columns::new(["todo", "doing", "review", "done"].map(String::from).to_vec()))
-    }
-
-    fn store_with(columns: Columns) -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("kanzo.db"), columns, None).unwrap();
+        let store = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
         store.migrate().unwrap();
         (dir, store)
     }
@@ -1173,8 +1177,7 @@ mod tests {
             )
             .unwrap();
         }
-        let statuses = ["todo", "doing", "review", "done"].map(String::from).to_vec();
-        let s = Store::open(&path, Columns::new(statuses), None).unwrap();
+        let s = Store::open(&path, None).unwrap();
         s.migrate().unwrap();
         assert_eq!(s.find_project("api").unwrap().repos, ["me/api"]);
         assert!(s.find_project("web").unwrap().repos.is_empty());
@@ -1301,20 +1304,27 @@ mod tests {
     }
 
     #[test]
-    fn inbox_and_working_need_not_be_the_first_columns() {
-        let statuses = ["backlog", "todo", "doing", "done"].map(String::from).to_vec();
-        let columns = Columns { inbox: "todo".into(), working: "doing".into(), ..Columns::new(statuses) };
-        let (_dir, s) = store_with(columns);
+    fn backlog_is_a_column_agents_skip() {
+        let (dir, s) = store();
+        assert_eq!(s.statuses(), STATUSES);
+        s.set_backlog(true).unwrap();
+        let s = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
+        assert_eq!(s.statuses(), ["backlog", "todo", "doing", "review", "done"]);
         let api = s.create_project("api", "", None).unwrap();
-        let backlog = s.create_task_in(api.id, "backlog", "later", "").unwrap();
+        let backlog = s.create_task_in(api.id, Some("backlog"), "later", "").unwrap();
         assert_eq!(backlog.status, "backlog");
-        assert!(s.create_task_in(api.id, "nope", "x", "").is_err());
+        assert!(s.create_task_in(api.id, Some("nope"), "x", "").is_err());
         assert_eq!(s.create_task(api.id, "now", "").unwrap().status, "todo");
 
         let t = s.next_task(None).unwrap().unwrap();
         assert_eq!((t.title.as_str(), t.status.as_str()), ("now", "doing"));
         assert!(s.next_task(None).unwrap().is_none());
         assert_eq!(s.get_task(backlog.id).unwrap().status, "backlog");
+
+        // Hiding it would hide its tasks.
+        assert!(s.set_backlog(false).is_err());
+        s.delete_task(backlog.id).unwrap();
+        s.set_backlog(false).unwrap();
     }
 
     #[test]

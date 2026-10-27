@@ -129,12 +129,12 @@ function projectColor(slug) {
   return PROJECT_COLORS[projectColorName(slug)];
 }
 
-// How many columns a status is past the inbox, where new tasks go: negative for the
-// columns before it, like backlog, and 0 for a status the board doesn't know.
+// How many columns a status is past todo: -1 for backlog, and 0 for a status the board
+// doesn't know.
 function statusStep(status) {
-  const { statuses, inbox } = state.board;
+  const { statuses } = state.board;
   const i = statuses.indexOf(status);
-  return i < 0 ? 0 : i - Math.max(statuses.indexOf(inbox), 0);
+  return i < 0 ? 0 : i - statuses.indexOf("todo");
 }
 
 function statusColor(status) {
@@ -142,13 +142,12 @@ function statusColor(status) {
   return STATUS_COLORS[Math.max(i, 0) % STATUS_COLORS.length];
 }
 
-// A column's status as a small progress circle, as in Linear: dashed before the inbox,
-// empty for the inbox, filling up across the board, a check for the last. A shape, so it
-// can't be taken for a project's colour dot.
+// A column's status as a small progress circle, as in Linear: dashed for backlog, empty
+// for todo, filling up across the board, a check for done. A shape, so it can't be taken
+// for a project's colour dot.
 function statusIcon(status) {
-  const { statuses, inbox } = state.board;
-  const step = statusStep(status), steps = statuses.length - 1 - Math.max(statuses.indexOf(inbox), 0);
-  const f = steps > 0 ? Math.max(step, 0) / steps : 0;
+  const step = statusStep(status), steps = statusStep("done");
+  const f = Math.max(step, 0) / steps;
   const color = statusColor(status);
   const dash = step < 0 ? ' stroke-dasharray="2.36 2.36"' : "";
   let inside = "";
@@ -515,12 +514,11 @@ function renderColumns() {
   columns.style.display = "";
 
   // Build the columns once per layout so a refresh never wipes a half-typed task.
-  const { collapsed, inbox } = state.board;
-  const layout = [statuses.join(","), collapsed.join(","), inbox, state.project].join("|");
+  const layout = statuses.join(",") + "|" + state.project;
   if (state.layout !== layout) {
     state.layout = layout;
     columns.replaceChildren(...statuses.map((status) => {
-      const collapsible = collapsed.includes(status);
+      const collapsible = status === "backlog" || status === "done";
       const col = el("section", { class: "column", "data-status": status },
         el("h2", {},
           statusIcon(status), status,
@@ -553,16 +551,14 @@ function renderColumns() {
   }
 }
 
-// Columns listed under `collapsed` in config.toml, like done, which only grows, start
-// collapsed to a thin strip, as in Trello or Linear, and each browser remembers the
-// choice. Cards can still be dropped on a strip.
+// Backlog and done, which only grows, start collapsed to a thin strip, as in Trello or
+// Linear, and each browser remembers the choice. Cards can still be dropped on a strip.
 function isCollapsed(status) {
-  const saved = localStorageGet("kanzo.collapsed." + status);
-  return saved === null ? state.board.collapsed.includes(status) : saved === "1";
+  return localStorageGet(`kanzo.${status}Collapsed`) !== "0";
 }
 
 function setCollapsed(status, collapsed) {
-  try { localStorage.setItem("kanzo.collapsed." + status, collapsed ? "1" : "0"); } catch {}
+  try { localStorage.setItem(`kanzo.${status}Collapsed`, collapsed ? "1" : "0"); } catch {}
   showCollapsed();
 }
 
@@ -576,9 +572,9 @@ function showCollapsed() {
     const { status } = col.dataset;
     const collapsed = isCollapsed(status);
     col.classList.toggle("collapsed", collapsed);
-    // The arrows point the way the column folds: to the right edge, or for the
-    // columns before the inbox, to the left one.
-    const left = statusStep(status) < 0;
+    // The arrows point the way the column folds: to the right edge, or for backlog,
+    // to the left one.
+    const left = status === "backlog";
     button.replaceChildren(icon(collapsed !== left ? "expand" : "collapse"));
     button.title = collapsed ? `Show ${status}` : `Collapse ${status}`;
     button.setAttribute("aria-label", button.title);

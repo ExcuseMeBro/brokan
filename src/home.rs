@@ -5,10 +5,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::store::{self, Columns, ImagesOf, Store};
+use crate::store::{self, ImagesOf, Store};
 
 const DEFAULT_PORT: u16 = 4242;
 
@@ -22,18 +22,6 @@ port = 4242
 # Raspberry Pi with no screen. There are no logins: anyone who can reach the
 # port can read and change the board, and use its MCP endpoint.
 listen = "127.0.0.1"
-
-# Board columns, left to right. Tasks in the last one count as done.
-statuses = ["backlog", "todo", "doing", "review", "done"]
-
-# Columns the board starts collapsed to a thin strip. Each browser remembers
-# when you open or close one.
-collapsed = ["backlog", "done"]
-
-# New tasks go in `inbox`, and agents take their next task from there and
-# move it to `working`. Without these, the first and second column.
-inbox = "todo"
-working = "doing"
 
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
 # that cannot start `kanzo mcp` themselves.
@@ -61,69 +49,16 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 pub struct Config {
     pub port: u16,
     pub listen: IpAddr,
-    pub statuses: Vec<String>,
-    pub collapsed: Option<Vec<String>>,
-    pub inbox: Option<String>,
-    pub working: Option<String>,
+    /// Before 0.2 this set the columns; they're fixed now, with an optional backlog
+    /// switched on from the board. Still read, so older files keep working.
+    #[serde(rename = "statuses")]
+    _statuses: Option<toml::Value>,
     pub mcp_http: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            port: DEFAULT_PORT,
-            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            // A config.toml from before `collapsed`, `inbox` and `working` keeps its board.
-            statuses: ["todo", "doing", "review", "done"].map(String::from).to_vec(),
-            collapsed: None,
-            inbox: None,
-            working: None,
-            mcp_http: true,
-        }
-    }
-}
-
-impl Config {
-    /// Checks the column settings and fills in the ones left out.
-    fn columns(&self) -> Result<Columns> {
-        if self.statuses.len() < 2 {
-            bail!("config.toml: `statuses` needs at least two columns");
-        }
-        for (i, s) in self.statuses.iter().enumerate() {
-            if s.is_empty() || !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-            {
-                bail!("config.toml: status {s:?} must be lowercase letters, digits, - or _");
-            }
-            if self.statuses[..i].contains(s) {
-                bail!("config.toml: status {s:?} is listed twice");
-            }
-        }
-        let listed = |key: &str, s: &String| {
-            if self.statuses.contains(s) {
-                Ok(s.clone())
-            } else {
-                bail!("config.toml: {key} {s:?} is not one of the statuses: {}", self.statuses.join(", "))
-            }
-        };
-        let mut columns = Columns::new(self.statuses.clone());
-        if let Some(s) = &self.inbox {
-            columns.inbox = listed("inbox", s)?;
-        }
-        let at = self.statuses.iter().position(|s| *s == columns.inbox).unwrap_or(0);
-        if at == self.statuses.len() - 1 {
-            bail!("config.toml: inbox {:?} is the done column; pick another", columns.inbox);
-        }
-        columns.working = match &self.working {
-            Some(s) => listed("working", s)?,
-            None => self.statuses[at + 1].clone(),
-        };
-        if columns.working == columns.inbox {
-            bail!("config.toml: inbox and working are both {:?}", columns.inbox);
-        }
-        if let Some(collapsed) = &self.collapsed {
-            columns.collapsed = collapsed.iter().map(|s| listed("collapsed", s)).collect::<Result<_>>()?;
-        }
-        Ok(columns)
+        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true }
     }
 }
 
@@ -132,7 +67,6 @@ impl Config {
 pub struct Home {
     pub dir: PathBuf,
     pub config: Config,
-    pub columns: Columns,
 }
 
 impl Home {
@@ -158,9 +92,8 @@ impl Home {
         let path = dir.join("config.toml");
         let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let config: Config = toml::from_str(&text).with_context(|| format!("{} is not valid", path.display()))?;
-        let columns = config.columns()?;
 
-        let home = Self { dir, config, columns };
+        let home = Self { dir, config };
         home.store()?.migrate()?;
         Ok(home)
     }
@@ -204,7 +137,7 @@ impl Home {
                 Err(TryLockError::Error(_)) => break None,
             }
         };
-        Store::open(&self.db_path(), self.columns.clone(), lock)
+        Store::open(&self.db_path(), lock)
     }
 
     /// Runs `delete`, then deletes the image files of `of` that nothing uses any more:
@@ -260,54 +193,15 @@ mod tests {
         assert!(dir.join(".gitignore").exists());
         assert!(dir.join("kanzo.db").exists());
         assert_eq!(home.config.port, DEFAULT_PORT);
-        assert_eq!(home.columns.statuses, ["backlog", "todo", "doing", "review", "done"]);
-        assert_eq!(home.columns.collapsed, ["backlog", "done"]);
-        assert_eq!((home.columns.inbox.as_str(), home.columns.working.as_str()), ("todo", "doing"));
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());
     }
 
     #[test]
-    fn rejects_bad_statuses() {
+    fn statuses_from_before_0_2_are_ignored() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"todo\"]\n").unwrap();
-        let err = Home::open(tmp.path().to_path_buf()).unwrap_err();
-        assert!(err.to_string().contains("listed twice"), "{err}");
-    }
-
-    #[test]
-    fn statuses_alone_keep_the_old_board() {
-        let tmp = tempfile::tempdir().unwrap();
-        let text = "statuses = [\"todo\", \"doing\", \"review\", \"done\"]\n";
-        fs::write(tmp.path().join("config.toml"), text).unwrap();
+        fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"doing\", \"done\"]\n").unwrap();
         let home = Home::open(tmp.path().to_path_buf()).unwrap();
-        assert_eq!(home.columns, Columns::new(["todo", "doing", "review", "done"].map(String::from).to_vec()));
-        assert_eq!(home.columns.collapsed, ["done"]);
-    }
-
-    #[test]
-    fn working_follows_inbox() {
-        let tmp = tempfile::tempdir().unwrap();
-        let text = "statuses = [\"later\", \"next\", \"now\", \"done\"]\ninbox = \"next\"\n";
-        fs::write(tmp.path().join("config.toml"), text).unwrap();
-        let home = Home::open(tmp.path().to_path_buf()).unwrap();
-        assert_eq!((home.columns.inbox.as_str(), home.columns.working.as_str()), ("next", "now"));
-    }
-
-    #[test]
-    fn rejects_bad_columns() {
-        for (extra, says) in [
-            ("inbox = \"nope\"", "not one of the statuses"),
-            ("working = \"nope\"", "not one of the statuses"),
-            ("collapsed = [\"nope\"]", "not one of the statuses"),
-            ("inbox = \"done\"", "done column"),
-            ("inbox = \"doing\"\nworking = \"doing\"", "both"),
-        ] {
-            let tmp = tempfile::tempdir().unwrap();
-            let text = format!("statuses = [\"todo\", \"doing\", \"done\"]\n{extra}\n");
-            fs::write(tmp.path().join("config.toml"), text).unwrap();
-            let err = Home::open(tmp.path().to_path_buf()).unwrap_err();
-            assert!(err.to_string().contains(says), "{extra}: {err}");
-        }
+        assert_eq!(home.store().unwrap().statuses(), ["todo", "doing", "review", "done"]);
     }
 }

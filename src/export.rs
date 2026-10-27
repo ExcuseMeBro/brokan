@@ -189,7 +189,7 @@ mod tests {
         assert!(md.contains("## Web `web`"), "{md}");
 
         let json: serde_json::Value = serde_json::to_value(&board).unwrap();
-        assert_eq!(json["statuses"][0], "backlog");
+        assert_eq!(json["statuses"][0], "todo");
         assert_eq!(json["projects"][0]["slug"], "api");
         assert_eq!(json["projects"][0]["tasks"][0]["key"], "api#1");
         assert_eq!(json["projects"][0]["tasks"][0]["comments"][0]["author"], "claude-code");

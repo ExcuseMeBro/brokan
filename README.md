@@ -84,10 +84,6 @@ Everything lives in `~/kanzo`: the board in `kanzo.db`, settings in `config.toml
 ```toml
 port = 4242
 listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: no logins, so only on one you trust
-statuses = ["backlog", "todo", "doing", "review", "done"]   # the last counts as done
-collapsed = ["backlog", "done"]   # start as thin strips on the board
-inbox = "todo"         # new tasks go here, and agents take their next task from here
-working = "doing"      # ... and move it here
 mcp_http = true        # MCP at /mcp
 ```
 
