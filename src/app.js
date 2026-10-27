@@ -784,6 +784,7 @@ async function refreshTask() {
   for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description], [$("#p-tags"), task.tags.join(", ")]]) {
     if (document.activeElement !== field) { field.value = value; fit(field); }
   }
+  showDesc();
   const status = $("#p-status");
   const statuses = state.board ? state.board.statuses : [task.status];
   status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
@@ -868,7 +869,7 @@ for (const field of [$("#p-title"), $("#p-desc")]) field.addEventListener("input
 $("#p-title").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); closeTask(); }
   // The title is one line: Enter, like Tab, goes on to the description.
-  else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) { e.preventDefault(); $("#p-desc").focus(); }
+  else if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) { e.preventDefault(); editDesc(); }
   else if (e.key === "Escape") cancelField(e, panelTask ? panelTask.title : "");
 });
 $("#p-title").addEventListener("blur", (e) => {
@@ -884,7 +885,30 @@ $("#p-desc").addEventListener("keydown", (e) => {
 });
 $("#p-desc").addEventListener("blur", (e) => {
   if (panelTask && e.target.value.trim() !== panelTask.description) patchTask({ description: e.target.value });
+  showDesc();
 });
+
+// The description shows rendered, like a comment, and turns into its textarea to edit.
+// Empty, the textarea stays, so its placeholder has something to click.
+function showDesc() {
+  const desc = $("#p-desc"), view = $("#p-desc-view");
+  const editing = document.activeElement === desc || !desc.value.trim();
+  desc.hidden = !editing;
+  view.hidden = editing;
+  if (!editing) view.innerHTML = markdown(desc.value);
+}
+
+function editDesc() {
+  const desc = $("#p-desc");
+  $("#p-desc-view").hidden = true;
+  desc.hidden = false;
+  fit(desc);
+  desc.focus();
+}
+
+// A click on a link opens it instead of editing.
+$("#p-desc-view").addEventListener("mousedown", (e) => { if (e.target.closest("a")) e.preventDefault(); });
+$("#p-desc-view").addEventListener("focus", editDesc);
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 $("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));

@@ -249,6 +249,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   width: calc(100% + 20px); resize: none; overflow: hidden; display: block;
 }
 .panel .inline:hover, .panel .inline:focus { background: var(--hover); }
+.panel .desc-view { cursor: text; }
 .panel .title-input { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
 .props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
@@ -414,6 +415,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
     <div class="section">
       <h3>Description</h3>
       <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>
+      <div class="inline md desc-view" id="p-desc-view" tabindex="0" role="button" aria-label="Edit description" hidden></div>
       <div class="thumbs" id="p-images"></div>
     </div>
     <div class="section">
