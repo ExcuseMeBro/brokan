@@ -96,8 +96,8 @@ mcp_http = true        # MCP at /mcp
 | Memory | 4.5 MB idle, 8 MB with 3,000 tasks |
 | Start | 2 ms |
 | Board of 3,000 tasks | 17 ms to load in the browser |
-| Agents' tool list | about 1,800 tokens, cached after the first call |
-| Agents' replies | plain text: 46 tokens to take a task, 178 to list 8 |
+| Agents' tool list | about 900 tokens, once per session |
+| Agents' replies | 10 to 60 tokens of plain text |
 
 Measured on an Apple M4.
 
