@@ -471,6 +471,8 @@ function renderHeader() {
   const p = currentProject();
   const { projects, tasks } = state.board;
   const header = $("#header");
+  // New tasks go in the inbox column; the task's Status field moves them elsewhere.
+  $("#new-task").hidden = !projects.length;
   if (!projects.length) { header.replaceChildren(); return; }
   // Plain words for what each piece is: how much is open, and the repos on GitHub.
   const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
@@ -523,8 +525,6 @@ function renderColumns() {
         el("h2", {},
           statusIcon(status), status,
           el("span", { class: "count" }),
-          // At the top, so a long column never hides it.
-          status === inbox ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null,
           collapsible ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setCollapsed(status, !isCollapsed(status)); } }) : null),
         el("div", { class: "cards" }),
       );
@@ -714,6 +714,7 @@ function hideNewProject() {
   $("#new-project-toggle").hidden = false;
 }
 
+$("#new-task").addEventListener("click", () => newTask());
 $("#new-project-toggle").addEventListener("click", showNewProject);
 $("#new-project-cancel").addEventListener("click", hideNewProject);
 $("#new-project").addEventListener("submit", async (e) => {
@@ -1082,7 +1083,7 @@ document.addEventListener("keydown", (e) => {
     openSearch();
   }
   if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
-    if ($("#columns .add")) { e.preventDefault(); newTask(); }
+    if (!$("#new-task").hidden) { e.preventDefault(); newTask(); }
   }
 });
 
