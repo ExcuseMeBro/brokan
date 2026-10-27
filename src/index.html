@@ -147,9 +147,8 @@ header .repo-link {
 }
 header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
 header .repo-link .icon svg { width: 14px; height: 14px; }
-header .new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; flex: none; }
-header .new-task[hidden] { display: none; }
-header .new-task .icon svg { width: 16px; height: 16px; }
+#new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
+#new-task .icon svg { width: 16px; height: 16px; }
 .columns {
   flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr);
   gap: 12px; padding: 0 24px 24px; overflow-x: auto;
@@ -401,7 +400,7 @@ header .new-task .icon svg { width: 16px; height: 16px; }
 <main>
   <header>
     <div class="info" id="header"></div>
-    <button class="btn primary new-task" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
+    <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
 </main>

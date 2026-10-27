@@ -471,7 +471,6 @@ function renderHeader() {
   const p = currentProject();
   const { projects, tasks } = state.board;
   const header = $("#header");
-  // New tasks go in the inbox column; the task's Status field moves them elsewhere.
   $("#new-task").hidden = !projects.length;
   if (!projects.length) { header.replaceChildren(); return; }
   // Plain words for what each piece is: how much is open, and the repos on GitHub.
@@ -664,8 +663,9 @@ function localStorageGet(k) {
 
 // ---------- new task ----------
 
-// "+ Add task" creates the task at once and opens it like any other, with its
-// title selected to type over. Closed untouched, it is deleted again.
+// New task creates the task in todo at once and opens it like any other, with its title
+// selected to type over; its Status field moves it elsewhere. Closed untouched, it is
+// deleted again.
 const NEW_TITLE = "New task";
 let fresh = null; // id of the task just added, until something in it is saved
 
@@ -711,7 +711,7 @@ function hideNewProject() {
   $("#new-project-toggle").hidden = false;
 }
 
-$("#new-task").addEventListener("click", () => newTask());
+$("#new-task").addEventListener("click", newTask);
 $("#new-project-toggle").addEventListener("click", showNewProject);
 $("#new-project-cancel").addEventListener("click", hideNewProject);
 $("#new-project").addEventListener("submit", async (e) => {
