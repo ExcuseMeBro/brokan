@@ -449,7 +449,7 @@ impl Kanzo {
                     Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
-                        Ok(format!("Nothing in {} for {scope}.", store.statuses()[0]))
+                        Ok(format!("Nothing in {} for {scope}.", store.columns().inbox))
                     }
                 }
             })

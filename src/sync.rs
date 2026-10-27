@@ -149,7 +149,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     // kanzo.db, never across a commit (hooks, signing prompts) or the network.
     {
         let _lock = home.lock_exclusive()?;
-        crate::store::Store::open(&home.db_path(), home.config.statuses.clone(), None)?.settle()?;
+        crate::store::Store::open(&home.db_path(), home.columns.clone(), None)?.settle()?;
         git(&["add", "--all"])?;
     }
     if !git_ok(&["diff", "--cached", "--quiet"]) {

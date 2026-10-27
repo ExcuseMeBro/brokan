@@ -283,7 +283,9 @@ struct BoardQuery {
 #[derive(Serialize)]
 struct Board {
     changes: String,
+    collapsed: Vec<String>,
     done_hidden: usize,
+    inbox: String,
     projects: Vec<store::Project>,
     statuses: Vec<String>,
     tasks: Vec<store::Task>,
@@ -300,7 +302,9 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
         let (tasks, done_hidden) = s.list_tasks_keeping_done(project.map(|p| p.id), None, keep_done)?;
         Ok(Board {
             changes: change_token(h, s)?,
+            collapsed: s.columns().collapsed.clone(),
             done_hidden,
+            inbox: s.columns().inbox.clone(),
             projects: s.list_projects()?,
             statuses: s.statuses().to_vec(),
             tasks,

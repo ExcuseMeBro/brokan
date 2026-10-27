@@ -129,18 +129,28 @@ function projectColor(slug) {
   return PROJECT_COLORS[projectColorName(slug)];
 }
 
+// How many columns a status is past the inbox, where new tasks go: negative for the
+// columns before it, like backlog, and 0 for a status the board doesn't know.
+function statusStep(status) {
+  const { statuses, inbox } = state.board;
+  const i = statuses.indexOf(status);
+  return i < 0 ? 0 : i - Math.max(statuses.indexOf(inbox), 0);
+}
+
 function statusColor(status) {
-  const i = state.board ? state.board.statuses.indexOf(status) : 0;
+  const i = state.board ? statusStep(status) : 0;
   return STATUS_COLORS[Math.max(i, 0) % STATUS_COLORS.length];
 }
 
-// A column's status as a small progress circle, as in Linear: empty for the first column,
-// filling up across the board, a check for the last. A shape, so it can't be taken for a
-// project's colour dot.
+// A column's status as a small progress circle, as in Linear: dashed before the inbox,
+// empty for the inbox, filling up across the board, a check for the last. A shape, so it
+// can't be taken for a project's colour dot.
 function statusIcon(status) {
-  const { statuses } = state.board;
-  const f = statuses.length > 1 ? Math.max(statuses.indexOf(status), 0) / (statuses.length - 1) : 0;
+  const { statuses, inbox } = state.board;
+  const step = statusStep(status), steps = statuses.length - 1 - Math.max(statuses.indexOf(inbox), 0);
+  const f = steps > 0 ? Math.max(step, 0) / steps : 0;
   const color = statusColor(status);
+  const dash = step < 0 ? ' stroke-dasharray="2.36 2.36"' : "";
   let inside = "";
   if (f >= 1) {
     inside = `<circle cx="7" cy="7" r="6" fill="${color}"/>` +
@@ -151,7 +161,7 @@ function statusIcon(status) {
     inside = `<path d="M7 7L7 ${7 - r}A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${x} ${y}Z" fill="${color}"/>`;
   }
   const span = el("span", { class: "status-icon" });
-  span.innerHTML = `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="${color}" stroke-width="1.5"/>${inside}</svg>`;
+  span.innerHTML = `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="${color}" stroke-width="1.5"${dash}/>${inside}</svg>`;
   return span;
 }
 
@@ -503,25 +513,26 @@ function renderColumns() {
   columns.style.display = "";
 
   // Build the columns once per layout so a refresh never wipes a half-typed task.
-  const layout = statuses.join(",") + "|" + state.project;
+  const { collapsed, inbox } = state.board;
+  const layout = [statuses.join(","), collapsed.join(","), inbox, state.project].join("|");
   if (state.layout !== layout) {
     state.layout = layout;
-    columns.replaceChildren(...statuses.map((status, i) => {
-      const last = i === statuses.length - 1;
+    columns.replaceChildren(...statuses.map((status) => {
+      const collapsible = collapsed.includes(status);
       const col = el("section", { class: "column", "data-status": status },
         el("h2", {},
           statusIcon(status), status,
           el("span", { class: "count" }),
           // At the top, so a long column never hides it.
-          i === 0 ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null,
-          last ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setDoneCollapsed(!doneCollapsed()); } }) : null),
+          status === inbox ? el("button", { class: "add", title: "Add task (n)", "aria-label": "Add task", onclick: newTask }, icon("plus")) : null,
+          collapsible ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setCollapsed(status, !isCollapsed(status)); } }) : null),
         el("div", { class: "cards" }),
       );
       wireDrop(col, col.querySelector(".cards"), status);
-      if (last) col.addEventListener("click", () => { if (doneCollapsed()) setDoneCollapsed(false); });
+      if (collapsible) col.addEventListener("click", () => { if (isCollapsed(status)) setCollapsed(status, false); });
       return col;
     }));
-    showDoneCollapsed();
+    showCollapsed();
   }
 
   // During a drag the DOM is being moved by hand; refresh once it ends.
@@ -542,29 +553,37 @@ function renderColumns() {
   }
 }
 
-// The done column only grows; it starts collapsed to a thin strip, as in Trello or Linear,
-// and each browser remembers the choice. Cards can still be dropped on the strip.
-function doneCollapsed() {
-  return localStorageGet("kanzo.doneCollapsed") !== "0";
+// Columns listed under `collapsed` in config.toml, like done, which only grows, start
+// collapsed to a thin strip, as in Trello or Linear, and each browser remembers the
+// choice. Cards can still be dropped on a strip.
+function isCollapsed(status) {
+  const saved = localStorageGet("kanzo.collapsed." + status);
+  return saved === null ? state.board.collapsed.includes(status) : saved === "1";
 }
 
-function setDoneCollapsed(collapsed) {
-  try { localStorage.setItem("kanzo.doneCollapsed", collapsed ? "1" : "0"); } catch {}
-  showDoneCollapsed();
+function setCollapsed(status, collapsed) {
+  try { localStorage.setItem("kanzo.collapsed." + status, collapsed ? "1" : "0"); } catch {}
+  showCollapsed();
 }
 
-function showDoneCollapsed() {
+function showCollapsed() {
   const columns = $("#columns");
   const cols = [...columns.querySelectorAll(".column")];
   if (!cols.length) return;
-  const collapsed = doneCollapsed();
-  const done = cols[cols.length - 1];
-  done.classList.toggle("collapsed", collapsed);
-  const button = done.querySelector(".collapse");
-  button.replaceChildren(icon(collapsed ? "expand" : "collapse"));
-  button.title = collapsed ? `Show ${done.dataset.status}` : `Collapse ${done.dataset.status}`;
-  button.setAttribute("aria-label", button.title);
-  columns.style.gridTemplateColumns = cols.map((c) => (c === done && collapsed ? "48px" : "minmax(260px, 1fr)")).join(" ");
+  for (const col of cols) {
+    const button = col.querySelector(".collapse");
+    if (!button) continue;
+    const { status } = col.dataset;
+    const collapsed = isCollapsed(status);
+    col.classList.toggle("collapsed", collapsed);
+    // The arrows point the way the column folds: to the right edge, or for the
+    // columns before the inbox, to the left one.
+    const left = statusStep(status) < 0;
+    button.replaceChildren(icon(collapsed !== left ? "expand" : "collapse"));
+    button.title = collapsed ? `Show ${status}` : `Collapse ${status}`;
+    button.setAttribute("aria-label", button.title);
+  }
+  columns.style.gridTemplateColumns = cols.map((c) => (c.classList.contains("collapsed") ? "48px" : "minmax(260px, 1fr)")).join(" ");
 }
 
 // A description as one line of plain text for a card: Markdown markers dropped, lines joined.

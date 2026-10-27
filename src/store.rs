@@ -162,16 +162,41 @@ pub struct TaskPatch {
     pub human: Option<bool>,
 }
 
+/// The board's columns, from `config.toml`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Columns {
+    /// Left to right; tasks in the last one count as done.
+    pub statuses: Vec<String>,
+    /// Columns the board starts collapsed.
+    pub collapsed: Vec<String>,
+    /// Where new tasks go, and where agents take the next task from.
+    pub inbox: String,
+    /// Where an agent's next task moves to.
+    pub working: String,
+}
+
+impl Columns {
+    /// New tasks in the first column, agents move them to the second, done starts collapsed.
+    pub fn new(statuses: Vec<String>) -> Self {
+        Self {
+            collapsed: statuses.last().cloned().into_iter().collect(),
+            inbox: statuses[0].clone(),
+            working: statuses[1].clone(),
+            statuses,
+        }
+    }
+}
+
 pub struct Store {
     conn: Connection,
-    statuses: Vec<String>,
+    columns: Columns,
     /// Held while the connection is open; declared after `conn` so it is released after it closes.
     _lock: Option<std::fs::File>,
 }
 
 impl Store {
     /// Opens the database. `lock` is kept until the store is dropped (see `Home::store`).
-    pub fn open(path: &Path, statuses: Vec<String>, lock: Option<std::fs::File>) -> Result<Self> {
+    pub fn open(path: &Path, columns: Columns, lock: Option<std::fs::File>) -> Result<Self> {
         let conn = Connection::open(path)?;
         // The board and any number of agents share this file; wait instead of failing.
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -181,19 +206,19 @@ impl Store {
         // when a board loses power.
         conn.pragma_update_and_check(None, "journal_mode", "TRUNCATE", |_| Ok(()))?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        Ok(Self { conn, statuses, _lock: lock })
+        Ok(Self { conn, columns, _lock: lock })
     }
 
     pub fn statuses(&self) -> &[String] {
-        &self.statuses
+        &self.columns.statuses
     }
 
-    fn first_status(&self) -> &str {
-        &self.statuses[0]
+    pub fn columns(&self) -> &Columns {
+        &self.columns
     }
 
     fn done_status(&self) -> &str {
-        self.statuses.last().expect("config has at least two statuses")
+        self.columns.statuses.last().expect("config has at least two statuses")
     }
 
     /// Runs `f` in an immediate transaction, so concurrent writers queue up
@@ -492,7 +517,7 @@ impl Store {
         let mut tasks: Vec<Task> = stmt
             .query_map(params![project_id, status, done, limit], Self::task_row)?
             .collect::<rusqlite::Result<_>>()?;
-        let column = |t: &Task| self.statuses.iter().position(|s| *s == t.status).unwrap_or(usize::MAX);
+        let column = |t: &Task| self.statuses().iter().position(|s| *s == t.status).unwrap_or(usize::MAX);
         tasks.sort_by_key(column);
         let hidden = match keep_done {
             Some(keep) if status.is_none_or(|s| s == done) => {
@@ -554,10 +579,10 @@ impl Store {
     }
 
     fn check_status(&self, status: &str) -> Result<()> {
-        if self.statuses.iter().any(|s| s == status) {
+        if self.statuses().iter().any(|s| s == status) {
             Ok(())
         } else {
-            Err(Error::Invalid(format!("unknown status {status:?}; use one of: {}", self.statuses.join(", "))))
+            Err(Error::Invalid(format!("unknown status {status:?}; use one of: {}", self.statuses().join(", "))))
         }
     }
 
@@ -572,7 +597,7 @@ impl Store {
 
     pub fn create_task(&self, project_id: i64, title: &str, description: &str) -> Result<Task> {
         let title = clean_title(title)?;
-        let status = self.first_status();
+        let status = &self.columns.inbox;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
@@ -696,11 +721,11 @@ impl Store {
         Ok(())
     }
 
-    /// Takes the top task of the first column that isn't for a person, and moves it to
-    /// the bottom of the second.
+    /// Takes the top task of the inbox column that isn't for a person, and moves it to
+    /// the bottom of the working one.
     pub fn next_task(&self, project_id: Option<i64>) -> Result<Option<Task>> {
-        let from = self.first_status();
-        let to = &self.statuses[1];
+        let from = &self.columns.inbox;
+        let to = &self.columns.working;
         let id = self.write(|c| {
             let id: Option<i64> = c
                 .query_row(
@@ -970,9 +995,12 @@ mod tests {
     use super::*;
 
     fn store() -> (tempfile::TempDir, Store) {
+        store_with(Columns::new(["todo", "doing", "review", "done"].map(String::from).to_vec()))
+    }
+
+    fn store_with(columns: Columns) -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let statuses = ["todo", "doing", "review", "done"].map(String::from).to_vec();
-        let store = Store::open(&dir.path().join("kanzo.db"), statuses, None).unwrap();
+        let store = Store::open(&dir.path().join("kanzo.db"), columns, None).unwrap();
         store.migrate().unwrap();
         (dir, store)
     }
@@ -1139,7 +1167,7 @@ mod tests {
             .unwrap();
         }
         let statuses = ["todo", "doing", "review", "done"].map(String::from).to_vec();
-        let s = Store::open(&path, statuses, None).unwrap();
+        let s = Store::open(&path, Columns::new(statuses), None).unwrap();
         s.migrate().unwrap();
         assert_eq!(s.find_project("api").unwrap().repos, ["me/api"]);
         assert!(s.find_project("web").unwrap().repos.is_empty());
@@ -1263,6 +1291,23 @@ mod tests {
         assert_eq!(s.next_task(Some(api.id)).unwrap().unwrap().title, "api second");
         assert!(s.next_task(Some(api.id)).unwrap().is_none());
         assert_eq!(s.get_task(human.id).unwrap().status, "todo");
+    }
+
+    #[test]
+    fn inbox_and_working_need_not_be_the_first_columns() {
+        let statuses = ["backlog", "todo", "doing", "done"].map(String::from).to_vec();
+        let columns = Columns { inbox: "todo".into(), working: "doing".into(), ..Columns::new(statuses) };
+        let (_dir, s) = store_with(columns);
+        let api = s.create_project("api", "", None).unwrap();
+        let backlog = s.create_task(api.id, "later", "").unwrap();
+        assert_eq!(backlog.status, "todo");
+        s.move_task(backlog.id, "backlog", None).unwrap();
+        s.create_task(api.id, "now", "").unwrap();
+
+        let t = s.next_task(None).unwrap().unwrap();
+        assert_eq!((t.title.as_str(), t.status.as_str()), ("now", "doing"));
+        assert!(s.next_task(None).unwrap().is_none());
+        assert_eq!(s.get_task(backlog.id).unwrap().status, "backlog");
     }
 
     #[test]
