@@ -23,17 +23,13 @@ use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
 /// The most done tasks list_tasks shows, newest first: an old board has thousands.
 const DONE_LISTED: usize = 20;
 
-const INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
-Tasks are written project#id, like api#12. When you leave out `project`, Kanzo uses the project \
-linked to the GitHub repo of the folder you are working in. A good loop: next_task to pick up work, \
-add_comment to report what you did, then update_task to move it to review. Tag tasks when it helps, like \
-bug or ui: create_task and update_task take `tags`. Leave tasks marked human alone: they're for the user.";
+const INSTRUCTIONS: &str = "The user's kanban board, for all their projects. Tasks look like api#12. \
+Without `project`, Kanzo uses the project linked to this folder's GitHub repo. A good loop: next_task, \
+add_comment with what you did, then update_task to review. Leave tasks marked human to the user.";
 
-const HTTP_INSTRUCTIONS: &str = "Kanzo is the user's kanban board, shared by all their projects. \
-Tasks are written project#id, like api#12. Over HTTP Kanzo cannot see which folder you work in, so \
-pass `project` (see list_projects). A good loop: next_task to pick up work, add_comment to report \
-what you did, then update_task to move it to review. Tag tasks when it helps, like \
-bug or ui: create_task and update_task take `tags`. Leave tasks marked human alone: they're for the user.";
+const HTTP_INSTRUCTIONS: &str = "The user's kanban board, for all their projects. Tasks look like api#12. \
+Over HTTP Kanzo can't see your folder, so pass `project` (see list_projects). A good loop: next_task, \
+add_comment with what you did, then update_task to review. Leave tasks marked human to the user.";
 
 /// `kanzo mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
@@ -153,25 +149,24 @@ impl TaskKey {
 
 #[derive(Deserialize, JsonSchema)]
 struct CreateProjectArgs {
-    /// Short lowercase name used in task ids, like `api` for api#12.
+    /// Short lowercase id, like api.
     slug: String,
-    /// Display name. Defaults to the slug.
     name: Option<String>,
-    /// GitHub repo to link, as owner/repo. Agents working in that repo then find the project on their own.
+    /// GitHub owner/repo.
     repo: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ListTasksArgs {
-    /// Project slug, or "all" for every project. Defaults to the project of the current repo.
+    /// Slug, or "all".
     project: Option<String>,
-    /// Only this column. Without it, done tasks are left out; "all" includes them. Shows the newest 20 done.
+    /// One column, or "all". Done is left out by default.
     status: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct TaskArgs {
-    /// Task id, like api#12 or 12.
+    /// Like api#12.
     #[schemars(with = "String")]
     id: TaskKey,
 }
@@ -181,59 +176,70 @@ struct CreateTaskArgs {
     title: String,
     /// Markdown.
     description: Option<String>,
-    /// Project slug. Defaults to the project of the current repo.
+    /// Slug.
     project: Option<String>,
-    /// Comma-separated, like "bug, ui".
+    /// Comma-separated.
     tags: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct UpdateTaskArgs {
-    /// Task id, like api#12 or 12.
+    /// Like api#12.
     #[schemars(with = "String")]
     id: TaskKey,
     title: Option<String>,
-    /// Markdown; replaces the whole description.
+    /// Markdown.
     description: Option<String>,
-    /// New column, like doing, review or done. The task goes to the bottom of it.
+    /// Column, like review.
     status: Option<String>,
-    /// Comma-separated; replaces all tags, and "" clears them.
+    /// Comma-separated; "" clears.
     tags: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct AddCommentArgs {
-    /// Task id, like api#12 or 12.
+    /// Like api#12.
     #[schemars(with = "String")]
     id: TaskKey,
     /// Markdown.
     body: String,
-    /// Who is writing. Defaults to the name of your MCP client, like claude-code.
+    /// Defaults to your client's name.
     author: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct LinkRepoArgs {
-    /// Project slug.
+    /// Slug.
     project: String,
-    /// GitHub repo as owner/repo.
+    /// GitHub owner/repo.
     repo: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct NextTaskArgs {
-    /// Project slug, or "all" for any project. Defaults to the project of the current repo.
+    /// Slug, or "all".
     project: Option<String>,
 }
 
 impl Kanzo {
-    /// The tool list without the `$schema` line rmcp puts in every input schema:
-    /// agents read this list at the start of every session, so each byte counts.
+    /// The tool list without the `$schema` line rmcp puts in every input schema, nor the
+    /// `null` of optional fields: agents read this list in every session, so each byte counts.
     fn tools() -> ToolRouter<Self> {
         let mut router = Self::tool_router();
         for route in router.map.values_mut() {
             let mut schema = (*route.attr.input_schema).clone();
             schema.remove("$schema");
+            // Optional fields are typed `["string", "null"]`; leaving them out of
+            // `required` already says they're optional.
+            if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
+                for prop in props.values_mut() {
+                    if let Some(kind) = prop.get_mut("type")
+                        && let Some(first) = kind.as_array().and_then(|k| k.first()).cloned()
+                    {
+                        *kind = first;
+                    }
+                }
+            }
             route.attr.input_schema = Arc::new(schema);
         }
         router
@@ -258,7 +264,7 @@ impl Kanzo {
         }
     }
 
-    #[tool(description = "List all projects with their linked repo and open task counts.")]
+    #[tool(description = "List projects with their repos and open task counts.")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(|ctx, store| {
@@ -288,7 +294,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Create a project, optionally linked to a GitHub repo (owner/repo).")]
+    #[tool(description = "Create a project.")]
     async fn create_project(
         &self,
         Parameters(args): Parameters<CreateProjectArgs>,
@@ -302,7 +308,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Link another GitHub repo to a project, so agents working in it find the project.")]
+    #[tool(description = "Link another GitHub repo to a project.")]
     async fn link_repo(&self, Parameters(args): Parameters<LinkRepoArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
@@ -312,7 +318,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "List tasks one per line, in board order. Leaves out done tasks unless `status` is given.")]
+    #[tool(description = "List tasks in board order.")]
     async fn list_tasks(&self, Parameters(args): Parameters<ListTasksArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
@@ -365,7 +371,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Show a task with its description, comments and the paths of its images.")]
+    #[tool(description = "Show a task with its comments and image paths.")]
     async fn get_task(&self, Parameters(args): Parameters<TaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
@@ -375,7 +381,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Add a task to the first column (todo) of a project.")]
+    #[tool(description = "Add a task to todo.")]
     async fn create_task(&self, Parameters(args): Parameters<CreateTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
@@ -389,7 +395,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Change a task's title, description, status or tags. Only the fields you pass change.")]
+    #[tool(description = "Change the fields you pass.")]
     async fn update_task(&self, Parameters(args): Parameters<UpdateTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
@@ -416,7 +422,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Add a comment to a task, for example to report progress or a result.")]
+    #[tool(description = "Comment on a task, like to report progress.")]
     async fn add_comment(
         &self,
         Parameters(args): Parameters<AddCommentArgs>,
@@ -433,9 +439,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(
-        description = "Take the top task of the todo column, move it to doing and show it. Use this to pick up the next piece of work."
-    )]
+    #[tool(description = "Take the top todo task, move it to doing and show it.")]
     async fn next_task(&self, Parameters(args): Parameters<NextTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
@@ -452,7 +456,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Delete a task with its comments and images. This cannot be undone.")]
+    #[tool(description = "Delete a task with its comments and images. Can't be undone.")]
     async fn delete_task(&self, Parameters(args): Parameters<TaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
