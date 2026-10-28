@@ -473,8 +473,8 @@ function renderHeader() {
   const { projects, tasks } = state.board;
   const header = $("#header");
   $("#new-task").hidden = !projects.length;
-  $("#human-filter").hidden = !projects.length;
-  $("#human-only").checked = isHumanOnly();
+  $("#human-only").hidden = !projects.length;
+  $("#human-only").setAttribute("aria-pressed", String(isHumanOnly()));
   if (!projects.length) { header.replaceChildren(); return; }
   // Plain words for what each piece is: how much is open, and the repos on GitHub.
   const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
@@ -726,7 +726,7 @@ function hideNewProject() {
 }
 
 $("#new-task").addEventListener("click", newTask);
-$("#human-only").addEventListener("change", (e) => setHumanOnly(e.target.checked));
+$("#human-only").addEventListener("click", () => setHumanOnly(!isHumanOnly()));
 $("#new-project-toggle").addEventListener("click", showNewProject);
 $("#new-project-cancel").addEventListener("click", hideNewProject);
 $("#project-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "project-dialog") hideNewProject(); });
@@ -1122,6 +1122,9 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "n" && !typing && !e.metaKey && !e.ctrlKey) {
     if (!$("#new-task").hidden) { e.preventDefault(); newTask(); }
+  }
+  if (e.key === "h" && !typing && !e.metaKey && !e.ctrlKey) {
+    if (!$("#human-only").hidden) { e.preventDefault(); setHumanOnly(!isHumanOnly()); }
   }
 });
 
