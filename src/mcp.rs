@@ -184,6 +184,8 @@ struct CreateTaskArgs {
     tags: Option<String>,
     /// Column; defaults to todo.
     status: Option<String>,
+    /// For the user, not for agents.
+    human: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -198,6 +200,8 @@ struct UpdateTaskArgs {
     status: Option<String>,
     /// Comma-separated; "" clears.
     tags: Option<String>,
+    /// For the user, not for agents.
+    human: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -393,8 +397,9 @@ impl Kanzo {
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let description = args.description.as_deref().unwrap_or("");
                 let mut t = store.create_task_in(project.id, status.as_deref(), &args.title, description)?;
-                if args.tags.is_some() {
-                    t = store.update_task(t.id, TaskPatch { tags: args.tags, ..Default::default() })?;
+                if args.tags.is_some() || args.human.is_some() {
+                    t = store
+                        .update_task(t.id, TaskPatch { tags: args.tags, human: args.human, ..Default::default() })?;
                 }
                 Ok(format!("Created {} in {}: {}", t.key(), t.status, t.title))
             })
@@ -415,7 +420,7 @@ impl Kanzo {
                         status,
                         tags: args.tags,
                         project_id: None,
-                        human: None,
+                        human: args.human,
                     },
                 )?;
                 let moved = if before.status != after.status {
