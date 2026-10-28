@@ -473,6 +473,8 @@ function renderHeader() {
   const { projects, tasks } = state.board;
   const header = $("#header");
   $("#new-task").hidden = !projects.length;
+  $("#human-filter").hidden = !projects.length;
+  $("#human-only").checked = isHumanOnly();
   if (!projects.length) { header.replaceChildren(); return; }
   // Plain words for what each piece is: how much is open, and the repos on GitHub.
   const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
@@ -537,19 +539,32 @@ function renderColumns() {
   // During a drag the DOM is being moved by hand; refresh once it ends.
   if (state.dragging) return;
   const all = state.project === "all";
+  const humanOnly = isHumanOnly();
   for (const status of statuses) {
     const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
-    const mine = tasks.filter((t) => t.status === status);
+    const mine = tasks.filter((t) => t.status === status && (!humanOnly || t.human));
     // Older done tasks the server left out (see loadBoard).
     const last = status === statuses[statuses.length - 1];
     const hidden = last && !state.allDone ? state.board.done_hidden || 0 : 0;
-    const count = mine.length + hidden;
+    // Filtered, the server's count of older done tasks says nothing about human ones.
+    const count = mine.length + (humanOnly ? 0 : hidden);
     col.querySelector("h2 .count").textContent = count ? String(count) : "";
     const more = hidden
-      ? el("button", { class: "ghost more", onclick: () => { state.allDone = true; loadBoard(); } }, `Show ${hidden} older`)
+      ? el("button", { class: "ghost more", onclick: () => { state.allDone = true; loadBoard(); } },
+           humanOnly ? "Show older" : `Show ${hidden} older`)
       : null;
     col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.map((t) => card(t, all)));
   }
+}
+
+// The board can show only human tasks; off at first, and each browser remembers the choice.
+function isHumanOnly() {
+  return localStorageGet("kanzo.humanOnly") === "1";
+}
+
+function setHumanOnly(humanOnly) {
+  try { localStorage.setItem("kanzo.humanOnly", humanOnly ? "1" : "0"); } catch {}
+  render();
 }
 
 // Backlog and done, which only grows, start collapsed to a thin strip, as in Trello or
@@ -711,6 +726,7 @@ function hideNewProject() {
 }
 
 $("#new-task").addEventListener("click", newTask);
+$("#human-only").addEventListener("change", (e) => setHumanOnly(e.target.checked));
 $("#new-project-toggle").addEventListener("click", showNewProject);
 $("#new-project-cancel").addEventListener("click", hideNewProject);
 $("#project-dialog").addEventListener("mousedown", (e) => { if (e.target.id === "project-dialog") hideNewProject(); });

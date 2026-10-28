@@ -143,6 +143,9 @@ header .repo-link:hover, header .repo-link:focus-visible { background: var(--act
 header .repo-link .icon svg { width: 14px; height: 14px; }
 #new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
 #new-task .icon svg { width: 16px; height: 16px; }
+/* Show only human tasks: a switch, as in Settings. */
+#human-filter { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
+#human-filter .icon svg { width: 16px; height: 16px; }
 .columns {
   flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr);
   gap: 12px; padding: 0 24px 24px; overflow-x: auto;
@@ -409,6 +412,10 @@ label.setting { cursor: pointer; }
 <main>
   <header>
     <div class="info" id="header"></div>
+    <label id="human-filter" title="Show only human tasks" hidden>
+      <span class="icon" data-icon="human"></span>Human only
+      <span class="switch"><input type="checkbox" id="human-only" aria-label="Show only human tasks"><span></span></span>
+    </label>
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
