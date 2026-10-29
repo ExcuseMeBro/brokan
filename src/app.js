@@ -232,6 +232,21 @@ function deadlineBadge(t) {
       date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })));
 }
 
+// Compare local calendar dates (not 24-hour intervals): DST and UTC offsets must
+// not turn a deadline tomorrow into "today" or "two days away".
+function deadlineDaysLeft(iso, now = new Date()) {
+  const due = new Date(iso);
+  return Math.round((Date.UTC(due.getFullYear(), due.getMonth(), due.getDate()) -
+    Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+}
+
+function deadlineCountdown(iso, now = new Date()) {
+  const days = deadlineDaysLeft(iso, now);
+  if (days < 0) return `${-days} day${days === -1 ? "" : "s"} overdue`;
+  if (days === 0) return new Date(iso) < now ? "Overdue today" : "Today · 0 days left";
+  return `${days} day${days === 1 ? "" : "s"} left`;
+}
+
 function duration(seconds) {
   const s = Math.max(0, Math.floor(seconds));
   if (s < 60) return `${s}s`;
@@ -512,12 +527,29 @@ function renderDashboard() {
       el("span", { class: "track" }, el("span", { class: "fill", style: `height:${d.seconds / max * 100}%` })),
       el("span", { class: "day", title: d.day }, d.day.slice(5)))));
   const open = data.tasks - (data.statuses.find((s) => s.status === "done")?.count || 0);
+  const now = new Date();
+  const deadlines = (data.deadlines || []).filter((d) => deadlineDaysLeft(d.deadline_at, now) <= 7);
+  const deadlineList = deadlines.length
+    ? el("ul", { class: "dashboard-deadlines" }, ...deadlines.map((d) => {
+      const remaining = deadlineCountdown(d.deadline_at, now);
+      const overdue = new Date(d.deadline_at) < now;
+      return el("li", {}, el("a", { class: "dashboard-deadline", href: `#${d.project}/${d.id}`,
+        onclick: (e) => { e.preventDefault(); setProject(d.project); openTask(d.id); } },
+      el("span", { class: "deadline-info" },
+        el("strong", {}, d.title), el("span", { class: "deadline-project" }, d.project_name)),
+      el("span", { class: "deadline-date" },
+        el("time", { datetime: d.deadline_at }, new Date(d.deadline_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })),
+        el("span", { class: "deadline-count" + (overdue ? " overdue" : "") }, remaining))));
+    }))
+    : el("p", { class: "chart-empty" }, "No deadlines due in the next 7 days.");
   root.replaceChildren(
     el("p", { class: "dashboard-intro" }, "A clear view of work and time across every project."),
     el("div", { class: "dashboard-stats" },
       stat("Tracked time", duration(data.total_seconds), data.running_seconds ? `${duration(data.running_seconds)} running now` : "All time"),
       stat("Tasks", String(data.tasks), `${open} open`),
       stat("Projects", String(data.projects.length), `${projectRows.length} with tracked time`)),
+    chart("NEXT UP", "Deadlines · next 7 days", deadlineList,
+      "Local calendar days. Shows up to 12 nearest upcoming and 5 recently overdue tasks; completed and archived work is excluded.", true),
     el("div", { class: "dashboard-charts" },
       chart("01 / ACTIVITY", "Time logged · last 7 days",
         days.some((d) => d.seconds > 0) ? bars : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),

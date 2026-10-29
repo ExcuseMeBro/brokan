@@ -238,6 +238,15 @@ pub struct DayTime {
 }
 
 #[derive(Debug, Serialize)]
+pub struct DashboardDeadline {
+    pub id: i64,
+    pub project: String,
+    pub project_name: String,
+    pub title: String,
+    pub deadline_at: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Dashboard {
     pub statuses: Vec<StatusCount>,
     pub projects: Vec<ProjectTime>,
@@ -246,6 +255,8 @@ pub struct Dashboard {
     pub total_seconds: i64,
     pub running_seconds: i64,
     pub tasks: i64,
+    /// Recent overdue and soonest upcoming unfinished tasks in active projects.
+    pub deadlines: Vec<DashboardDeadline>,
 }
 
 /// Fields of a task to change; `None` leaves a field as it is.
@@ -1144,7 +1155,33 @@ impl Store {
         let days: Vec<DayTime> = stmt
             .query_map([now], |r| Ok(DayTime { day: r.get(0)?, seconds: r.get(1)? }))?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(Dashboard { statuses, projects, days, total_seconds, running_seconds, tasks })
+        // Bound each side separately so old overdue work never hides upcoming deadlines.
+        // The client filters upcoming tasks to its local seven-day calendar window.
+        let mut deadlines = Vec::new();
+        for (past, limit) in [(true, 5), (false, 12)] {
+            let sql = format!(
+                "SELECT t.id, p.slug, p.name, t.title, t.deadline_at FROM tasks t
+                 JOIN projects p ON p.id = t.project_id
+                 WHERE p.archived = 0 AND t.status <> 'done' AND t.deadline_at IS NOT NULL
+                   AND t.deadline_at {} strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch')
+                 ORDER BY t.deadline_at {}, t.id {} LIMIT {limit}",
+                if past { "<" } else { ">=" },
+                if past { "DESC" } else { "ASC" },
+                if past { "DESC" } else { "ASC" },
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([now], |r| {
+                Ok(DashboardDeadline {
+                    id: r.get(0)?,
+                    project: r.get(1)?,
+                    project_name: r.get(2)?,
+                    title: r.get(3)?,
+                    deadline_at: r.get(4)?,
+                })
+            })?;
+            deadlines.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(Dashboard { statuses, projects, days, total_seconds, running_seconds, tasks, deadlines })
     }
 
     // Comments
@@ -1535,6 +1572,47 @@ mod tests {
         assert_eq!(s.dashboard().unwrap().tasks, 1);
         s.log_time(old.id, 30).unwrap();
         assert_eq!(Store::open(&path, None).unwrap().time_report(old.id).unwrap().total_seconds, 1800);
+    }
+
+    #[test]
+    fn dashboard_deadlines_prioritize_soon_and_exclude_done_or_archived() {
+        let (_dir, s) = store();
+        let active = s.create_project("active", "Active", None).unwrap();
+        let archived = s.create_project("archived", "Archived", None).unwrap();
+        let at = |modifier: &str| -> String {
+            s.conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)", [modifier], |r| r.get(0)).unwrap()
+        };
+        let overdue = at("-1 day");
+        let soon = at("+1 day");
+        let later = at("+10 days");
+        let add = |project_id, title: &str, deadline: &str| -> Task {
+            let task = s.create_task(project_id, title, "").unwrap();
+            s.update_task(task.id, TaskPatch { deadline_at: Some(Some(deadline.into())), ..Default::default() })
+                .unwrap()
+        };
+        for i in 0..7 {
+            add(active.id, &format!("Overdue {i}"), &at(&format!("-{} days", i + 2)));
+        }
+        let most_recent = add(active.id, "Recent overdue", &overdue);
+        let first = add(active.id, "Soon first", &soon);
+        let second = add(active.id, "Soon second", &soon);
+        for i in 0..12 {
+            add(active.id, &format!("Later {i}"), &later);
+        }
+        let done = add(active.id, "Completed", &soon);
+        s.update_task(done.id, TaskPatch { status: Some("done".into()), ..Default::default() }).unwrap();
+        add(archived.id, "In archive", &soon);
+        s.set_project_archived("archived", true).unwrap();
+        s.create_task(active.id, "No deadline", "").unwrap();
+
+        let deadlines = s.dashboard().unwrap().deadlines;
+        assert_eq!(deadlines.len(), 17);
+        assert_eq!(deadlines[0].id, most_recent.id);
+        assert_eq!((deadlines[5].id, deadlines[6].id), (first.id, second.id));
+        assert_eq!((deadlines[5].project.as_str(), deadlines[5].project_name.as_str()), ("active", "Active"));
+        assert_eq!(deadlines[5].deadline_at, soon);
+        assert!(!deadlines.iter().any(|d| d.id == done.id || d.project == "archived"));
+        assert_eq!(deadlines.iter().filter(|d| d.title.starts_with("Later")).count(), 10);
     }
 
     #[test]

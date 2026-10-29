@@ -264,6 +264,17 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .chart-card h2 { margin: 3px 0 18px; font-size: 16px; letter-spacing: -.01em; }
 .chart-card.wide { grid-column: 1 / -1; }
 .chart-card .chart-note { color: var(--faint); font-size: 12px; margin: 14px 0 0; }
+.dashboard-stats + .chart-card { margin-bottom: 12px; }
+.dashboard-deadlines { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--border); }
+.dashboard-deadline { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 12px 4px; border-bottom: 1px solid var(--border); color: var(--text); text-decoration: none; border-radius: 4px; }
+.dashboard-deadline:hover { background: var(--hover); }
+.deadline-info, .deadline-date { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.deadline-info strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.deadline-project, .deadline-date time { font-size: 12px; color: var(--muted); }
+.deadline-date { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+.deadline-count { color: var(--text); font-weight: 600; }
+.deadline-count.overdue { color: var(--danger); }
 .chart-empty { color: var(--muted); padding: 30px 0; }
 .bar-chart { display: flex; align-items: end; gap: 10px; height: 170px; padding: 4px 0 0; }
 .bar-day { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: end; gap: 7px; min-width: 0; height: 100%; }
@@ -278,12 +289,14 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .chart-legend .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .chart-legend .value { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
 .chart-legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-#dashboard:focus-visible, #dashboard button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+#dashboard:focus-visible, #dashboard button:focus-visible, #dashboard a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 @media (max-width: 740px) {
   #dashboard { padding: 4px 12px 24px; }
   .dashboard-stats { grid-template-columns: 1fr; }
   .dashboard-charts { grid-template-columns: 1fr; }
   .chart-card.wide { grid-column: auto; }
+  .dashboard-deadline { grid-template-columns: 1fr; }
+  .deadline-date { text-align: left; }
 }
 
 /* Task panel */
