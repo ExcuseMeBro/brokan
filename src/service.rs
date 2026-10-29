@@ -85,6 +85,7 @@ fn plist(exe: &Path, dir: &Path, log: &Path) -> String {
     <array>
         <string>{exe}</string>
         <string>--no-open</string>
+        <string>--foreground</string>
         <string>--home</string>
         <string>{dir}</string>
     </array>
@@ -159,7 +160,7 @@ fn unit(exe: &Path, dir: &Path) -> String {
          After=network.target\n\
          \n\
          [Service]\n\
-         ExecStart={} --no-open --home {}\n\
+         ExecStart={} --no-open --foreground --home {}\n\
          Restart=on-failure\n\
          \n\
          [Install]\n\
@@ -213,13 +214,16 @@ mod tests {
         let lint = Command::new("plutil").arg("-lint").arg(&file).output().unwrap();
         assert!(lint.status.success(), "{}", String::from_utf8_lossy(&lint.stdout));
         assert!(text.contains("/Users/a &amp; b/brokan"));
+        assert!(text.contains("<string>--foreground</string>"));
     }
 
     #[test]
     fn unit_quotes_paths() {
         let text = unit(Path::new("/home/pi/.cargo/bin/brokan"), Path::new("/home/pi/my \"brokan\" 100%"));
         assert!(
-            text.contains(r#"ExecStart="/home/pi/.cargo/bin/brokan" --no-open --home "/home/pi/my \"brokan\" 100%%""#),
+            text.contains(
+                r#"ExecStart="/home/pi/.cargo/bin/brokan" --no-open --foreground --home "/home/pi/my \"brokan\" 100%%""#
+            ),
             "{text}"
         );
         assert!(text.contains("WantedBy=default.target"));

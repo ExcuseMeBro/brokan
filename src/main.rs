@@ -1,3 +1,4 @@
+mod background;
 mod export;
 mod home;
 mod mcp;
@@ -16,7 +17,7 @@ use crate::home::Home;
 
 /// Self-hosted kanban for humans and agents.
 ///
-/// Run `brokan` to open the board. Agents connect with `brokan mcp`.
+/// Run `brokan` to start the board in the background. Agents connect with `brokan mcp`.
 #[derive(Parser)]
 #[command(name = "brokan", version)]
 struct Cli {
@@ -31,6 +32,10 @@ struct Cli {
     /// Start the board without opening the browser
     #[arg(long)]
     no_open: bool,
+
+    /// Keep the board attached to this terminal (for service managers and debugging)
+    #[arg(long)]
+    foreground: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -117,7 +122,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let home = Home::open(dir)?;
     match cli.command {
-        None => web::serve(home, cli.port, !cli.no_open).await,
+        None if cli.foreground => web::serve(home, cli.port, !cli.no_open).await,
+        None => background::start(home, cli.port, !cli.no_open).await,
         Some(Command::Mcp) => mcp::serve(home).await,
         Some(Command::Init { .. }) => {
             println!("Brokan data folder ready at {}", home.dir.display());

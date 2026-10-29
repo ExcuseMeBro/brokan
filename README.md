@@ -19,13 +19,14 @@ cd brokan
 cargo install --locked --path .
 ```
 
-Run `brokan` to open the board. This rename does not migrate an existing board automatically; use `--home <existing-data-folder>` if you want to keep using one.
+Run `brokan` to start the board in the background and open it in your browser. The command returns to your shell once the port is ready; it does **not** close your terminal window. The board keeps running if you close the terminal. This rename does not migrate an existing board automatically; use `--home <existing-data-folder>` if you want to keep using one.
 
 ## Use
 
 | Command | Does |
 | --- | --- |
-| `brokan` | Starts the board at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
+| `brokan` | Starts the board in the background at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
+| `brokan --foreground` | Runs attached to the terminal until Ctrl-C; use `--no-open` to skip opening the browser |
 | `brokan service install` | Keeps the board running and starts it at login; `uninstall` removes it |
 | `brokan mcp` | The MCP server for agents: they start it, not you |
 | `brokan sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
@@ -34,7 +35,7 @@ Run `brokan` to open the board. This rename does not migrate an existing board a
 | `brokan init` | Creates the data folder; the first run does this too |
 | `brokan --version` | Prints the version |
 
-Every command takes `--home <dir>` to use another data folder.
+Every command takes `--home <dir>` to use another data folder. Background startup prints the path to its log in your system cache folder (outside the board's synced data folder). Running `brokan` again when the board is already listening will reuse it instead of starting another copy.
 
 `n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
 

@@ -38,7 +38,7 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let listener = match tokio::net::TcpListener::bind(SocketAddr::new(listen, port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            if is_brokan(port).await {
+            if is_brokan(listen, port).await {
                 println!("Brokan is already running at {url}");
                 if open {
                     open_browser(&url);
@@ -654,9 +654,14 @@ async fn update_now() -> Response {
 }
 
 /// True when the program on `port` answers like a Brokan board.
-async fn is_brokan(port: u16) -> bool {
+pub(crate) async fn is_brokan(listen: IpAddr, port: u16) -> bool {
+    let address = match listen {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        _ => listen,
+    };
     let probe = async {
-        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let mut conn = tokio::net::TcpStream::connect(SocketAddr::new(address, port)).await.ok()?;
         conn.write_all(b"GET /api/ping HTTP/1.0\r\nHost: localhost\r\n\r\n").await.ok()?;
         let mut reply = String::new();
         conn.read_to_string(&mut reply).await.ok()?;
@@ -665,7 +670,7 @@ async fn is_brokan(port: u16) -> bool {
     tokio::time::timeout(std::time::Duration::from_secs(2), probe).await.ok().flatten().unwrap_or(false)
 }
 
-fn open_browser(url: &str) {
+pub(crate) fn open_browser(url: &str) {
     if cfg!(target_os = "macos") {
         if std::process::Command::new("open").arg(url).spawn().is_err() {
             eprintln!("Open {url} in your browser.");
