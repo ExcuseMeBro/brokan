@@ -39,6 +39,7 @@ struct TaskOut {
     tags: Vec<String>,
     /// Work for a person, which agents leave alone.
     human: bool,
+    priority: String,
     /// Paths of the images attached to the task and its comments.
     images: Vec<String>,
     status: String,
@@ -56,6 +57,7 @@ impl TaskOut {
             description: task.description,
             tags: task.tags,
             human: task.human,
+            priority: task.priority,
             images,
             status: task.status,
             created_at: task.created_at,
@@ -140,6 +142,9 @@ fn markdown(board: &Board) -> String {
                 if t.human {
                     md.push_str("Human task.\n");
                 }
+                if t.priority != "none" {
+                    let _ = writeln!(md, "Priority: {}.", t.priority);
+                }
                 if !t.tags.is_empty() {
                     let _ = writeln!(md, "Tags: {}.", t.tags.join(", "));
                 }
@@ -176,6 +181,9 @@ mod tests {
         store.create_project("web", "Web", None).unwrap();
         let t = store.create_task(api.id, "Fix login", "Steps:\n1. log in").unwrap();
         store.add_comment(t.id, "claude-code", "Found it\nin auth.rs", &[]).unwrap();
+        store
+            .update_task(t.id, crate::store::TaskPatch { priority: Some("high".into()), ..Default::default() })
+            .unwrap();
         let done = store.create_task(api.id, "Old work", "").unwrap();
         store.move_task(done.id, "done", None).unwrap();
 
@@ -184,6 +192,7 @@ mod tests {
         assert!(md.contains("## API `api` ([me/api](https://github.com/me/api))"), "{md}");
         assert!(md.contains("### todo\n\n#### api#1 Fix login"), "{md}");
         assert!(md.contains("Steps:\n1. log in"), "{md}");
+        assert!(md.contains("Priority: high."), "{md}");
         assert!(md.contains("- **claude-code**, ") && md.contains("Found it\n  in auth.rs"), "{md}");
         assert!(md.contains("### done\n\n#### api#2 Old work"), "{md}");
         assert!(md.contains("## Web `web`"), "{md}");
@@ -192,6 +201,7 @@ mod tests {
         assert_eq!(json["statuses"][0], "todo");
         assert_eq!(json["projects"][0]["slug"], "api");
         assert_eq!(json["projects"][0]["tasks"][0]["key"], "api#1");
+        assert_eq!(json["projects"][0]["tasks"][0]["priority"], "high");
         assert_eq!(json["projects"][0]["tasks"][0]["comments"][0]["author"], "claude-code");
 
         let only = collect(&store, Some("web"), Path::new("/k/images")).unwrap();

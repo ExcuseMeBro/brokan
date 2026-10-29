@@ -186,6 +186,8 @@ struct CreateTaskArgs {
     status: Option<String>,
     /// For the user, not for agents.
     human: Option<bool>,
+    /// none, low, medium, high or urgent.
+    priority: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -202,6 +204,8 @@ struct UpdateTaskArgs {
     tags: Option<String>,
     /// For the user, not for agents.
     human: Option<bool>,
+    /// none, low, medium, high or urgent.
+    priority: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -396,7 +400,14 @@ impl Brokan {
                 let project = ctx.project(store, args.project.as_deref())?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let description = args.description.as_deref().unwrap_or("");
-                let mut t = store.create_task_in(project.id, status.as_deref(), &args.title, description)?;
+                let priority = args.priority.map(|p| p.trim().to_ascii_lowercase());
+                let mut t = store.create_task_in(
+                    project.id,
+                    status.as_deref(),
+                    &args.title,
+                    description,
+                    priority.as_deref(),
+                )?;
                 if args.tags.is_some() || args.human.is_some() {
                     t = store
                         .update_task(t.id, TaskPatch { tags: args.tags, human: args.human, ..Default::default() })?;
@@ -421,6 +432,7 @@ impl Brokan {
                         tags: args.tags,
                         project_id: None,
                         human: args.human,
+                        priority: args.priority.map(|p| p.trim().to_ascii_lowercase()),
                     },
                 )?;
                 let moved = if before.status != after.status {
@@ -450,7 +462,7 @@ impl Brokan {
             .await)
     }
 
-    #[tool(description = "Take the top todo task, move it to doing and show it.")]
+    #[tool(description = "Take the highest-priority todo task (ties by board order), move it to doing and show it.")]
     async fn next_task(&self, Parameters(args): Parameters<NextTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
@@ -498,6 +510,9 @@ impl ServerHandler for Brokan {
 /// `api#12 [todo] Fix login {bug} (2 comments)`.
 fn task_line(out: &mut String, t: &Task) {
     let _ = write!(out, "{}#{} [{}] {}", t.project, t.id, t.status, t.title);
+    if t.priority != "none" {
+        let _ = write!(out, " [priority: {}]", t.priority);
+    }
     write_tags(out, t);
     match t.comments {
         0 => {}
@@ -526,7 +541,7 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
     let mut out = format!("{}#{} {}", t.project, t.id, t.title);
     write_tags(&mut out, t);
-    let _ = write!(out, "\nstatus: {}", t.status);
+    let _ = write!(out, "\nstatus: {}, priority: {}", t.status, t.priority);
     if t.human {
         out.push_str(", human: for the user, not for agents");
     }

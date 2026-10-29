@@ -619,6 +619,9 @@ function card(t, showProject) {
       el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
+    t.priority && t.priority !== "none"
+      ? el("span", { class: `priority ${t.priority}`, title: `${t.priority} priority` },
+          t.priority[0].toUpperCase() + t.priority.slice(1)) : null,
     t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("span", { class: "tag" }, tag))) : null);
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
@@ -807,6 +810,7 @@ async function refreshTask() {
   status.replaceChildren(...statuses.map((s) => el("option", { value: s }, s)));
   if (!statuses.includes(task.status)) status.append(el("option", { value: task.status }, task.status));
   status.value = task.status;
+  if (document.activeElement !== $("#p-priority")) $("#p-priority").value = task.priority || "none";
   $("#p-human").checked = task.human;
   $("#p-created").replaceChildren(timeEl(task.created_at));
   $("#p-updated").replaceChildren(timeEl(task.updated_at));
@@ -928,6 +932,7 @@ $("#p-desc-view").addEventListener("mousedown", (e) => { if (e.target.closest("a
 $("#p-desc-view").addEventListener("focus", editDesc);
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
+$("#p-priority").addEventListener("change", (e) => patchTask({ priority: e.target.value }));
 $("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));
 
 // ---------- images ----------

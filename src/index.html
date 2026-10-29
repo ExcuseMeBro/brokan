@@ -196,6 +196,15 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .card .human-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
 .card .human-mark .icon svg { width: 15px; height: 15px; }
+.card .priority { display: inline-flex; margin-top: 6px; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+.card .priority.low { color: var(--muted); background: var(--hover); }
+.card .priority.medium { color: #725400; background: #fff4d6; }
+.card .priority.high { color: #a33c0e; background: #fff0e5; }
+.card .priority.urgent { color: var(--danger); background: var(--danger-bg); }
+@media (prefers-color-scheme: dark) {
+  .card .priority.medium { color: #f5ce69; background: #3b2f11; }
+  .card .priority.high { color: #ffad7a; background: #42251b; }
+}
 /* An on/off switch, for the Human field. */
 .human-field { display: flex; align-items: center; gap: 10px; }
 .props .human-field .hint { color: var(--faint); font-size: 12px; }
@@ -435,6 +444,10 @@ label.setting { cursor: pointer; }
     <textarea class="inline title-input" id="p-title" rows="1" spellcheck="false" placeholder="Task title"></textarea>
     <div class="props">
       Status <span><select class="field" id="p-status"></select></span>
+      Priority <span><select class="field" id="p-priority" aria-label="Task priority">
+        <option value="none">None</option><option value="low">Low</option><option value="medium">Medium</option>
+        <option value="high">High</option><option value="urgent">Urgent</option>
+      </select></span>
       Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span>
       Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>
       Created <span id="p-created"></span>

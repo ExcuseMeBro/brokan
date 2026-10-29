@@ -381,12 +381,13 @@ struct NewTask {
     title: String,
     #[serde(default)]
     description: String,
+    priority: Option<String>,
 }
 
 async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     with_store(home, move |_, s| {
         let project = s.find_project(&t.project)?;
-        s.create_task_in(project.id, None, &t.title, &t.description)
+        s.create_task_in(project.id, None, &t.title, &t.description, t.priority.as_deref())
     })
     .await
 }
@@ -423,6 +424,7 @@ struct Patch {
     project: Option<String>,
     tags: Option<String>,
     human: Option<bool>,
+    priority: Option<String>,
 }
 
 async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Patch>) -> Response {
@@ -437,6 +439,7 @@ async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Pat
                 project_id,
                 tags: p.tags,
                 human: p.human,
+                priority: p.priority,
             },
         )
     })

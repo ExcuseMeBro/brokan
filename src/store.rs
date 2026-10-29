@@ -49,6 +49,9 @@ const MIGRATIONS: &[&str] = &[
      CREATE TRIGGER images_delete AFTER DELETE ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
     // 6: tasks for a person, which agents leave alone.
     "ALTER TABLE tasks ADD COLUMN human INTEGER NOT NULL DEFAULT 0;",
+    // 7: optional priority; a default keeps existing boards and older Brokan compatible.
+    "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'
+        CHECK (priority IN ('none', 'low', 'medium', 'high', 'urgent'));",
 ];
 
 /// The colours a project can be given; the board maps each name to a shade.
@@ -116,6 +119,7 @@ pub struct Task {
     pub tags: Vec<String>,
     /// Work for a person: agents leave it alone, and `next_task` never picks it.
     pub human: bool,
+    pub priority: String,
     pub status: String,
     pub position: f64,
     pub created_at: String,
@@ -160,11 +164,21 @@ pub struct TaskPatch {
     /// Comma-separated; replaces all the tags, and an empty string clears them.
     pub tags: Option<String>,
     pub human: Option<bool>,
+    pub priority: Option<String>,
 }
 
 /// The board's columns, left to right. New tasks go in todo, agents take theirs from
 /// there and move them to doing, and tasks in done count as done.
 const STATUSES: [&str; 4] = ["todo", "doing", "review", "done"];
+const PRIORITIES: [&str; 5] = ["none", "low", "medium", "high", "urgent"];
+
+fn check_priority(priority: &str) -> Result<&str> {
+    if PRIORITIES.contains(&priority) {
+        Ok(priority)
+    } else {
+        Err(Error::Invalid(format!("unknown priority {priority:?}; use one of: {}", PRIORITIES.join(", "))))
+    }
+}
 
 /// An optional column before todo, for tasks that agents leave alone.
 pub const BACKLOG: &str = "backlog";
@@ -472,7 +486,7 @@ impl Store {
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
-            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human
+            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human, t.priority
         FROM tasks t JOIN projects p ON p.id = t.project_id";
 
     fn task_row(r: &Row) -> rusqlite::Result<Task> {
@@ -483,6 +497,7 @@ impl Store {
             description: r.get(3)?,
             tags: r.get::<_, String>(9)?.split(',').filter(|t| !t.is_empty()).map(String::from).collect(),
             human: r.get(10)?,
+            priority: r.get(11)?,
             status: r.get(4)?,
             position: r.get(5)?,
             created_at: r.get(6)?,
@@ -600,7 +615,7 @@ impl Store {
     /// Adds a task at the bottom of todo; a shorthand for tests.
     #[cfg(test)]
     pub fn create_task(&self, project_id: i64, title: &str, description: &str) -> Result<Task> {
-        self.create_task_in(project_id, None, title, description)
+        self.create_task_in(project_id, None, title, description, None)
     }
 
     /// Adds a task at the bottom of `status`, todo when left out.
@@ -610,15 +625,17 @@ impl Store {
         status: Option<&str>,
         title: &str,
         description: &str,
+        priority: Option<&str>,
     ) -> Result<Task> {
         let title = clean_title(title)?;
         let status = status.unwrap_or(STATUSES[0]);
         self.check_status(status)?;
+        let priority = check_priority(priority.unwrap_or(PRIORITIES[0]))?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
-                "INSERT INTO tasks (project_id, title, description, status, position) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![project_id, title, description.trim(), status, position],
+                "INSERT INTO tasks (project_id, title, description, status, position, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![project_id, title, description.trim(), status, position, priority],
             )?;
             Ok(c.last_insert_rowid())
         })?;
@@ -629,6 +646,9 @@ impl Store {
         let title = patch.title.as_deref().map(clean_title).transpose()?;
         if let Some(s) = &patch.status {
             self.check_status(s)?;
+        }
+        if let Some(p) = &patch.priority {
+            check_priority(p)?;
         }
         self.write(|c| {
             let current = self.get_task(id)?;
@@ -648,6 +668,12 @@ impl Store {
                 c.execute(
                     &format!("UPDATE tasks SET human = ?1, updated_at = {NOW} WHERE id = ?2 AND human <> ?1"),
                     params![human, id],
+                )?;
+            }
+            if let Some(priority) = &patch.priority {
+                c.execute(
+                    &format!("UPDATE tasks SET priority = ?1, updated_at = {NOW} WHERE id = ?2 AND priority <> ?1"),
+                    params![priority, id],
                 )?;
             }
             if let Some(t) = &patch.tags {
@@ -737,15 +763,16 @@ impl Store {
         Ok(())
     }
 
-    /// Takes the top task of todo that isn't for a person, and moves it to the bottom
-    /// of doing.
+    /// Takes the highest-priority todo task that isn't for a person, breaking ties by
+    /// board position, and moves it to the bottom of doing.
     pub fn next_task(&self, project_id: Option<i64>) -> Result<Option<Task>> {
         let [from, to, ..] = STATUSES;
         let id = self.write(|c| {
             let id: Option<i64> = c
                 .query_row(
                     "SELECT id FROM tasks WHERE status = ?1 AND human = 0 AND (?2 IS NULL OR project_id = ?2) \
-                     ORDER BY position LIMIT 1",
+                     ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                         WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, position, id LIMIT 1",
                     params![from, project_id],
                     |r| r.get(0),
                 )
@@ -1284,6 +1311,83 @@ mod tests {
     }
 
     #[test]
+    fn priority_migrates_and_validates_without_partial_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            // Model a board saved at version 6, before the additive priority migration.
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..6] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES
+                ('schema_version', '6'), ('compatible', '4')",
+                )
+                .unwrap();
+            let p = s.create_project("api", "", None).unwrap();
+            s.conn
+                .execute(
+                    "INSERT INTO tasks (project_id, title, status, position) VALUES (?1, 'old', 'todo', 1)",
+                    [p.id],
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let old = s.list_tasks(None, None).unwrap().pop().unwrap();
+        assert_eq!(old.priority, "none");
+        let before = s.changes().unwrap();
+        assert!(s.create_task_in(s.find_project("api").unwrap().id, None, "bad", "", Some("extreme")).is_err());
+        assert!(
+            s.update_task(
+                old.id,
+                TaskPatch { title: Some("changed".into()), priority: Some("extreme".into()), ..Default::default() }
+            )
+            .is_err()
+        );
+        assert_eq!(s.changes().unwrap(), before);
+        assert_eq!(s.get_task(old.id).unwrap().title, "old");
+        assert_eq!(
+            s.update_task(old.id, TaskPatch { priority: Some("high".into()), ..Default::default() }).unwrap().priority,
+            "high"
+        );
+        assert_eq!(s.search("old", 1).unwrap()[0].priority, "high");
+        assert_eq!(
+            s.update_task(old.id, TaskPatch { priority: Some("none".into()), ..Default::default() }).unwrap().priority,
+            "none"
+        );
+    }
+
+    #[test]
+    fn next_task_prefers_priority_then_board_position() {
+        let (dir, s) = store();
+        let api = s.create_project("api", "", None).unwrap();
+        let web = s.create_project("web", "", None).unwrap();
+        let none = s.create_task(api.id, "none", "").unwrap();
+        let low = s.create_task_in(web.id, None, "low", "", Some("low")).unwrap();
+        let high = s.create_task_in(api.id, None, "high", "", Some("high")).unwrap();
+        let urgent = s.create_task_in(web.id, None, "urgent", "", Some("urgent")).unwrap();
+        let top = s.create_task_in(api.id, None, "top", "", Some("high")).unwrap();
+        s.move_task(top.id, "todo", Some(none.id)).unwrap();
+        assert_eq!(titles(&s.list_tasks(None, Some("todo")).unwrap()), ["top", "none", "low", "high", "urgent"]);
+        let human = s.create_task_in(api.id, None, "human", "", Some("urgent")).unwrap();
+        s.update_task(human.id, TaskPatch { human: Some(true), ..Default::default() }).unwrap();
+        s.set_backlog(true).unwrap();
+        let s = Store::open(&dir.path().join("brokan.db"), None).unwrap();
+        s.create_task_in(api.id, Some("backlog"), "backlog", "", Some("urgent")).unwrap();
+        assert_eq!(s.next_task(Some(api.id)).unwrap().unwrap().id, top.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, urgent.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, high.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, low.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, none.id);
+        assert!(s.next_task(None).unwrap().is_none());
+    }
+
+    #[test]
     fn next_task_takes_top_todo() {
         let (_dir, s) = store();
         let api = s.create_project("api", "", None).unwrap();
@@ -1311,9 +1415,9 @@ mod tests {
         let s = Store::open(&dir.path().join("brokan.db"), None).unwrap();
         assert_eq!(s.statuses(), ["backlog", "todo", "doing", "review", "done"]);
         let api = s.create_project("api", "", None).unwrap();
-        let backlog = s.create_task_in(api.id, Some("backlog"), "later", "").unwrap();
+        let backlog = s.create_task_in(api.id, Some("backlog"), "later", "", None).unwrap();
         assert_eq!(backlog.status, "backlog");
-        assert!(s.create_task_in(api.id, Some("nope"), "x", "").is_err());
+        assert!(s.create_task_in(api.id, Some("nope"), "x", "", None).is_err());
         assert_eq!(s.create_task(api.id, "now", "").unwrap().status, "todo");
 
         let t = s.next_task(None).unwrap().unwrap();

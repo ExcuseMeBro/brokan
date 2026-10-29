@@ -39,6 +39,8 @@ Every command takes `--home <dir>` to use another data folder. Background startu
 
 `n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
 
+Set a task's Priority in its detail panel: None, Low, Medium, High or Urgent. Cards show their priority; agents can set it through MCP too. `next_task` takes the highest-priority `todo` task first and breaks ties by manual card order. Dragging cards keeps its usual manual order.
+
 Need somewhere to park ideas? Turn on the Backlog column in Settings, at the bottom of the sidebar: agents leave its tasks alone until you move them to `todo`.
 
 Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Agents get its file path and can open it.
