@@ -60,6 +60,17 @@ const ICONS = {
   newProject: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
   board: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  code: '<path d="m8 17-5-5 5-5m8 0 5 5-5 5"/>',
+  terminal: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0"/>',
+  server: '<rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/>',
+  rocket: '<path d="M4.5 16.5c-1.5 1.2-2 5-2 5s3.8-.5 5-2M12 15l-3 3-3-3 3-3M9 12c.3-4.5 4-9 12-10-1 8-5.5 11.7-10 12"/><circle cx="16" cy="8" r="1"/>',
+  book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
+  briefcase: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2M2 12a20 20 0 0 0 20 0"/>',
+  bug: '<path d="M8 2l1.9 1.9M16 2l-1.9 1.9M3 13h3m12 0h3M4 19l3-3m10 0 3 3M12 6a6 6 0 0 0-6 6v4a6 6 0 0 0 12 0v-4a6 6 0 0 0-6-6Z"/><path d="M6 13h12"/>',
+  palette: '<path d="M12 2a10 10 0 1 0 0 20h1.2a2 2 0 0 0 1.5-3.3 2 2 0 0 1 1.5-3.3h1.3A4.5 4.5 0 0 0 22 11 9 9 0 0 0 12 2Z"/><path d="M7 11h.01M10 6h.01M16 7h.01M18 12h.01"/>',
+  zap: '<path d="M13 2 3 14h8l-1 8 11-12h-8l1-8Z"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
@@ -129,6 +140,17 @@ function projectColorName(slug) {
 
 function projectColor(slug) {
   return PROJECT_COLORS[projectColorName(slug)];
+}
+
+// A missing icon means a folder for boards created before icon selection existed.
+const PROJECT_ICONS = ["folder", "code", "terminal", "globe", "database", "server",
+  "rocket", "book", "briefcase", "bug", "palette", "zap"];
+function projectIconName(slug) {
+  const picked = state.board?.projects.find((p) => p.slug === slug)?.icon;
+  return PROJECT_ICONS.includes(picked) ? picked : "folder";
+}
+function projectGlyph(slug) {
+  return icon(projectIconName(slug), projectColor(slug));
 }
 
 // How many columns a status is past todo: -1 for backlog, and 0 for a status the board
@@ -335,10 +357,12 @@ function renderNav() {
       el("span", { class: "name" }, name),
       el("span", { class: "count" }, String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
-    ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
+    ? el("div", { class: "item renaming" }, projectGlyph(p.slug), renaming.input)
     : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
-    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
-    el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
+    link(p.slug, p.name, p.open, projectGlyph(p.slug)),
+    el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`,
+                   "aria-expanded": String(state.menu === p.slug),
+                   "aria-controls": state.menu === p.slug ? "project-settings-menu" : null,
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
   $("#nav").replaceChildren(
     link("all", "All projects", open, icon("board")),
@@ -356,15 +380,34 @@ function toggleProjectMenu(p, button) {
   closeMenu();
   if (wasOpen) return;
   state.menu = p.slug;
+  button.setAttribute("aria-expanded", "true");
+  button.setAttribute("aria-controls", "project-settings-menu");
   button.closest(".item").classList.add("menu-open");
   const swatches = el("div", { class: "swatches", role: "group", "aria-label": "Color" });
   const drawSwatches = () => swatches.replaceChildren(...Object.entries(PROJECT_COLORS).map(([name, hex]) => {
     const current = projectColorName(p.slug) === name;
     return el("button", { class: "swatch", style: `background:${hex}`, title: name, "aria-label": name,
-                          "aria-pressed": String(current), onclick: () => pickColor(p.slug, name).then(drawSwatches) },
-      current ? icon("check") : null);
+                          "aria-pressed": String(current), onclick: async () => {
+                            const focused = document.activeElement?.getAttribute("aria-label") === name;
+                            await pickColor(p.slug, name);
+                            drawSwatches(); drawIcons();
+                            if (focused) [...swatches.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === name)?.focus();
+                          } }, current ? icon("check") : null);
   }));
   drawSwatches();
+  const icons = el("div", { class: "project-icons", role: "group", "aria-label": "Project icon" });
+  const drawIcons = () => icons.replaceChildren(...PROJECT_ICONS.map((name) =>
+    el("button", { type: "button", class: "project-icon" + (projectIconName(p.slug) === name ? " selected" : ""),
+                   title: name, "aria-label": `${name} icon`, "aria-pressed": String(projectIconName(p.slug) === name),
+                   onclick: async () => {
+                     const focused = document.activeElement?.getAttribute("aria-label") === `${name} icon`;
+                     if (await pickIcon(p.slug, name)) {
+                       drawIcons();
+                       if (focused) [...icons.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === `${name} icon`)?.focus();
+                     }
+                   } },
+      icon(name, projectColor(p.slug)))));
+  drawIcons();
   // Linked repos, each with an unlink button, and a field to link another.
   const repos = el("div", { class: "repos" });
   const drawRepos = (list, focus) => {
@@ -385,13 +428,23 @@ function toggleProjectMenu(p, button) {
   const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), "Rename");
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), "Delete project");
-  const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
-    el("div", { class: "label" }, "Color"), swatches, el("div", { class: "label" }, "Repos"), repos,
+  const menu = el("div", { id: "project-settings-menu", class: "menu project-menu", role: "group", "aria-label": `Project settings for ${p.name}`, tabindex: "-1" },
+    el("div", { class: "label" }, "Color"), swatches,
+    el("div", { class: "label" }, "Icon"), icons, el("div", { class: "label" }, "Repos"), repos,
     el("div", { class: "sep" }), rename, remove);
   document.body.append(menu);
+  menu.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      closeMenu();
+      const trigger = button.isConnected ? button : [...document.querySelectorAll("#nav .more")]
+        .find((b) => b.getAttribute("aria-label") === `More for ${p.name}`);
+      trigger?.focus();
+    }
+  });
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
-  menu.style.top = `${below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight}px`;
+  menu.style.top = `${Math.max(8, below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight)}px`;
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   // Focus the menu itself, so Tab reaches its buttons without one looking selected.
   menu.focus();
@@ -443,11 +496,23 @@ async function pickColor(slug, color) {
   } catch (err) { toast(err.message); }
 }
 
+async function pickIcon(slug, iconName) {
+  try {
+    await api("PATCH", `/projects/${encodeURIComponent(slug)}`, { icon: iconName });
+    await loadBoard();
+    return true;
+  } catch (err) { toast(err.message); return false; }
+}
+
 function closeMenu() {
   if (!state.menu) return;
   state.menu = null;
   document.querySelector(".menu")?.remove();
-  document.querySelectorAll(".nav .menu-open").forEach((i) => i.classList.remove("menu-open"));
+  document.querySelectorAll(".nav .menu-open").forEach((i) => {
+    i.classList.remove("menu-open");
+    i.querySelector(".more")?.setAttribute("aria-expanded", "false");
+    i.querySelector(".more")?.removeAttribute("aria-controls");
+  });
   $("#settings").classList.remove("open");
 }
 
@@ -485,7 +550,7 @@ function renderHeader() {
     return;
   }
   header.replaceChildren(
-    el("h1", {}, p.name),
+    el("h1", { class: "project-heading" }, projectGlyph(p.slug), p.name),
     el("span", { class: "sub" }, open(p.open)),
     ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
                                     title: `Open ${r} on GitHub` }, icon("github"), r)),
@@ -853,7 +918,7 @@ function renderProjectPick(task) {
     patchTask({ project: select.value });
   });
   $("#p-project").replaceChildren(el("label", { class: "tag project-pick" },
-    el("span", { class: "dot", style: `background:${projectColor(task.project)}` }), select));
+    projectGlyph(task.project), select));
 }
 
 // Textareas grow with their text instead of scrolling.

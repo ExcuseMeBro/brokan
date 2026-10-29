@@ -52,10 +52,29 @@ const MIGRATIONS: &[&str] = &[
     // 7: optional priority; a default keeps existing boards and older Brokan compatible.
     "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'
         CHECK (priority IN ('none', 'low', 'medium', 'high', 'urgent'));",
+    // 8: optional project icon; older boards and older Brokan still show a folder.
+    "ALTER TABLE projects ADD COLUMN icon TEXT
+        CHECK (icon IS NULL OR icon IN
+            ('folder', 'code', 'terminal', 'globe', 'database', 'server',
+             'rocket', 'book', 'briefcase', 'bug', 'palette', 'zap'));",
 ];
 
-/// The colours a project can be given; the board maps each name to a shade.
+/// The colours and icons a project can be given; the board maps each name to a shade or SVG.
 const PROJECT_COLORS: &[&str] = &["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
+const PROJECT_ICONS: &[&str] = &[
+    "folder",
+    "code",
+    "terminal",
+    "globe",
+    "database",
+    "server",
+    "rocket",
+    "book",
+    "briefcase",
+    "bug",
+    "palette",
+    "zap",
+];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -103,6 +122,8 @@ pub struct Project {
     pub repos: Vec<String>,
     /// One of `PROJECT_COLORS`, or `None` when never picked.
     pub color: Option<String>,
+    /// One of `PROJECT_ICONS`, or `None` for the default folder.
+    pub icon: Option<String>,
     pub created_at: String,
     /// Tasks not in the last (done) column.
     pub open: i64,
@@ -318,7 +339,7 @@ impl Store {
             (SELECT group_concat(repo, ',' ORDER BY r.rowid) FROM project_repos r WHERE r.project_id = p.id),
             p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
-            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id)
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id), p.icon
         FROM projects p";
 
     fn project_row(r: &Row) -> rusqlite::Result<Project> {
@@ -331,6 +352,7 @@ impl Store {
             created_at: r.get(5)?,
             open: r.get(6)?,
             total: r.get(7)?,
+            icon: r.get(8)?,
         })
     }
 
@@ -455,23 +477,34 @@ impl Store {
         }
     }
 
-    /// Renames a project. Its slug, and so its task keys like api#12, stay.
-    pub fn rename_project(&self, slug: &str, name: &str) -> Result<Project> {
-        let name = squash(name);
-        if name.is_empty() {
+    /// Changes project appearance and name together, without partial writes on bad input.
+    /// Its slug, and so its task keys like api#12, stay.
+    pub fn update_project(
+        &self,
+        slug: &str,
+        name: Option<&str>,
+        color: Option<&str>,
+        icon: Option<&str>,
+    ) -> Result<Project> {
+        let name = name.map(squash);
+        if name.as_deref() == Some("") {
             return Err(Error::Invalid("project name is empty".into()));
         }
-        let project = self.find_project(slug)?;
-        self.conn.execute("UPDATE projects SET name = ?1 WHERE id = ?2", params![name, project.id])?;
-        self.find_project(&project.slug)
-    }
-
-    pub fn set_project_color(&self, slug: &str, color: &str) -> Result<Project> {
-        if !PROJECT_COLORS.contains(&color) {
+        if let Some(color) = color.filter(|c| !PROJECT_COLORS.contains(c)) {
             return Err(Error::Invalid(format!("unknown color {color:?}; use one of: {}", PROJECT_COLORS.join(", "))));
         }
+        if let Some(icon) = icon.filter(|i| !PROJECT_ICONS.contains(i)) {
+            return Err(Error::Invalid(format!("unknown icon {icon:?}; use one of: {}", PROJECT_ICONS.join(", "))));
+        }
         let project = self.find_project(slug)?;
-        self.conn.execute("UPDATE projects SET color = ?1 WHERE id = ?2", params![color, project.id])?;
+        if name.is_none() && color.is_none() && icon.is_none() {
+            return Ok(project);
+        }
+        self.conn.execute(
+            "UPDATE projects SET name = COALESCE(?1, name), color = COALESCE(?2, color), icon = COALESCE(?3, icon)
+             WHERE id = ?4",
+            params![name, color, icon, project.id],
+        )?;
         self.find_project(&project.slug)
     }
 
@@ -1109,13 +1142,50 @@ mod tests {
         assert!(s.create_project("web", "", Some("me/api")).unwrap_err().to_string().contains("already linked"));
         assert!(s.create_project("bad slug", "", None).is_err());
         let web = s.create_project("web", "", None).unwrap();
-        assert_eq!((web.name.as_str(), web.color.as_deref()), ("web", None));
-        assert_eq!(s.set_project_color("web", "teal").unwrap().color.as_deref(), Some("teal"));
-        assert!(s.set_project_color("web", "#ff0000").is_err());
-        let renamed = s.rename_project("web", "  Web   site ").unwrap();
+        assert_eq!((web.name.as_str(), web.color.as_deref(), web.icon.as_deref()), ("web", None, None));
+        assert_eq!(s.update_project("web", None, Some("teal"), None).unwrap().color.as_deref(), Some("teal"));
+        assert!(s.update_project("web", None, Some("#ff0000"), None).is_err());
+        let renamed = s.update_project("web", Some("  Web   site "), None, None).unwrap();
         assert_eq!((renamed.slug.as_str(), renamed.name.as_str()), ("web", "Web site"));
-        assert!(s.rename_project("web", "  ").is_err());
+        assert!(s.update_project("web", Some("  "), None, None).is_err());
         assert!(s.find_project("nope").unwrap_err().to_string().contains("api, web"));
+    }
+
+    #[test]
+    fn project_icon_migrates_and_updates_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..7] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '7'), ('compatible', '4')")
+                .unwrap();
+            s.conn.execute_batch("INSERT INTO projects (slug, name, color) VALUES ('web', 'Website', 'teal')").unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let old = s.find_project("web").unwrap();
+        assert_eq!((old.color.as_deref(), old.icon.as_deref()), (Some("teal"), None));
+        let changed = s.update_project("web", Some("  New  name "), Some("red"), Some("rocket")).unwrap();
+        assert_eq!(
+            (changed.name.as_str(), changed.color.as_deref(), changed.icon.as_deref()),
+            ("New name", Some("red"), Some("rocket"))
+        );
+        let before = s.changes().unwrap();
+        assert!(s.update_project("web", Some("Wrong"), Some("blue"), Some("<svg>")).is_err());
+        assert!(s.update_project("web", Some("Wrong"), Some("#bad"), Some("book")).is_err());
+        assert_eq!(s.changes().unwrap(), before);
+        let persisted = Store::open(&path, None).unwrap().find_project("web").unwrap();
+        assert_eq!(
+            (persisted.name, persisted.color.as_deref(), persisted.icon.as_deref()),
+            ("New name".into(), Some("red"), Some("rocket"))
+        );
+        assert_eq!(s.update_project("web", None, None, Some("folder")).unwrap().icon.as_deref(), Some("folder"));
     }
 
     #[test]
@@ -1327,11 +1397,11 @@ mod tests {
                 ('schema_version', '6'), ('compatible', '4')",
                 )
                 .unwrap();
-            let p = s.create_project("api", "", None).unwrap();
             s.conn
-                .execute(
-                    "INSERT INTO tasks (project_id, title, status, position) VALUES (?1, 'old', 'todo', 1)",
-                    [p.id],
+                .execute_batch(
+                    "INSERT INTO projects (slug, name) VALUES ('api', 'api');
+                INSERT INTO tasks (project_id, title, status, position)
+                VALUES ((SELECT id FROM projects WHERE slug = 'api'), 'old', 'todo', 1);",
                 )
                 .unwrap();
         }

@@ -338,20 +338,12 @@ async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Respo
 struct ProjectPatch {
     name: Option<String>,
     color: Option<String>,
+    icon: Option<String>,
 }
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
-    with_store(home, move |_, s| {
-        let mut project = None;
-        if let Some(name) = &p.name {
-            project = Some(s.rename_project(&slug, name)?);
-        }
-        if let Some(color) = &p.color {
-            project = Some(s.set_project_color(&slug, color)?);
-        }
-        project.map_or_else(|| s.find_project(&slug), Ok)
-    })
-    .await
+    with_store(home, move |_, s| s.update_project(&slug, p.name.as_deref(), p.color.as_deref(), p.icon.as_deref()))
+        .await
 }
 
 #[derive(Deserialize)]

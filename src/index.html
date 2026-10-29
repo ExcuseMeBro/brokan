@@ -84,6 +84,11 @@ aside {
   background: none; text-align: left;
 }
 .menu button:hover, .menu button:focus-visible { background: var(--hover); }
+.menu.project-menu { min-width: 230px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.menu .project-icons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px 8px 10px; }
+.menu .project-icon { justify-content: center; width: 100%; height: 38px; padding: 8px; color: var(--text); }
+.menu .project-icon.selected { background: var(--active); box-shadow: inset 0 0 0 1px var(--border); }
+.menu .project-icon:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
 .menu button.danger { color: var(--danger); }
 .menu .label { color: var(--faint); font-size: 12px; padding: 4px 10px 0; }
 .menu .swatches { display: flex; gap: 6px; padding: 8px 10px 10px; }
@@ -134,6 +139,7 @@ header {
 }
 header .info { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; flex: 1; min-width: 0; }
 header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
+header h1.project-heading { display: inline-flex; align-items: center; gap: 8px; }
 header .sub { color: var(--muted); }
 header .repo-link {
   display: inline-flex; align-items: center; gap: 6px; align-self: center; padding: 3px 10px 3px 8px;
