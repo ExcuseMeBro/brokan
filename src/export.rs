@@ -117,6 +117,9 @@ fn markdown(board: &Board) -> String {
             p.project.total,
             if p.project.total == 1 { "task" } else { "tasks" }
         );
+        if p.project.archived {
+            md.push_str("Archived project.\n");
+        }
         // Columns in board order, then any status no longer in the config.
         let mut statuses = board.statuses.clone();
         for t in &p.tasks {

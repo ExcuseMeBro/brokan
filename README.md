@@ -43,6 +43,8 @@ Set a task's Priority in its detail panel: None, Low, Medium, High or Urgent. Ca
 
 Open a task to **Start timer** or **Log time** in minutes. One timer can run across the board at a time, and it keeps its start time if Brokan restarts. The task shows its entries so a mistaken completed entry can be removed. The sidebar **Dashboard** shows a seven-day bar chart of tracked time, a pie of task statuses and a donut of time by project. Running time is included; the seven-day chart groups whole entries by their start date in UTC.
 
+Use a project's ⋯ menu to **Archive project**; it moves into the sidebar **Archived** section, where you can still browse its tasks and restore it. Archived projects are excluded from All projects, search, new task choices and agents' `next_task`. Their tasks, repo links and logged time are not deleted; exports and historical Dashboard totals still include them. Restore a project to add tasks again. Older Brokan versions must be updated before opening a board with archives, so they cannot mistakenly assign archived tasks to agents.
+
 Need somewhere to park ideas? Turn on the Backlog column in Settings, at the bottom of the sidebar: agents leave its tasks alone until you move them to `todo`.
 
 Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Agents get its file path and can open it.

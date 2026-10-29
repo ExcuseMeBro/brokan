@@ -72,12 +72,21 @@ impl Ctx {
         if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
             return store.find_project(name);
         }
+        let mut archived_match = None;
         for repo in &self.repos {
             if let Some(p) = store.project_by_repo(repo)? {
-                return Ok(p);
+                if !p.archived {
+                    return Ok(p);
+                }
+                archived_match.get_or_insert((repo, p.slug));
             }
         }
-        let known: Vec<String> = store.list_projects()?.into_iter().map(|p| p.slug).collect();
+        if let Some((repo, slug)) = archived_match {
+            return Err(Error::NotFound(format!(
+                "Repo {repo} is linked to archived project {slug}; restore it or pass an active project explicitly."
+            )));
+        }
+        let known: Vec<String> = store.list_projects()?.into_iter().filter(|p| !p.archived).map(|p| p.slug).collect();
         let known = known.join(", ");
         let Some(cwd) = &self.cwd else {
             let msg = if known.is_empty() {
@@ -276,7 +285,7 @@ impl Brokan {
         }
     }
 
-    #[tool(description = "List projects with their repos and open task counts.")]
+    #[tool(description = "List active and archived projects with their repos and open task counts.")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(|ctx, store| {
@@ -295,6 +304,9 @@ impl Brokan {
                         let _ = write!(out, " ({})", p.repos.join(", "));
                     }
                     let _ = write!(out, ": {} open of {}", p.open, p.total);
+                    if p.archived {
+                        out.push_str(" [archived]");
+                    }
                     if here.is_some_and(|h| h.id == p.id) {
                         out.push_str(" <- current repo");
                     }

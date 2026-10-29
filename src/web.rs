@@ -347,11 +347,21 @@ struct ProjectPatch {
     name: Option<String>,
     color: Option<String>,
     icon: Option<String>,
+    archived: Option<bool>,
 }
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
-    with_store(home, move |_, s| s.update_project(&slug, p.name.as_deref(), p.color.as_deref(), p.icon.as_deref()))
-        .await
+    with_store(home, move |_, s| {
+        if let Some(archived) = p.archived {
+            if p.name.is_some() || p.color.is_some() || p.icon.is_some() {
+                return Err(Error::Invalid("archive separately from project appearance changes".into()));
+            }
+            s.set_project_archived(&slug, archived)
+        } else {
+            s.update_project(&slug, p.name.as_deref(), p.color.as_deref(), p.icon.as_deref())
+        }
+    })
+    .await
 }
 
 #[derive(Deserialize)]

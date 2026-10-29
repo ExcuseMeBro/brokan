@@ -62,6 +62,15 @@ aside {
 .nav a .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .nav a .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .nav .label { color: var(--faint); padding: 18px 10px 6px; }
+.nav .archive-group { margin-top: 10px; }
+.nav .archive-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: 10px; background: none; color: var(--muted); text-align: left; cursor: pointer; }
+.nav .archive-toggle:hover, .nav .archive-toggle:focus-visible { background: var(--hover); color: var(--text); }
+.nav .archive-toggle .name { flex: 1; }
+.nav .archive-toggle .count { font-size: 12px; font-variant-numeric: tabular-nums; }
+.nav .archive-items { padding-left: 10px; }
+.nav .archive-items .item { opacity: .8; }
+.nav .archive-items .item.active, .nav .archive-items .item:focus-within { opacity: 1; }
 /* A project row: its "more" button takes the count's place on hover, like most sidebars. */
 .nav .item { position: relative; }
 .nav .more {
@@ -457,6 +466,9 @@ label.setting { cursor: pointer; }
   .nav { flex-direction: row; overflow-x: auto; }
   .nav a { width: auto; }
   .nav .label { display: none; }
+  .nav .archive-group { display: flex; align-items: center; margin-top: 0; flex: none; }
+  .nav .archive-toggle { white-space: nowrap; }
+  .nav .archive-items { display: flex; padding-left: 0; }
   #new-project-toggle { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
   .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }

@@ -78,6 +78,7 @@ const ICONS = {
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   plus: '<path d="M5 12h14M12 5v14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
+  archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v12h14V8M10 12h4"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   human: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/>',
   github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.1-1.3-.3-2.5-1-3.5.3-1.2.3-2.4 0-3.5 0 0-1 0-3 1.5a12 12 0 0 0-8 0C6 2 5 2 5 2c-.3 1.2-.3 2.4 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.4.5-.7 1-.8 1.7-.2.6-.3 1.2-.2 1.8v4"/><path d="M9 18c-4.5 2-5-2-7-2"/>',
@@ -381,7 +382,9 @@ function renderNav() {
   // Redrawing would take the field away from someone renaming a project.
   if (renaming && document.contains(renaming.input)) return;
   const { projects } = state.board;
-  const open = projects.reduce((n, p) => n + p.open, 0);
+  const active = projects.filter((p) => !p.archived);
+  const archived = projects.filter((p) => p.archived);
+  const open = active.reduce((n, p) => n + p.open, 0);
   const link = (slug, name, count, glyph) =>
     el("a", { href: "#" + slug, class: !state.dashboard && state.project === slug ? "active" : null,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
@@ -399,11 +402,22 @@ function renderNav() {
   const dashboard = el("a", { href: "#~dashboard", class: state.dashboard ? "active" : null,
     onclick: (e) => { e.preventDefault(); showDashboard(); } },
     icon("chart"), el("span", { class: "name" }, "Dashboard"));
+  const archivedOpen = localStorageGet("brokan.archivedOpen") !== "0";
+  const archivedGroup = archived.length ? el("div", { class: "archive-group" },
+    el("button", { type: "button", class: "archive-toggle", "aria-expanded": String(archivedOpen),
+      "aria-controls": "archived-projects", onclick: () => {
+        try { localStorage.setItem("brokan.archivedOpen", archivedOpen ? "0" : "1"); } catch {}
+        renderNav();
+        $("#nav .archive-toggle")?.focus();
+      } }, icon("archive"), el("span", { class: "name" }, "Archived"),
+    el("span", { class: "count" }, String(archived.length))),
+    el("div", { id: "archived-projects", class: "archive-items", hidden: !archivedOpen }, ...archived.map(item))) : null;
   $("#nav").replaceChildren(
     dashboard,
     link("all", "All projects", open, icon("board")),
-    ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
-    ...projects.map(item),
+    ...(active.length ? [el("div", { class: "label" }, "Projects")] : []),
+    ...active.map(item),
+    ...(archivedGroup ? [archivedGroup] : []),
   );
 }
 
@@ -550,12 +564,14 @@ function toggleProjectMenu(p, button) {
   };
   drawRepos(p.repos);
   const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), "Rename");
+  const archive = el("button", { onclick: () => archiveProject(p, !p.archived) }, icon("archive"),
+    p.archived ? "Restore project" : "Archive project");
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), "Delete project");
   const menu = el("div", { id: "project-settings-menu", class: "menu project-menu", role: "group", "aria-label": `Project settings for ${p.name}`, tabindex: "-1" },
     el("div", { class: "label" }, "Color"), swatches,
     el("div", { class: "label" }, "Icon"), icons, el("div", { class: "label" }, "Repos"), repos,
-    el("div", { class: "sep" }), rename, remove);
+    el("div", { class: "sep" }), rename, archive, remove);
   document.body.append(menu);
   menu.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -620,6 +636,18 @@ async function pickColor(slug, color) {
   } catch (err) { toast(err.message); }
 }
 
+async function archiveProject(project, archived) {
+  closeMenu();
+  try {
+    await api("PATCH", `/projects/${encodeURIComponent(project.slug)}`, { archived });
+    if (archived) {
+      try { localStorage.setItem("brokan.archivedOpen", "1"); } catch {}
+    }
+    await loadBoard();
+    toast(`${project.name} ${archived ? "archived" : "restored"}.`);
+  } catch (err) { toast(err.message); }
+}
+
 async function pickIcon(slug, iconName) {
   try {
     await api("PATCH", `/projects/${encodeURIComponent(slug)}`, { icon: iconName });
@@ -666,22 +694,23 @@ function renderHeader() {
   }
   const p = currentProject();
   const { projects, tasks } = state.board;
+  const active = projects.filter((project) => !project.archived);
   const header = $("#header");
-  $("#new-task").hidden = !projects.length;
+  $("#new-task").hidden = !active.length || Boolean(p?.archived);
   $("#human-only").hidden = !projects.length;
   $("#human-only").setAttribute("aria-pressed", String(isHumanOnly()));
   if (!projects.length) { header.replaceChildren(); return; }
   // Plain words for what each piece is: how much is open, and the repos on GitHub.
   const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
   if (!p) {
-    const count = projects.reduce((n, p) => n + p.open, 0);
+    const count = active.reduce((n, project) => n + project.open, 0);
     header.replaceChildren(el("h1", {}, "All projects"),
-      el("span", { class: "sub" }, `${open(count)} in ${projects.length} project${projects.length === 1 ? "" : "s"}`));
+      el("span", { class: "sub" }, `${open(count)} in ${active.length} project${active.length === 1 ? "" : "s"}`));
     return;
   }
   header.replaceChildren(
     el("h1", { class: "project-heading" }, projectGlyph(p.slug), p.name),
-    el("span", { class: "sub" }, open(p.open)),
+    el("span", { class: "sub" }, p.archived ? `Archived · ${open(p.open)}` : open(p.open)),
     ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
                                     title: `Open ${r} on GitHub` }, icon("github"), r)),
   );
@@ -702,12 +731,14 @@ function renderColumns() {
   $("#dashboard").hidden = !state.dashboard;
   if (state.dashboard) { columns.style.display = "none"; return; }
   const { statuses, projects, tasks } = state.board;
-  if (!projects.length) {
+  if (!projects.length || (state.project === "all" && projects.every((p) => p.archived))) {
     state.layout = "";
     columns.style.display = "flex";
     columns.replaceChildren(el("div", { class: "empty" },
-      el("h1", {}, "Welcome to Brokan"),
-      el("p", {}, "Create your first project in the sidebar. Link it to a GitHub repo and agents working in that repo will find it on their own."),
+      el("h1", {}, projects.length ? "No active projects" : "Welcome to Brokan"),
+      el("p", {}, projects.length
+        ? "Your projects are in Archived. Restore one there, or create a new project."
+        : "Create your first project in the sidebar. Link it to a GitHub repo and agents working in that repo will find it on their own."),
       el("button", { class: "btn primary", onclick: showNewProject }, "New project")));
     return;
   }
@@ -886,10 +917,10 @@ const NEW_TITLE = "New task";
 let fresh = null; // id of the task just added, until something in it is saved
 
 async function newTask() {
-  const { projects } = state.board;
-  if (!projects.length) { toast("Create a project first"); return; }
+  const projects = state.board.projects.filter((p) => !p.archived);
+  if (!projects.length) { toast("Create or restore a project first"); return; }
   const last = localStorageGet("brokan.newTaskProject");
-  const project = state.project !== "all" ? state.project
+  const project = state.project !== "all" && projects.some((p) => p.slug === state.project) ? state.project
     : projects.some((p) => p.slug === last) ? last : projects[0].slug;
   try {
     const task = await api("POST", "/tasks", { project, title: NEW_TITLE });
@@ -1119,7 +1150,7 @@ async function deleteComment(c) {
 
 // The project tag doubles as a picker that moves the task to another project.
 function renderProjectPick(task) {
-  const projects = state.board ? state.board.projects.map((p) => p.slug) : [];
+  const projects = state.board ? state.board.projects.filter((p) => !p.archived).map((p) => p.slug) : [];
   if (!projects.includes(task.project)) projects.push(task.project);
   const select = el("select", { title: "Project", "aria-label": "Project" },
     ...projects.map((slug) => el("option", { value: slug }, slug)));

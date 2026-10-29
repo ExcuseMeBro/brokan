@@ -13,10 +13,10 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 /// The oldest schema version whose Brokan can still use a database at the latest one.
-/// Adding a table or a column with a default leaves older versions working, so a board
-/// synced from a newer Brokan still opens in an older one. Raise it to the new version
-/// only for a migration that older code can't live with, like a renamed column.
-const COMPATIBLE_FROM: usize = 4;
+/// Adding a table or a column with a default generally leaves older versions working.
+/// Archived projects must be hidden from agents, though; v9 and older do not filter them.
+/// Refuse those clients rather than allowing them to claim archived tasks from synced boards.
+const COMPATIBLE_FROM: usize = 10;
 
 /// Schema migrations, applied in order. Index + 1 is the `schema_version` they lead to.
 const MIGRATIONS: &[&str] = &[
@@ -72,6 +72,8 @@ const MIGRATIONS: &[&str] = &[
      CREATE TRIGGER time_entries_insert AFTER INSERT ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
      CREATE TRIGGER time_entries_update AFTER UPDATE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
      CREATE TRIGGER time_entries_delete AFTER DELETE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
+    // 10: archive projects without deleting their tasks, repos or time entries.
+    "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -139,6 +141,7 @@ pub struct Project {
     pub color: Option<String>,
     /// One of `PROJECT_ICONS`, or `None` for the default folder.
     pub icon: Option<String>,
+    pub archived: bool,
     pub created_at: String,
     /// Tasks not in the last (done) column.
     pub open: i64,
@@ -406,7 +409,7 @@ impl Store {
             (SELECT group_concat(repo, ',' ORDER BY r.rowid) FROM project_repos r WHERE r.project_id = p.id),
             p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
-            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id), p.icon
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id), p.icon, p.archived
         FROM projects p";
 
     fn project_row(r: &Row) -> rusqlite::Result<Project> {
@@ -420,6 +423,7 @@ impl Store {
             open: r.get(6)?,
             total: r.get(7)?,
             icon: r.get(8)?,
+            archived: r.get(9)?,
         })
     }
 
@@ -575,6 +579,16 @@ impl Store {
         self.find_project(&project.slug)
     }
 
+    /// Archives or restores a project without changing its tasks or linked repos.
+    pub fn set_project_archived(&self, slug: &str, archived: bool) -> Result<Project> {
+        let project = self.find_project(slug)?;
+        self.conn.execute(
+            "UPDATE projects SET archived = ?1 WHERE id = ?2 AND archived <> ?1",
+            params![archived, project.id],
+        )?;
+        self.find_project(&project.slug)
+    }
+
     /// Deletes a project with all its tasks and their comments; returns the project as it was.
     pub fn delete_project(&self, slug: &str) -> Result<Project> {
         let project = self.find_project(slug)?;
@@ -624,9 +638,13 @@ impl Store {
         // SQLite reads a negative LIMIT as no limit.
         let limit = keep_done.map_or(-1, |n| n as i64);
         let sql = format!(
-            "{} WHERE (?1 IS NULL OR t.project_id = ?1) AND (?2 IS NULL OR t.status = ?2)
-               AND (t.status <> ?3 OR t.id IN (SELECT id FROM tasks WHERE status = ?3
-                    AND (?1 IS NULL OR project_id = ?1) ORDER BY position DESC LIMIT ?4))
+            "{} WHERE (?1 IS NULL OR t.project_id = ?1) AND (?1 IS NOT NULL OR p.archived = 0)
+               AND (?2 IS NULL OR t.status = ?2)
+               AND (t.status <> ?3 OR t.id IN (SELECT recent.id FROM tasks recent
+                    JOIN projects owner ON owner.id = recent.project_id WHERE recent.status = ?3
+                    AND (?1 IS NULL OR recent.project_id = ?1)
+                    AND (?1 IS NOT NULL OR owner.archived = 0)
+                    ORDER BY recent.position DESC LIMIT ?4))
              ORDER BY t.position",
             Self::TASK_SELECT
         );
@@ -639,7 +657,9 @@ impl Store {
         let hidden = match keep_done {
             Some(keep) if status.is_none_or(|s| s == done) => {
                 let all: i64 = self.conn.query_row(
-                    "SELECT count(*) FROM tasks WHERE status = ?1 AND (?2 IS NULL OR project_id = ?2)",
+                    "SELECT count(*) FROM tasks t JOIN projects p ON p.id = t.project_id
+                     WHERE t.status = ?1 AND (?2 IS NULL OR t.project_id = ?2)
+                       AND (?2 IS NOT NULL OR p.archived = 0)",
                     params![done, project_id],
                     |r| r.get(0),
                 )?;
@@ -655,7 +675,7 @@ impl Store {
     /// gives the most recently changed tasks.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Task>> {
         let words: Vec<String> = query.split_whitespace().take(10).map(|w| w.to_lowercase()).collect();
-        let mut sql = format!("{} WHERE 1", Self::TASK_SELECT);
+        let mut sql = format!("{} WHERE p.archived = 0", Self::TASK_SELECT);
         for i in 0..words.len() {
             sql.push_str(&format!(
                 " AND lower(p.slug || '#' || t.id || ' ' || t.title || ' ' || t.description || ' ' || t.tags) \
@@ -731,6 +751,7 @@ impl Store {
         let status = status.unwrap_or(STATUSES[0]);
         self.check_status(status)?;
         let priority = check_priority(priority.unwrap_or(PRIORITIES[0]))?;
+        self.ensure_active_project(project_id)?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
@@ -742,7 +763,22 @@ impl Store {
         self.get_task(id)
     }
 
+    fn ensure_active_project(&self, project_id: i64) -> Result<()> {
+        let archived: Option<bool> = self
+            .conn
+            .query_row("SELECT archived FROM projects WHERE id = ?1", [project_id], |r| r.get(0))
+            .optional()?;
+        match archived {
+            Some(false) => Ok(()),
+            Some(true) => Err(Error::Invalid("restore the archived project before adding or moving tasks".into())),
+            None => Err(Error::NotFound(format!("no project with id {project_id}"))),
+        }
+    }
+
     pub fn update_task(&self, id: i64, patch: TaskPatch) -> Result<Task> {
+        if let Some(project_id) = patch.project_id {
+            self.ensure_active_project(project_id)?;
+        }
         let title = patch.title.as_deref().map(clean_title).transpose()?;
         if let Some(s) = &patch.status {
             self.check_status(s)?;
@@ -870,9 +906,10 @@ impl Store {
         let id = self.write(|c| {
             let id: Option<i64> = c
                 .query_row(
-                    "SELECT id FROM tasks WHERE status = ?1 AND human = 0 AND (?2 IS NULL OR project_id = ?2) \
+                    "SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id
+                     WHERE t.status = ?1 AND t.human = 0 AND p.archived = 0 AND (?2 IS NULL OR t.project_id = ?2) \
                      ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
-                         WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, position, id LIMIT 1",
+                         WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, t.position, t.id LIMIT 1",
                     params![from, project_id],
                     |r| r.get(0),
                 )
@@ -1421,6 +1458,69 @@ mod tests {
         assert_eq!(s.dashboard().unwrap().tasks, 1);
         s.log_time(old.id, 30).unwrap();
         assert_eq!(Store::open(&path, None).unwrap().time_report(old.id).unwrap().total_seconds, 1800);
+    }
+
+    #[test]
+    fn archive_migrates_and_retains_project_tasks_time_and_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..9] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '9'), ('compatible', '4')")
+                .unwrap();
+            s.conn
+                .execute_batch(
+                    "INSERT INTO projects (slug, name, icon) VALUES ('old', 'Old', 'rocket');
+                     INSERT INTO project_repos (repo, project_id) VALUES ('me/old', 1);
+                     INSERT INTO tasks (project_id, title, status, position, priority) VALUES (1, 'Saved', 'todo', 1, 'urgent');
+                     INSERT INTO time_entries (task_id, started_at, ended_at, seconds) VALUES (1, 1000, 1600, 600);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        assert_eq!(
+            s.conn.query_row("SELECT value FROM meta WHERE key = 'compatible'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "10",
+            "older agents must not select archived tasks after syncing"
+        );
+        assert!(!s.find_project("old").unwrap().archived);
+        let active = s.create_project("active", "Active", None).unwrap();
+        let active_task = s.create_task(active.id, "Active task", "").unwrap();
+        let archived_done = s.create_task(1, "Archived done", "").unwrap();
+        s.move_task(archived_done.id, "done", None).unwrap();
+        let before = s.changes().unwrap();
+        let archived = s.set_project_archived("old", true).unwrap();
+        assert!(archived.archived);
+        assert_eq!(archived.repos, ["me/old"]);
+        assert_eq!(archived.icon.as_deref(), Some("rocket"));
+        assert!(s.changes().unwrap() > before);
+        assert_eq!(titles(&s.list_tasks(None, None).unwrap()), ["Active task"]);
+        assert_eq!(titles(&s.list_tasks(Some(archived.id), None).unwrap()), ["Saved", "Archived done"]);
+        assert_eq!(titles(&s.list_tasks_keeping_done(None, None, Some(1)).unwrap().0), ["Active task"]);
+        assert_eq!(s.list_tasks_keeping_done(None, None, Some(1)).unwrap().1, 0);
+        assert_eq!(s.list_tasks_keeping_done(Some(archived.id), None, Some(1)).unwrap().0.len(), 2);
+        assert!(s.search("Saved", 10).unwrap().is_empty());
+        assert!(s.create_task(archived.id, "Rejected", "").is_err());
+        let patch = TaskPatch { title: Some("Wrong".into()), project_id: Some(archived.id), ..Default::default() };
+        assert!(s.update_task(active_task.id, patch).is_err());
+        assert_eq!(s.get_task(active_task.id).unwrap().title, "Active task");
+        assert!(s.next_task(Some(archived.id)).unwrap().is_none());
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, active_task.id);
+        assert_eq!(s.time_report(1).unwrap().total_seconds, 600);
+        assert_eq!(s.dashboard().unwrap().total_seconds, 600);
+        assert_eq!(s.set_project_archived("old", true).unwrap().total, 2);
+        assert!(Store::open(&path, None).unwrap().find_project("old").unwrap().archived);
+        s.set_project_archived("old", false).unwrap();
+        assert!(s.search("Saved", 10).unwrap().len() == 1);
+        assert_eq!(s.next_task(None).unwrap().unwrap().title, "Saved");
+        assert_eq!(s.create_task(archived.id, "Restored", "").unwrap().project, "old");
     }
 
     #[test]
