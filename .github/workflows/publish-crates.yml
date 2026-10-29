@@ -1,4 +1,4 @@
-# Publishes the release to crates.io, so `cargo install kanzo` gets it too. dist runs
+# Publishes the release to crates.io, so `cargo install brokan` gets it too. dist runs
 # this from release.yml once the GitHub release is up. crates.io trusted publishing
 # signs in with GitHub's OIDC token: there's no crates.io token to store.
 name: Publish to crates.io
@@ -21,8 +21,8 @@ jobs:
       - id: check
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if curl -fsS -A "kanzo release" "https://crates.io/api/v1/crates/kanzo/$version" > /dev/null; then
-            echo "kanzo $version is already on crates.io"
+          if curl -fsS -A "brokan release" "https://crates.io/api/v1/crates/brokan/$version" > /dev/null; then
+            echo "brokan $version is already on crates.io"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi

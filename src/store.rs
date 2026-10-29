@@ -1,4 +1,4 @@
-//! All reads and writes of `kanzo.db`. Plain SQL, one short-lived connection per operation.
+//! All reads and writes of `brokan.db`. Plain SQL, one short-lived connection per operation.
 //!
 //! The database uses a rollback journal (`journal_mode = TRUNCATE`), not WAL. With a
 //! connection per operation, WAL would set up and tear down its `-wal` and `-shm` files
@@ -12,9 +12,9 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
-/// The oldest schema version whose Kanzo can still use a database at the latest one.
+/// The oldest schema version whose Brokan can still use a database at the latest one.
 /// Adding a table or a column with a default leaves older versions working, so a board
-/// synced from a newer Kanzo still opens in an older one. Raise it to the new version
+/// synced from a newer Brokan still opens in an older one. Raise it to the new version
 /// only for a migration that older code can't live with, like a renamed column.
 const COMPATIBLE_FROM: usize = 4;
 
@@ -60,7 +60,7 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 pub enum Error {
     NotFound(String),
     Invalid(String),
-    /// Another process holds the data folder for longer than we wait, like a long `kanzo sync`.
+    /// Another process holds the data folder for longer than we wait, like a long `brokan sync`.
     Busy(String),
     Db(rusqlite::Error),
 }
@@ -183,7 +183,7 @@ impl Store {
         // The board and any number of agents share this file; wait instead of failing.
         conn.busy_timeout(Duration::from_secs(5))?;
         // Per connection, not stored in the file. Also turns a WAL database from an
-        // older kanzo back into a rollback-journal one once nothing else has it open.
+        // older brokan back into a rollback-journal one once nothing else has it open.
         // `synchronous` stays at SQLite's default FULL, which keeps the file intact
         // when a board loses power.
         conn.pragma_update_and_check(None, "journal_mode", "TRUNCATE", |_| Ok(()))?;
@@ -240,7 +240,7 @@ impl Store {
     }
 
     /// Brings the schema up to date. Writes nothing when it already is, so starting
-    /// `kanzo mcp` for every agent session costs no disk write.
+    /// `brokan mcp` for every agent session costs no disk write.
     pub fn migrate(&self) -> Result<()> {
         let meta = |c: &Connection, key: &str| -> rusqlite::Result<Option<usize>> {
             Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0))
@@ -257,13 +257,13 @@ impl Store {
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
             let version = meta(c, "schema_version")?.unwrap_or(0);
             if version > latest {
-                // From a newer Kanzo, maybe synced from another machine: use it as it is
+                // From a newer Brokan, maybe synced from another machine: use it as it is
                 // when this version can, without touching its schema.
                 if meta(c, "compatible")?.is_some_and(|oldest| oldest <= latest) {
                     return Ok(());
                 }
                 return Err(Error::Invalid(
-                    "this board was saved by a newer version of Kanzo; update this one with `kanzo update`".into(),
+                    "this board was saved by a newer version of Brokan; update this one with `brokan update`".into(),
                 ));
             }
             for sql in &MIGRATIONS[version..] {
@@ -291,8 +291,8 @@ impl Store {
         Ok(self.conn.query_row(&format!("SELECT {NOW}"), [], |r| r.get(0))?)
     }
 
-    /// Makes `kanzo.db` complete on its own: rolls back a write that a crashed process
-    /// left half done, and folds in a WAL left by an older kanzo.
+    /// Makes `brokan.db` complete on its own: rolls back a write that a crashed process
+    /// left half done, and folds in a WAL left by an older brokan.
     pub fn settle(&self) -> Result<()> {
         self.conn.query_row("SELECT count(*) FROM meta", [], |r| r.get::<_, i64>(0))?;
         Ok(())
@@ -791,7 +791,7 @@ impl Store {
             return Err(Error::Invalid("comment body is empty".into()));
         }
         if let Some(bad) = images.iter().find(|f| !valid_image_file(f)) {
-            return Err(Error::Invalid(format!("{bad:?} is not an image Kanzo saved")));
+            return Err(Error::Invalid(format!("{bad:?} is not an image Brokan saved")));
         }
         let author = match author.trim() {
             "" => "me",
@@ -836,7 +836,7 @@ impl Store {
     /// Attaches an image, already saved in `images/`, to a task.
     pub fn add_image(&self, task_id: i64, file: &str) -> Result<Image> {
         if !valid_image_file(file) {
-            return Err(Error::Invalid(format!("{file:?} is not an image Kanzo saved")));
+            return Err(Error::Invalid(format!("{file:?} is not an image Brokan saved")));
         }
         self.get_task(task_id)?;
         self.conn.execute("INSERT INTO images (task_id, file) VALUES (?1, ?2)", params![task_id, file])?;
@@ -903,7 +903,7 @@ pub enum ImagesOf {
     Project(i64),
 }
 
-/// The name Kanzo gives a saved image: 16 hex digits and its type, like `6fec521a01297ab5.png`.
+/// The name Brokan gives a saved image: 16 hex digits and its type, like `6fec521a01297ab5.png`.
 pub fn valid_image_file(file: &str) -> bool {
     match file.split_once('.') {
         Some((hash, ext)) => {
@@ -1011,7 +1011,7 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
+        let store = Store::open(&dir.path().join("brokan.db"), None).unwrap();
         store.migrate().unwrap();
         (dir, store)
     }
@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_a_board_from_a_newer_kanzo_when_it_can() {
+    fn opens_a_board_from_a_newer_brokan_when_it_can() {
         let (_dir, s) = store();
         let set = |version: usize, compatible: usize| {
             s.conn
@@ -1059,7 +1059,7 @@ mod tests {
                 .unwrap();
         };
         let newer = MIGRATIONS.len() + 1;
-        // A newer Kanzo only added things: this one goes on using the board, untouched.
+        // A newer Brokan only added things: this one goes on using the board, untouched.
         set(newer, MIGRATIONS.len());
         s.migrate().unwrap();
         s.create_project("api", "", None).unwrap();
@@ -1068,7 +1068,7 @@ mod tests {
         assert_eq!(v, newer.to_string());
         // A change this version can't live with: it says how to update.
         set(newer, newer);
-        assert!(s.migrate().unwrap_err().to_string().contains("kanzo update"));
+        assert!(s.migrate().unwrap_err().to_string().contains("brokan update"));
     }
 
     #[test]
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn migration_moves_repos_to_their_own_table() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("kanzo.db");
+        let path = dir.path().join("brokan.db");
         {
             // A board at schema version 3, from before projects could have several repos.
             let c = Connection::open(&path).unwrap();
@@ -1308,7 +1308,7 @@ mod tests {
         let (dir, s) = store();
         assert_eq!(s.statuses(), STATUSES);
         s.set_backlog(true).unwrap();
-        let s = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
+        let s = Store::open(&dir.path().join("brokan.db"), None).unwrap();
         assert_eq!(s.statuses(), ["backlog", "todo", "doing", "review", "done"]);
         let api = s.create_project("api", "", None).unwrap();
         let backlog = s.create_task_in(api.id, Some("backlog"), "later", "").unwrap();

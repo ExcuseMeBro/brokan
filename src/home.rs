@@ -13,36 +13,36 @@ use crate::store::{self, ImagesOf, Store};
 
 const DEFAULT_PORT: u16 = 4242;
 
-const CONFIG_TEMPLATE: &str = r#"# Kanzo settings.
+const CONFIG_TEMPLATE: &str = r#"# Brokan settings.
 
 # Port for the board at http://localhost:<port>.
 port = 4242
 
 # Address the board listens on. 127.0.0.1 keeps it on this machine. Use
-# "0.0.0.0" to open it from other devices, for example when Kanzo runs on a
+# "0.0.0.0" to open it from other devices, for example when Brokan runs on a
 # Raspberry Pi with no screen. There are no logins: anyone who can reach the
 # port can read and change the board, and use its MCP endpoint.
 listen = "127.0.0.1"
 
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
-# that cannot start `kanzo mcp` themselves.
+# that cannot start `brokan mcp` themselves.
 mcp_http = true
 "#;
 
 const GITIGNORE: &str = "\
-# SQLite temporary files; kanzo sync makes sure kanzo.db is complete without them.
-kanzo.db-journal
-kanzo.db-wal
-kanzo.db-shm
+# SQLite temporary files; brokan sync makes sure brokan.db is complete without them.
+brokan.db-journal
+brokan.db-wal
+brokan.db-shm
 # Local to this machine.
-kanzo.lock
+brokan.lock
 *.bak
 # macOS metadata (AppleDouble files appear on exFAT drives).
 ._*
 .DS_Store
 ";
 
-/// How long an operation waits for `kanzo sync` before giving up with "busy".
+/// How long an operation waits for `brokan sync` before giving up with "busy".
 const LOCK_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
 
 pub const NO_LOCKS: &str = "This folder doesn't support file locks: don't sync while agents are working.";
@@ -73,16 +73,16 @@ pub struct Home {
 }
 
 impl Home {
-    /// `--home`, then `KANZO_HOME`, then `~/kanzo`.
+    /// `--home`, then `BROKAN_HOME`, then `~/brokan`.
     pub fn resolve(flag: Option<PathBuf>) -> Result<PathBuf> {
         if let Some(dir) = flag {
             return Ok(dir);
         }
-        if let Some(dir) = std::env::var_os("KANZO_HOME").filter(|v| !v.is_empty()) {
+        if let Some(dir) = std::env::var_os("BROKAN_HOME").filter(|v| !v.is_empty()) {
             return Ok(PathBuf::from(dir));
         }
-        let home = dirs::home_dir().context("cannot find your home folder; set KANZO_HOME")?;
-        Ok(home.join("kanzo"))
+        let home = dirs::home_dir().context("cannot find your home folder; set BROKAN_HOME")?;
+        Ok(home.join("brokan"))
     }
 
     /// Opens the data folder, creating it and its files on first use.
@@ -102,10 +102,10 @@ impl Home {
     }
 
     pub fn db_path(&self) -> PathBuf {
-        self.dir.join("kanzo.db")
+        self.dir.join("brokan.db")
     }
 
-    /// Changes when the database file itself is replaced, as `kanzo sync` does
+    /// Changes when the database file itself is replaced, as `brokan sync` does
     /// when it pulls, so the board reloads even if the pulled change counter
     /// happens to equal the old one.
     pub fn db_identity(&self) -> u64 {
@@ -121,8 +121,8 @@ impl Home {
     }
 
     /// Opens a fresh connection. Callers keep it for one operation only, so a
-    /// database replaced by `kanzo sync` is picked up on the next one. It holds
-    /// a shared lock on `kanzo.lock`, so sync can wait for it to finish; while
+    /// database replaced by `brokan sync` is picked up on the next one. It holds
+    /// a shared lock on `brokan.lock`, so sync can wait for it to finish; while
     /// sync holds the lock, this waits up to `LOCK_WAIT` and then reports busy.
     pub fn store(&self) -> store::Result<Store> {
         let lock = self.lock_file().map_err(|e| store::Error::Invalid(format!("{e:#}")))?;
@@ -134,15 +134,15 @@ impl Home {
                     std::thread::sleep(Duration::from_millis(25))
                 }
                 Err(TryLockError::WouldBlock) => {
-                    return Err(store::Error::Busy("kanzo sync is updating the board; try again in a moment".into()));
+                    return Err(store::Error::Busy("brokan sync is updating the board; try again in a moment".into()));
                 }
                 Err(TryLockError::Error(e)) if unsupported(&e) => {
                     static WARN: std::sync::Once = std::sync::Once::new();
-                    WARN.call_once(|| eprintln!("kanzo: {NO_LOCKS}"));
+                    WARN.call_once(|| eprintln!("brokan: {NO_LOCKS}"));
                     break None;
                 }
                 Err(TryLockError::Error(e)) => {
-                    return Err(store::Error::Invalid(format!("cannot lock kanzo.lock: {e}")));
+                    return Err(store::Error::Invalid(format!("cannot lock brokan.lock: {e}")));
                 }
             }
         };
@@ -172,12 +172,12 @@ impl Home {
         match lock.lock() {
             Ok(()) => Ok(Some(lock)),
             Err(e) if unsupported(&e) => Ok(None),
-            Err(e) => Err(e).context("cannot lock kanzo.lock"),
+            Err(e) => Err(e).context("cannot lock brokan.lock"),
         }
     }
 
     fn lock_file(&self) -> Result<File> {
-        let path = self.dir.join("kanzo.lock");
+        let path = self.dir.join("brokan.lock");
         OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -187,7 +187,7 @@ impl Home {
     }
 }
 
-/// Some filesystems (exFAT, network shares) have no file locks: Kanzo goes on without.
+/// Some filesystems (exFAT, network shares) have no file locks: Brokan goes on without.
 fn unsupported(e: &io::Error) -> bool {
     #[cfg(unix)]
     if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::ENOLCK)) {
@@ -214,7 +214,7 @@ mod tests {
         let home = Home::open(dir.clone()).unwrap();
         assert!(dir.join("config.toml").exists());
         assert!(dir.join(".gitignore").exists());
-        assert!(dir.join("kanzo.db").exists());
+        assert!(dir.join("brokan.db").exists());
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());

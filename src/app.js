@@ -1,4 +1,4 @@
-// The Kanzo board. Plain JavaScript, no build step; served at /app.js.
+// The Brokan board. Plain JavaScript, no build step; served at /app.js.
 "use strict";
 
 // The board runs on browsers back to Safari 13.1, Chrome 80 and Firefox 78. These
@@ -311,7 +311,7 @@ function readHash() {
 
 function setProject(slug) {
   state.project = slug;
-  try { localStorage.setItem("kanzo.project", slug); } catch {}
+  try { localStorage.setItem("brokan.project", slug); } catch {}
   updateHash();
   state.layout = "";
   loadBoard();
@@ -509,7 +509,7 @@ function renderColumns() {
     state.layout = "";
     columns.style.display = "flex";
     columns.replaceChildren(el("div", { class: "empty" },
-      el("h1", {}, "Welcome to Kanzo"),
+      el("h1", {}, "Welcome to Brokan"),
       el("p", {}, "Create your first project in the sidebar. Link it to a GitHub repo and agents working in that repo will find it on their own."),
       el("button", { class: "btn primary", onclick: showNewProject }, "New project")));
     return;
@@ -559,22 +559,22 @@ function renderColumns() {
 
 // The board can show only human tasks; off at first, and each browser remembers the choice.
 function isHumanOnly() {
-  return localStorageGet("kanzo.humanOnly") === "1";
+  return localStorageGet("brokan.humanOnly") === "1";
 }
 
 function setHumanOnly(humanOnly) {
-  try { localStorage.setItem("kanzo.humanOnly", humanOnly ? "1" : "0"); } catch {}
+  try { localStorage.setItem("brokan.humanOnly", humanOnly ? "1" : "0"); } catch {}
   render();
 }
 
 // Backlog and done, which only grows, start collapsed to a thin strip, as in Trello or
 // Linear, and each browser remembers the choice. Cards can still be dropped on a strip.
 function isCollapsed(status) {
-  return localStorageGet(`kanzo.${status}Collapsed`) !== "0";
+  return localStorageGet(`brokan.${status}Collapsed`) !== "0";
 }
 
 function setCollapsed(status, collapsed) {
-  try { localStorage.setItem(`kanzo.${status}Collapsed`, collapsed ? "1" : "0"); } catch {}
+  try { localStorage.setItem(`brokan.${status}Collapsed`, collapsed ? "1" : "0"); } catch {}
   showCollapsed();
 }
 
@@ -688,7 +688,7 @@ let fresh = null; // id of the task just added, until something in it is saved
 async function newTask() {
   const { projects } = state.board;
   if (!projects.length) { toast("Create a project first"); return; }
-  const last = localStorageGet("kanzo.newTaskProject");
+  const last = localStorageGet("brokan.newTaskProject");
   const project = state.project !== "all" ? state.project
     : projects.some((p) => p.slug === last) ? last : projects[0].slug;
   try {
@@ -845,7 +845,7 @@ function renderProjectPick(task) {
     ...projects.map((slug) => el("option", { value: slug }, slug)));
   select.value = task.project;
   select.addEventListener("change", () => {
-    try { localStorage.setItem("kanzo.newTaskProject", select.value); } catch {}
+    try { localStorage.setItem("brokan.newTaskProject", select.value); } catch {}
     patchTask({ project: select.value });
   });
   $("#p-project").replaceChildren(el("label", { class: "tag project-pick" },
@@ -1135,7 +1135,7 @@ window.addEventListener("hashchange", () => {
   else if (!task && state.task) closeTask();
 });
 
-// Agents change the board through `kanzo mcp`; a cheap counter tells us when.
+// Agents change the board through `brokan mcp`; a cheap counter tells us when.
 async function poll() {
   if (document.hidden) return schedulePoll();
   try {
@@ -1161,7 +1161,7 @@ schedulePoll();
 
 // ---------- sync ----------
 
-// Sync runs `kanzo sync`: it commits the board and pulls or pushes it through the data
+// Sync runs `brokan sync`: it commits the board and pulls or pushes it through the data
 // folder's git remote. When both machines changed it, the board asks which to keep.
 let syncing = false;
 
@@ -1185,18 +1185,18 @@ function chooseSide({ first }) {
   const repo = repoName(syncRemote);
   if (first) {
     // A repo another machine already syncs with: most likely, this machine is joining it.
-    if (confirm(`${repo} already has a board. Use it on this machine?\n\nThis machine's current board is kept in kanzo.db.bak.`)) syncNow("remote");
+    if (confirm(`${repo} already has a board. Use it on this machine?\n\nThis machine's current board is kept in brokan.db.bak.`)) syncNow("remote");
     else if (confirm(`Replace the board in ${repo} with this machine's board instead?`)) syncNow("local");
     return;
   }
   if (confirm("This machine and another one both changed the board since the last sync, and boards can't be merged.\n\nKeep THIS machine's board, and overwrite the other one?")) syncNow("local");
-  else if (confirm("Take the other machine's board instead? This machine's board is kept in kanzo.db.bak.")) syncNow("remote");
+  else if (confirm("Take the other machine's board instead? This machine's board is kept in brokan.db.bak.")) syncNow("remote");
 }
 
 // The repo the board syncs with; null before it's set up.
 let syncRemote = null;
 
-// "you/kanzo-data" from any of its URLs.
+// "you/brokan-data" from any of its URLs.
 function repoName(url) {
   return (url || "").replace(/\.git$/, "").split(/[/:]/).filter(Boolean).slice(-2).join("/");
 }
@@ -1271,7 +1271,7 @@ function openSettings(section = "board") {
   $("#sync-url").value = syncRemote || "";
   $("#sync-create").hidden = !!syncRemote;
   $("#sync-error").hidden = true;
-  $("#settings-version").textContent = state.board ? `Kanzo ${state.board.version}` : "";
+  $("#settings-version").textContent = state.board ? `Brokan ${state.board.version}` : "";
   showSection(section);
   $("#settings-dialog").hidden = false;
   if (section === "sync") $("#sync-url").focus();
@@ -1305,7 +1305,7 @@ $("#settings-update").addEventListener("click", checkForUpdates);
 
 // ---------- update ----------
 
-// Kanzo checks GitHub for a newer release once a day and offers it at the bottom of the
+// Brokan checks GitHub for a newer release once a day and offers it at the bottom of the
 // sidebar; its menu asks right away. Installing replaces the running board and
 // restarts it, and the page reloads once it's back.
 async function checkUpdate() {
@@ -1321,7 +1321,7 @@ function showUpdate({ current, available }) {
   $("#update-label").textContent = `Update to ${available}`;
   button.title = `You have ${current}`;
   button.onclick = () => {
-    if (confirm(`Update Kanzo from ${current} to ${available}? The board restarts, which takes a few seconds.`)) installUpdate(available);
+    if (confirm(`Update Brokan from ${current} to ${available}? The board restarts, which takes a few seconds.`)) installUpdate(available);
   };
 }
 
@@ -1331,11 +1331,11 @@ async function checkForUpdates() {
     const status = await api("GET", "/update?now=1");
     showUpdate(status);
     if (status.available) {
-      if (confirm(`Kanzo ${status.available} is out (you have ${status.current}). Download and install it now? The board restarts.`)) {
+      if (confirm(`Brokan ${status.available} is out (you have ${status.current}). Download and install it now? The board restarts.`)) {
         installUpdate(status.available);
       }
     } else if (status.latest) {
-      toast(`Kanzo is up to date (${status.current})`);
+      toast(`Brokan is up to date (${status.current})`);
     } else {
       toast("Can't reach GitHub to check for updates");
     }
@@ -1374,6 +1374,6 @@ setInterval(() => {
 
 {
   const { slug, task } = readHash();
-  state.project = slug || localStorageGet("kanzo.project") || "all";
+  state.project = slug || localStorageGet("brokan.project") || "all";
   loadBoard().then(() => { if (task) openTask(task); });
 }

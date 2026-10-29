@@ -1,6 +1,6 @@
-//! Updating Kanzo from the board: find the latest release, run its installer over this
+//! Updating Brokan from the board: find the latest release, run its installer over this
 //! program, then start the new one in place. It uses `curl` and `sh`, which macOS and
-//! Linux have, so Kanzo needs no HTTP client of its own.
+//! Linux have, so Brokan needs no HTTP client of its own.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
-/// Where releases are published; `KANZO_RELEASES_URL` points elsewhere, for tests.
-const RELEASES: &str = "https://github.com/emanuele-em/kanzo/releases/latest/download";
+/// Where releases are published; `BROKAN_RELEASES_URL` points elsewhere, for tests.
+const RELEASES: &str = "https://github.com/ExcuseMeBro/brokan/releases/latest/download";
 
 /// How long a check for the latest version is reused: the board checks once a day.
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -20,7 +20,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 static LATEST: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 
 fn releases() -> String {
-    std::env::var("KANZO_RELEASES_URL").unwrap_or_else(|_| RELEASES.into())
+    std::env::var("BROKAN_RELEASES_URL").unwrap_or_else(|_| RELEASES.into())
 }
 
 fn curl(url: &str) -> Option<Vec<u8>> {
@@ -40,7 +40,7 @@ pub fn latest(now: bool) -> Option<String> {
     }
     let version = curl(&format!("{}/dist-manifest.json", releases())).and_then(|body| {
         let manifest: serde_json::Value = serde_json::from_slice(&body).ok()?;
-        let release = manifest["releases"].as_array()?.iter().find(|r| r["app_name"] == "kanzo")?;
+        let release = manifest["releases"].as_array()?.iter().find(|r| r["app_name"] == "brokan")?;
         release["app_version"].as_str().map(String::from)
     });
     *cached = Some((Instant::now(), version.clone()));
@@ -62,16 +62,16 @@ pub fn install() -> Result<PathBuf, String> {
         Some(bin) if bin.file_name().is_some_and(|n| n == "bin") => bin.parent().unwrap_or(bin).to_path_buf(),
         _ => {
             return Err(format!(
-                "Kanzo runs from {}, which the installer can't update; reinstall it with the command in the README",
+                "Brokan runs from {}, which the installer can't update; reinstall it with the command in the README",
                 exe.display()
             ));
         }
     };
-    let script = curl(&format!("{}/kanzo-installer.sh", releases())).ok_or("cannot download the installer")?;
+    let script = curl(&format!("{}/brokan-installer.sh", releases())).ok_or("cannot download the installer")?;
     let mut sh = Command::new("sh")
         .arg("-s")
-        .env("KANZO_INSTALL_DIR", &dir)
-        .env("KANZO_NO_MODIFY_PATH", "1")
+        .env("BROKAN_INSTALL_DIR", &dir)
+        .env("BROKAN_NO_MODIFY_PATH", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -106,7 +106,7 @@ pub fn restart(exe: &Path) -> std::io::Error {
 
 #[cfg(not(unix))]
 pub fn restart(_exe: &Path) -> std::io::Error {
-    std::io::Error::other("restart Kanzo to finish the update")
+    std::io::Error::other("restart Brokan to finish the update")
 }
 
 #[cfg(test)]

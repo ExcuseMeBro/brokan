@@ -1,4 +1,4 @@
-//! `kanzo service`: run the board in the background, started at login.
+//! `brokan service`: run the board in the background, started at login.
 //! A LaunchAgent on macOS, a systemd user unit on Linux (a Raspberry Pi, an old laptop).
 
 use std::path::{Path, PathBuf};
@@ -8,17 +8,17 @@ use anyhow::{Context, Result, bail};
 
 use crate::home::Home;
 
-const LABEL: &str = "com.github.emanuele-em.kanzo";
-const UNIT: &str = "kanzo.service";
+const LABEL: &str = "com.github.excusemebro.brokan";
+const UNIT: &str = "brokan.service";
 
 pub fn install(home: &Home) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot find the kanzo program")?;
+    let exe = std::env::current_exe().context("cannot find the brokan program")?;
     if cfg!(target_os = "macos") {
         install_launchd(home, &exe)
     } else if cfg!(target_os = "linux") {
         install_systemd(home, &exe)
     } else {
-        bail!("kanzo service supports macOS and Linux; start `kanzo --no-open` with your own service manager")
+        bail!("brokan service supports macOS and Linux; start `brokan --no-open` with your own service manager")
     }
 }
 
@@ -28,11 +28,11 @@ pub fn uninstall() -> Result<()> {
     } else if cfg!(target_os = "linux") {
         uninstall_systemd()
     } else {
-        bail!("kanzo service supports macOS and Linux")
+        bail!("brokan service supports macOS and Linux")
     }
 }
 
-/// Restarts the service, if it's installed, so it runs a newly installed Kanzo; false
+/// Restarts the service, if it's installed, so it runs a newly installed Brokan; false
 /// when there's none.
 pub fn restart() -> Result<bool> {
     if cfg!(target_os = "macos") && plist_path()?.exists() {
@@ -109,7 +109,7 @@ fn plist(exe: &Path, dir: &Path, log: &Path) -> String {
 }
 
 fn install_launchd(home: &Home, exe: &Path) -> Result<()> {
-    let log = home_dir()?.join("Library/Logs/kanzo.log");
+    let log = home_dir()?.join("Library/Logs/brokan.log");
     let path = plist_path()?;
     std::fs::create_dir_all(path.parent().expect("plist path has a parent"))?;
     let domain = launchd_domain()?;
@@ -118,7 +118,7 @@ fn install_launchd(home: &Home, exe: &Path) -> Result<()> {
     std::fs::write(&path, plist(exe, &home.dir, &log)).with_context(|| format!("cannot write {}", path.display()))?;
     run("launchctl", &["bootstrap", &domain, &path.to_string_lossy()])?;
     println!(
-        "Kanzo now starts at login and is running at http://localhost:{}\nLogs: {}",
+        "Brokan now starts at login and is running at http://localhost:{}\nLogs: {}",
         home.config.port,
         log.display()
     );
@@ -130,9 +130,9 @@ fn uninstall_launchd() -> Result<()> {
     let _ = Command::new("launchctl").args(["bootout", &format!("{}/{LABEL}", launchd_domain()?)]).output();
     if path.exists() {
         std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))?;
-        println!("Removed the Kanzo LaunchAgent; the board no longer starts at login.");
+        println!("Removed the Brokan LaunchAgent; the board no longer starts at login.");
     } else {
-        println!("The Kanzo LaunchAgent was not installed.");
+        println!("The Brokan LaunchAgent was not installed.");
     }
     Ok(())
 }
@@ -155,7 +155,7 @@ fn systemd_quote(s: &str) -> String {
 fn unit(exe: &Path, dir: &Path) -> String {
     format!(
         "[Unit]\n\
-         Description=Kanzo board\n\
+         Description=Brokan board\n\
          After=network.target\n\
          \n\
          [Service]\n\
@@ -178,8 +178,8 @@ fn install_systemd(home: &Home, exe: &Path) -> Result<()> {
     // Restart rather than start, so a changed path or data folder takes effect.
     run("systemctl", &["--user", "restart", UNIT])?;
     println!(
-        "Kanzo now starts at login and is running at http://localhost:{}\n\
-         Logs: journalctl --user -u kanzo\n\
+        "Brokan now starts at login and is running at http://localhost:{}\n\
+         Logs: journalctl --user -u brokan\n\
          To start it at boot without logging in (a board with no screen): sudo loginctl enable-linger $USER",
         home.config.port
     );
@@ -192,9 +192,9 @@ fn uninstall_systemd() -> Result<()> {
     if path.exists() {
         std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))?;
         let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).output();
-        println!("Removed the Kanzo service; the board no longer starts at login.");
+        println!("Removed the Brokan service; the board no longer starts at login.");
     } else {
-        println!("The Kanzo service was not installed.");
+        println!("The Brokan service was not installed.");
     }
     Ok(())
 }
@@ -208,18 +208,18 @@ mod tests {
     fn plist_is_valid() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("agent.plist");
-        let text = plist(Path::new("/usr/local/bin/kanzo"), Path::new("/Users/a & b/kanzo"), Path::new("/tmp/k.log"));
+        let text = plist(Path::new("/usr/local/bin/brokan"), Path::new("/Users/a & b/brokan"), Path::new("/tmp/k.log"));
         std::fs::write(&file, &text).unwrap();
         let lint = Command::new("plutil").arg("-lint").arg(&file).output().unwrap();
         assert!(lint.status.success(), "{}", String::from_utf8_lossy(&lint.stdout));
-        assert!(text.contains("/Users/a &amp; b/kanzo"));
+        assert!(text.contains("/Users/a &amp; b/brokan"));
     }
 
     #[test]
     fn unit_quotes_paths() {
-        let text = unit(Path::new("/home/pi/.cargo/bin/kanzo"), Path::new("/home/pi/my \"kanzo\" 100%"));
+        let text = unit(Path::new("/home/pi/.cargo/bin/brokan"), Path::new("/home/pi/my \"brokan\" 100%"));
         assert!(
-            text.contains(r#"ExecStart="/home/pi/.cargo/bin/kanzo" --no-open --home "/home/pi/my \"kanzo\" 100%%""#),
+            text.contains(r#"ExecStart="/home/pi/.cargo/bin/brokan" --no-open --home "/home/pi/my \"brokan\" 100%%""#),
             "{text}"
         );
         assert!(text.contains("WantedBy=default.target"));

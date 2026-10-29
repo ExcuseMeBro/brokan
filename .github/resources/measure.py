@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measures what two Kanzo builds cost to run, side by side, and prints JSON.
+"""Measures what two Brokan builds cost to run, side by side, and prints JSON.
 
     measure.py --base BIN Cargo.lock --head BIN Cargo.lock [--pr N] [--rounds 3]
 
@@ -57,7 +57,7 @@ def tree_size(path):
 
 
 class Board:
-    """A running `kanzo` board on a free port, with a keep-alive connection to it."""
+    """A running `brokan` board on a free port, with a keep-alive connection to it."""
 
     def __init__(self, binary, home):
         self.port = free_port()
@@ -126,7 +126,7 @@ def seed(board):
 
 
 class Mcp:
-    """`kanzo mcp` on stdio, as an agent starts it, in a folder that isn't a git repo."""
+    """`brokan mcp` on stdio, as an agent starts it, in a folder that isn't a git repo."""
 
     def __init__(self, binary, home, cwd):
         self.proc = subprocess.Popen(
@@ -148,7 +148,7 @@ class Mcp:
         while True:
             line = self.proc.stdout.readline()
             if not line:
-                raise SystemExit(f"kanzo mcp closed during {method}")
+                raise SystemExit(f"brokan mcp closed during {method}")
             reply = json.loads(line)
             if reply.get("id") == self.next_id:
                 if "error" in reply:
@@ -165,10 +165,10 @@ class Mcp:
 
 
 def measure(binary, lock):
-    binary = os.path.abspath(binary)  # `kanzo mcp` runs from another folder
+    binary = os.path.abspath(binary)  # `brokan mcp` runs from another folder
     out = {"binary_bytes": os.path.getsize(binary)}
     with open(lock) as f:
-        out["crates"] = sum(1 for line in f if line.strip() == "[[package]]") - 1  # Kanzo itself
+        out["crates"] = sum(1 for line in f if line.strip() == "[[package]]") - 1  # Brokan itself
 
     with tempfile.TemporaryDirectory() as tmp:
         home = os.path.join(tmp, "home")

@@ -1,4 +1,4 @@
-//! `kanzo export`: the whole board as Markdown or JSON, readable without Kanzo.
+//! `brokan export`: the whole board as Markdown or JSON, readable without Brokan.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -102,7 +102,7 @@ fn collect(store: &Store, only: Option<&str>, images: &Path) -> Result<Board> {
 }
 
 fn markdown(board: &Board) -> String {
-    let mut md = format!("# Kanzo board\n\nExported {}.\n", short_time(&board.exported_at));
+    let mut md = format!("# Brokan board\n\nExported {}.\n", short_time(&board.exported_at));
     for p in &board.projects {
         let links: Vec<String> = p.project.repos.iter().map(|r| format!("[{r}](https://github.com/{r})")).collect();
         let repo = if links.is_empty() { String::new() } else { format!(" ({})", links.join(", ")) };

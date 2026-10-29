@@ -1,4 +1,4 @@
-# Measures what a pull request does to Kanzo's size, memory, speed and agents'
+# Measures what a pull request does to Brokan's size, memory, speed and agents'
 # tokens: it builds main and the PR merged into main, and runs both side by side.
 # resources-comment.yml posts the numbers on the PR. This half runs the PR's code,
 # so it gets no secrets and can't write to the repo.
@@ -31,8 +31,8 @@ jobs:
         working-directory: ../main
       - run: >
           python3 .github/resources/measure.py
-          --base ../main/target/release/kanzo ../main/Cargo.lock
-          --head target/release/kanzo Cargo.lock
+          --base ../main/target/release/brokan ../main/Cargo.lock
+          --head target/release/brokan Cargo.lock
           --pr ${{ github.event.pull_request.number }}
           > resources.json
       - uses: actions/upload-artifact@v7

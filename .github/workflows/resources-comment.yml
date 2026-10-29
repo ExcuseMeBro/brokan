@@ -48,7 +48,7 @@ jobs:
             exit 0
           fi
           id=$(gh api "repos/$REPO/issues/$pr/comments" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- kanzo-resources -->"))) | .id' | head -1)
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- brokan-resources -->"))) | .id' | head -1)
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
           else

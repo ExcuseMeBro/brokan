@@ -2,11 +2,11 @@
 
 ## Reporting a vulnerability
 
-Please report it privately, not in a public issue: use [Report a vulnerability](https://github.com/emanuele-em/kanzo/security/advisories/new) on GitHub. Say what an attacker could do, how to reproduce it, and which version you run (`kanzo --version`).
+Please report it privately, not in a public issue: use [Report a vulnerability](https://github.com/ExcuseMeBro/brokan/security/advisories/new) on GitHub. Say what an attacker could do, how to reproduce it, and which version you run (`brokan --version`).
 
 Fixes go into the latest release only.
 
-## What Kanzo defends against
+## What Brokan defends against
 
 The board has no logins, so it relies on who can reach it:
 

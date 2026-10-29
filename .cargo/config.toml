@@ -1,4 +1,4 @@
-# The bundled SQLite without the parts Kanzo never uses: full-text search, R-trees,
+# The bundled SQLite without the parts Brokan never uses: full-text search, R-trees,
 # stats for the query planner, extensions, shared cache, deprecated calls, memory
 # statistics. The program is 7% smaller; the database file and behaviour are the same.
 [env]

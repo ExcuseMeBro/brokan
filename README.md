@@ -1,47 +1,38 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/kanzo-dark.jpg">
-    <img alt="kanzo: a tiny kanban board for you and your coding agents" src="docs/img/kanzo-light.jpg">
-  </picture>
+  <img src="src/logo.png" alt="Brokan logo" width="220">
 </p>
 
 <p align="center">
-  <a href="https://github.com/emanuele-em/kanzo/actions/workflows/ci.yml"><img src="https://github.com/emanuele-em/kanzo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://crates.io/crates/kanzo"><img src="https://img.shields.io/crates/v/kanzo" alt="crates.io"></a>
+  <a href="https://github.com/ExcuseMeBro/brokan/actions/workflows/ci.yml"><img src="https://github.com/ExcuseMeBro/brokan/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="AGPL-3.0"></a>
 </p>
 
-Kanzo is a kanban board in your browser and an MCP server in one small program, so you and your coding agents work on the same tasks. The whole board is one folder, and a private git repo keeps it in step on every machine you use: no account, no server.
+Brokan is a kanban board in your browser and an MCP server in one small program, so you and your coding agents work on the same tasks. The whole board is one folder, and a private git repo keeps it in step on every machine you use: no account, no server.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/board-dark.gif">
-  <img alt="The Kanzo board: agents move cards while you watch, and ⌘K finds a task in any project" src="docs/img/board-light.gif">
-</picture>
+## Install from source
 
-## Install
+Requires Rust 1.89 or newer. No Brokan release or crates.io package is assumed to be available yet.
 
 ```sh
-curl -LsSf https://github.com/emanuele-em/kanzo/releases/latest/download/kanzo-installer.sh | sh
+git clone https://github.com/ExcuseMeBro/brokan.git
+cd brokan
+cargo install --locked --path .
 ```
 
-For macOS and Linux, including every Raspberry Pi. Every release is signed by GitHub: check a download with `gh attestation verify <file> --repo emanuele-em/kanzo`. Or with Cargo:
-
-```sh
-cargo install kanzo
-```
+Run `brokan` to open the board. This rename does not migrate an existing board automatically; use `--home <existing-data-folder>` if you want to keep using one.
 
 ## Use
 
 | Command | Does |
 | --- | --- |
-| `kanzo` | Starts the board at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
-| `kanzo service install` | Keeps the board running and starts it at login; `uninstall` removes it |
-| `kanzo mcp` | The MCP server for agents: they start it, not you |
-| `kanzo sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
-| `kanzo export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
-| `kanzo update` | Installs the latest release and restarts the board's service; the board offers new versions too |
-| `kanzo init` | Creates the data folder; the first run does this too |
-| `kanzo --version` | Prints the version |
+| `brokan` | Starts the board at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
+| `brokan service install` | Keeps the board running and starts it at login; `uninstall` removes it |
+| `brokan mcp` | The MCP server for agents: they start it, not you |
+| `brokan sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
+| `brokan export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
+| `brokan update` | Installs the latest release and restarts the board's service; the board offers new versions too |
+| `brokan init` | Creates the data folder; the first run does this too |
+| `brokan --version` | Prints the version |
 
 Every command takes `--home <dir>` to use another data folder.
 
@@ -56,34 +47,29 @@ When a new version is out, the sidebar offers it: one click installs it and rest
 ## Connect your agents
 
 ```sh
-claude mcp add kanzo --scope user -- kanzo mcp   # Claude Code
-codex mcp add kanzo -- kanzo mcp                 # Codex
+claude mcp add brokan --scope user -- brokan mcp   # Claude Code
+codex mcp add brokan -- brokan mcp                 # Codex
 ```
 
-Other MCP clients: run `kanzo mcp` (apps like Raycast need the full path, from `which kanzo`), or use the running board at `http://localhost:4242/mcp`.
+Other MCP clients: run `brokan mcp` (apps like Raycast need the full path, from `which brokan`), or use the running board at `http://localhost:4242/mcp`.
 
-Then ask: *"take the next task from kanzo and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/task-dark.jpg">
-  <img alt="A task open on the board, with Claude Code's comments and a reply" src="docs/img/task-light.jpg">
-</picture>
+Then ask: *"take the next task from brokan and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
 
 ## Your board on every machine
 
 A laptop, a desktop, a Raspberry Pi: they all share one board through a private git repo you own.
 
-1. [Create an empty private repo](https://github.com/new?name=kanzo-data&visibility=private) on GitHub, or anywhere git can push.
-2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. Kanzo makes `~/kanzo` a git repo and pushes the board.
-3. On each other machine, do the same with the same URL: Kanzo offers to use the board that's already there.
+1. [Create an empty private repo](https://github.com/new?name=brokan-data&visibility=private) on GitHub, or anywhere git can push.
+2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. Brokan makes `~/brokan` a git repo and pushes the board.
+3. On each other machine, do the same with the same URL: Brokan offers to use the board that's already there.
 
-From then on, choose Sync, or run `kanzo sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Kanzo asks which one to keep. To move to another repo, change it in Settings, under Sync.
+From then on, choose Sync, or run `brokan sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Brokan asks which one to keep. To move to another repo, change it in Settings, under Sync.
 
 Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:4242/mcp`, passing the project by name.
 
 ## Settings
 
-Everything lives in `~/kanzo`: the board in `kanzo.db`, settings in `config.toml`. Use another folder with `--home` or `KANZO_HOME`.
+Everything lives in `~/brokan`: the board in `brokan.db`, settings in `config.toml`. Use another folder with `--home` or `BROKAN_HOME`.
 
 ```toml
 port = 4242
@@ -91,21 +77,8 @@ listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: no logins, s
 mcp_http = true        # MCP at /mcp
 ```
 
-## Small and fast
-
-| | |
-| --- | --- |
-| Program | 4.1 MB, SQLite included |
-| Memory | 4.5 MB idle, 8 MB with 3,000 tasks |
-| Start | 2 ms |
-| Board of 3,000 tasks | 17 ms to load in the browser |
-| Agents' tool list | about 900 tokens, once per session |
-| Agents' replies | 10 to 60 tokens of plain text |
-
-Measured on an Apple M4.
-
 ## License
 
 [AGPL-3.0](LICENSE): use it, change it and share it; if you offer a changed version over a network, share its source too. To help, see [CONTRIBUTING](.github/CONTRIBUTING.md).
 
-<sub>mcp-name: io.github.emanuele-em/kanzo</sub>
+<sub>mcp-name: io.github.excusemebro/brokan</sub>

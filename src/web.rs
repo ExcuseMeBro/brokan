@@ -1,4 +1,4 @@
-//! `kanzo`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
+//! `brokan`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -38,8 +38,8 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let listener = match tokio::net::TcpListener::bind(SocketAddr::new(listen, port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            if is_kanzo(port).await {
-                println!("Kanzo is already running at {url}");
+            if is_brokan(port).await {
+                println!("Brokan is already running at {url}");
                 if open {
                     open_browser(&url);
                 }
@@ -50,7 +50,7 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
         Err(e) => return Err(e).context(format!("cannot listen on {listen} port {port}")),
     };
     let guard = Guard::new(port, !listen.is_loopback());
-    println!("Kanzo board at {url}, data in {}", home.dir.display());
+    println!("Brokan board at {url}, data in {}", home.dir.display());
     if guard.lan {
         if let Some(name) = guard.names.iter().find(|n| n.ends_with(".local")) {
             println!("On your network: http://{name}:{port} (or this machine's IP address)");
@@ -123,7 +123,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/images/{file}", get(image_file))
-        .route("/api/ping", get(|| async { "kanzo" }))
+        .route("/api/ping", get(|| async { "brokan" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
         .route("/api/search", get(search))
@@ -218,7 +218,7 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
     let mut res = if ok {
         next.run(req).await
     } else {
-        (StatusCode::FORBIDDEN, "kanzo does not answer requests from other sites").into_response()
+        (StatusCode::FORBIDDEN, "brokan does not answer requests from other sites").into_response()
     };
     let headers = res.headers_mut();
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
@@ -255,7 +255,7 @@ async fn with_store<T: Serialize + Send + 'static>(
 }
 
 /// What the page compares to see if anything changed: the change counter, plus
-/// the database file's identity so a board pulled by `kanzo sync` always reloads.
+/// the database file's identity so a board pulled by `brokan sync` always reloads.
 fn change_token(home: &Home, s: &Store) -> store::Result<String> {
     Ok(format!("{}-{}", s.changes()?, home.db_identity()))
 }
@@ -391,7 +391,7 @@ async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     .await
 }
 
-/// Board settings, kept in kanzo.db so they sync with the board.
+/// Board settings, kept in brokan.db so they sync with the board.
 #[derive(Deserialize)]
 struct Settings {
     backlog: bool,
@@ -582,7 +582,7 @@ struct SyncRequest {
     keep: Option<String>,
 }
 
-/// The board's sync button: the same as `kanzo sync`, without git ever prompting. When
+/// The board's sync button: the same as `brokan sync`, without git ever prompting. When
 /// both sides changed, answers 409 with `diverged`, and the board asks which side to keep.
 async fn sync_now(State(home): Shared, Json(r): Json<SyncRequest>) -> Response {
     let keep = match r.keep.as_deref() {
@@ -644,7 +644,7 @@ async fn update_now() -> Response {
                 // Let the answer reach the board first.
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 let e = update::restart(&exe);
-                eprintln!("kanzo: updated, but cannot restart: {e}");
+                eprintln!("brokan: updated, but cannot restart: {e}");
             });
             Json(json!({ "restarting": true })).into_response()
         }
@@ -653,14 +653,14 @@ async fn update_now() -> Response {
     }
 }
 
-/// True when the program on `port` answers like a Kanzo board.
-async fn is_kanzo(port: u16) -> bool {
+/// True when the program on `port` answers like a Brokan board.
+async fn is_brokan(port: u16) -> bool {
     let probe = async {
         let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
         conn.write_all(b"GET /api/ping HTTP/1.0\r\nHost: localhost\r\n\r\n").await.ok()?;
         let mut reply = String::new();
         conn.read_to_string(&mut reply).await.ok()?;
-        Some(reply.ends_with("kanzo"))
+        Some(reply.ends_with("brokan"))
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), probe).await.ok().flatten().unwrap_or(false)
 }

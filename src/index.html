@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kanzo</title>
+<title>Brokan</title>
 <link rel="icon" href="/logo.png">
 <style>
 :root {
@@ -46,7 +46,7 @@ aside {
   display: flex; flex-direction: column; min-height: 0; padding: 12px 8px;
 }
 .brand { font-weight: 600; font-size: 17px; padding: 4px 10px 16px; letter-spacing: -.01em; display: flex; align-items: center; gap: 10px; }
-.brand img { width: 28px; height: 28px; margin: -4px 0; }
+.brand img { width: 66px; height: auto; flex: none; }
 .brand .ghost { width: auto; margin: -6px 0 -6px auto; padding: 6px; color: var(--muted); }
 .brand .ghost:hover, .brand .ghost:focus-visible { color: var(--text); }
 .brand .ghost + .ghost { margin-left: 0; }
@@ -405,7 +405,7 @@ label.setting { cursor: pointer; }
 <aside>
   <div class="brand">
     <img src="/logo.png" alt="">
-    Kanzo
+    Brokan
     <button class="ghost" id="search-open" title="Search (/ or ⌘K)" aria-label="Search tasks"><span class="icon" data-icon="search"></span></button>
   </div>
   <button class="ghost" id="new-project-toggle"><span class="icon" data-icon="newProject"></span>New project</button>
@@ -480,10 +480,10 @@ label.setting { cursor: pointer; }
       <form class="settings-pane" data-section="sync" id="sync-form">
         <h3>Sync</h3>
         <p>Keep this board the same on all your machines through a private git repo you own. Use the same repo on each machine.</p>
-        <input class="field" id="sync-url" placeholder="https://github.com/you/kanzo-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
+        <input class="field" id="sync-url" placeholder="https://github.com/you/brokan-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
         <p class="error" id="sync-error" hidden></p>
         <div class="row">
-          <a id="sync-create" href="https://github.com/new?name=kanzo-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>
+          <a id="sync-create" href="https://github.com/new?name=brokan-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>
           <button class="btn primary" type="submit" id="sync-save">Save and sync</button>
         </div>
       </form>
@@ -517,7 +517,7 @@ label.setting { cursor: pointer; }
   </div>
 </div>
 
-<div class="offline" id="offline" hidden>Board not reachable — is kanzo running?</div>
+<div class="offline" id="offline" hidden>Board not reachable — is brokan running?</div>
 
 <script src="/app.js"></script>
 </body>

@@ -1,4 +1,4 @@
-//! `kanzo sync`: keep the data folder in step with its git remote, one machine at a time.
+//! `brokan sync`: keep the data folder in step with its git remote, one machine at a time.
 
 use std::path::Path;
 use std::process::Command;
@@ -42,7 +42,7 @@ pub fn set_remote(home: &Home, url: &str, prompt: bool) -> Result<String> {
     let dir = &home.dir;
     let url = url.trim().trim_end_matches('/');
     if url.is_empty() {
-        bail!("Paste the URL of a git repository, like https://github.com/you/kanzo-data");
+        bail!("Paste the URL of a git repository, like https://github.com/you/brokan-data");
     }
     // Git would read it as an option, like --upload-pack, which runs a command.
     if url.starts_with('-') {
@@ -144,14 +144,14 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     let Some((remote, _)) = remote(dir)? else {
         bail!(
             "Sync isn't set up yet. Create an empty private repo, on GitHub for example, then press the \
-             sync button on the board and paste its URL, or run:\n  kanzo sync --repo <url>"
+             sync button on the board and paste its URL, or run:\n  brokan sync --repo <url>"
         );
     };
     git(&["fetch", "--quiet", "--prune", &remote])?;
 
     // Wait for open connections to finish and keep new ones out while the
     // database is staged. The lock is held only while git reads or replaces
-    // kanzo.db, never across a commit (hooks, signing prompts) or the network.
+    // brokan.db, never across a commit (hooks, signing prompts) or the network.
     let note = {
         let lock = home.lock_exclusive()?;
         Store::open(&home.db_path(), None)?.settle()?;
@@ -159,10 +159,10 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         if lock.is_some() { String::new() } else { format!("\n{NO_LOCKS}") }
     };
     if !git_ok(&["diff", "--cached", "--quiet"]) {
-        let message = format!("kanzo sync from {}", hostname());
+        let message = format!("brokan sync from {}", hostname());
         // A machine where git doesn't know the user yet still syncs.
         let named = git_ok(&["config", "user.email"]);
-        let anonymous = ["-c", "user.name=Kanzo", "-c", "user.email=kanzo@localhost"];
+        let anonymous = ["-c", "user.name=Brokan", "-c", "user.email=brokan@localhost"];
         let mut args: Vec<&str> = if named { vec![] } else { anonymous.to_vec() };
         args.extend(["commit", "--quiet", "--message", &message]);
         git(&args)?;
@@ -190,7 +190,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             }
             _ => bail!(
                 "{remote} has several branches ({}), and none is {branch}, so it's not clear which holds \
-                 the board. Sync with an empty repo, or one used only by Kanzo.",
+                 the board. Sync with an empty repo, or one used only by Brokan.",
                 others.join(", ")
             ),
         }
@@ -228,8 +228,8 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             return Err(Diverged {
                 message: format!(
                     "{what} Keep one side:\n  \
-                     kanzo sync --keep-remote  use the board in {upstream} here (this machine's is kept in kanzo.db.bak)\n  \
-                     kanzo sync --keep-local   overwrite {upstream} with this machine's board"
+                     brokan sync --keep-remote  use the board in {upstream} here (this machine's is kept in brokan.db.bak)\n  \
+                     brokan sync --keep-local   overwrite {upstream} with this machine's board"
                 ),
                 first,
             }
@@ -241,20 +241,20 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         }
         (_, _, Some(Keep::Remote)) => {
             replace(home, || {
-                std::fs::copy(home.db_path(), dir.join("kanzo.db.bak")).context("cannot back up kanzo.db")?;
+                std::fs::copy(home.db_path(), dir.join("brokan.db.bak")).context("cannot back up brokan.db")?;
                 git(&["reset", "--quiet", "--hard", "@{upstream}"])
             })?;
-            format!("Took the board from {upstream}; this machine's old board is in kanzo.db.bak.")
+            format!("Took the board from {upstream}; this machine's old board is in brokan.db.bak.")
         }
     };
     Ok(format!("{done}{note}"))
 }
 
-/// Lets `pull` replace kanzo.db while no connection is open, then brings it up to date
+/// Lets `pull` replace brokan.db while no connection is open, then brings it up to date
 /// before any can open it. A migration that fails rolls back, leaving the board as pulled.
 fn replace<T>(home: &Home, pull: impl FnOnce() -> Result<T>) -> Result<()> {
     let _lock = home.lock_exclusive()?;
-    // Rolls back a write a crashed process left in kanzo.db-journal, which SQLite
+    // Rolls back a write a crashed process left in brokan.db-journal, which SQLite
     // would otherwise apply to the pulled file.
     Store::open(&home.db_path(), None)?.settle()?;
     pull()?;
@@ -336,11 +336,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_, b) = two_machines(tmp.path());
         assert!(b.store().unwrap().list_projects().unwrap().is_empty());
-        // The old board is in kanzo.db.bak, and in the commit sync made before resetting.
-        let bak = Store::open(&b.dir.join("kanzo.db.bak"), None).unwrap();
+        // The old board is in brokan.db.bak, and in the commit sync made before resetting.
+        let bak = Store::open(&b.dir.join("brokan.db.bak"), None).unwrap();
         assert_eq!(bak.list_projects().unwrap()[0].slug, "local");
         let old = git(&b.dir, false, &["log", "-1", "--format=%s", "HEAD@{1}"]).unwrap();
-        assert!(old.starts_with("kanzo sync from"));
+        assert!(old.starts_with("brokan sync from"));
     }
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
         drop(db);
         sync(&a, None, false).unwrap();
 
-        let newer = "saved by a newer version of Kanzo";
+        let newer = "saved by a newer version of Brokan";
         assert!(sync(&b, None, false).unwrap_err().to_string().contains(newer));
         let db = rusqlite::Connection::open(b.db_path()).unwrap();
         let version: String =
@@ -363,14 +363,14 @@ mod tests {
 
     #[test]
     fn urls() {
-        let ssh = "git@github.com:you/kanzo-data.git";
-        let https = "https://github.com/you/kanzo-data.git";
-        assert_eq!(candidates("you/kanzo-data"), [ssh, https]);
-        assert_eq!(candidates("github.com/you/kanzo-data.git"), [ssh, https]);
-        assert_eq!(candidates("https://github.com/you/kanzo-data"), ["https://github.com/you/kanzo-data"]);
+        let ssh = "git@github.com:you/brokan-data.git";
+        let https = "https://github.com/you/brokan-data.git";
+        assert_eq!(candidates("you/brokan-data"), [ssh, https]);
+        assert_eq!(candidates("github.com/you/brokan-data.git"), [ssh, https]);
+        assert_eq!(candidates("https://github.com/you/brokan-data"), ["https://github.com/you/brokan-data"]);
         assert_eq!(candidates(ssh), [ssh]);
-        assert_eq!(candidates("/srv/git/kanzo.git"), ["/srv/git/kanzo.git"]);
-        assert_eq!(candidates("../kanzo.git"), ["../kanzo.git"]);
+        assert_eq!(candidates("/srv/git/brokan.git"), ["/srv/git/brokan.git"]);
+        assert_eq!(candidates("../brokan.git"), ["../brokan.git"]);
     }
 
     #[test]
