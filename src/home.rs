@@ -11,12 +11,12 @@ use serde::Deserialize;
 
 use crate::store::{self, ImagesOf, Store};
 
-const DEFAULT_PORT: u16 = 4242;
+const DEFAULT_PORT: u16 = 1317;
 
 const CONFIG_TEMPLATE: &str = r#"# Brokan settings.
 
 # Port for the board at http://localhost:<port>.
-port = 4242
+port = 1317
 
 # Address the board listens on. 127.0.0.1 keeps it on this machine. Use
 # "0.0.0.0" to open it from other devices, for example when Brokan runs on a

@@ -25,7 +25,7 @@ Run `brokan` to start the board in the background and open it in your browser. T
 
 | Command | Does |
 | --- | --- |
-| `brokan` | Starts the board in the background at http://localhost:4242 and opens it; `--port` for another port, `--no-open` to not open it |
+| `brokan` | Starts the board in the background at http://localhost:1317 and opens it; `--port` for another port, `--no-open` to not open it |
 | `brokan --foreground` | Runs attached to the terminal until Ctrl-C; use `--no-open` to skip opening the browser |
 | `brokan service install` | Keeps the board running and starts it at login; `uninstall` removes it |
 | `brokan mcp` | The MCP server for agents: they start it, not you |
@@ -52,7 +52,7 @@ claude mcp add brokan --scope user -- brokan mcp   # Claude Code
 codex mcp add brokan -- brokan mcp                 # Codex
 ```
 
-Other MCP clients: run `brokan mcp` (apps like Raycast need the full path, from `which brokan`), or use the running board at `http://localhost:4242/mcp`.
+Other MCP clients: run `brokan mcp` (apps like Raycast need the full path, from `which brokan`), or use the running board at `http://localhost:1317/mcp`.
 
 Then ask: *"take the next task from brokan and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
 
@@ -66,14 +66,14 @@ A laptop, a desktop, a Raspberry Pi: they all share one board through a private 
 
 From then on, choose Sync, or run `brokan sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Brokan asks which one to keep. To move to another repo, change it in Settings, under Sync.
 
-Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:4242/mcp`, passing the project by name.
+Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:1317/mcp`, passing the project by name.
 
 ## Settings
 
 Everything lives in `~/brokan`: the board in `brokan.db`, settings in `config.toml`. Use another folder with `--home` or `BROKAN_HOME`.
 
 ```toml
-port = 4242
+port = 1317
 listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: no logins, so only on one you trust
 mcp_http = true        # MCP at /mcp
 ```

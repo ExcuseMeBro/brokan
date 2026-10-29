@@ -690,19 +690,19 @@ mod tests {
 
     #[test]
     fn hosts() {
-        let local = Guard { port: 4242, lan: false, names: vec![] };
-        for ok in ["localhost", "localhost:4242", "127.0.0.1:4242", "[::1]:4242", "LOCALHOST:4242"] {
+        let local = Guard { port: 1317, lan: false, names: vec![] };
+        for ok in ["localhost", "localhost:1317", "127.0.0.1:1317", "[::1]:1317", "LOCALHOST:1317"] {
             assert!(local.allows(ok), "{ok}");
         }
-        for bad in ["evil.com", "evil.com:4242", "localhost:80", "192.168.1.5:4242", "", "pi.local:4242"] {
+        for bad in ["evil.com", "evil.com:1317", "localhost:80", "192.168.1.5:1317", "", "pi.local:1317"] {
             assert!(!local.allows(bad), "{bad}");
         }
 
-        let lan = Guard { port: 4242, lan: true, names: vec!["pi".into(), "pi.local".into()] };
-        for ok in ["localhost:4242", "192.168.1.5:4242", "[fe80::1]:4242", "pi.local:4242", "pi:4242", "PI.LOCAL."] {
+        let lan = Guard { port: 1317, lan: true, names: vec!["pi".into(), "pi.local".into()] };
+        for ok in ["localhost:1317", "192.168.1.5:1317", "[fe80::1]:1317", "pi.local:1317", "pi:1317", "PI.LOCAL."] {
             assert!(lan.allows(ok), "{ok}");
         }
-        for bad in ["evil.com:4242", "pi.evil.com:4242", "192.168.1.5:80"] {
+        for bad in ["evil.com:1317", "pi.evil.com:1317", "192.168.1.5:80"] {
             assert!(!lan.allows(bad), "{bad}");
         }
     }
