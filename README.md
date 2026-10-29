@@ -37,7 +37,7 @@ Run `brokan` to start the board in the background and open it in your browser. T
 
 Every command takes `--home <dir>` to use another data folder. Background startup prints the path to its log in your system cache folder (outside the board's synced data folder). Running `brokan` again when the board is already listening will reuse it instead of starting another copy.
 
-`n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels.
+`n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels. Use **Board / Table** above the tasks to switch between kanban columns and a sortable task table (project, status, priority, deadline, updated). Table shows older completed tasks too; its sorting does not change card order. The view choice is remembered in this browser.
 
 Set a task's Priority in its detail panel: None, Low, Medium, High or Urgent. Cards show their priority; agents can set it through MCP too. `next_task` takes the highest-priority `todo` task first and breaks ties by manual card order. Dragging cards keeps its usual manual order.
 

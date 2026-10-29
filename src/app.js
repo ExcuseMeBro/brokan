@@ -28,6 +28,8 @@ const state = {
   dragging: null,        // id of the card being dragged
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
+  view: localStorageGet("brokan.view") === "table" ? "table" : "board",
+  tableSort: { key: "status", direction: "asc" },
   allDone: false,        // show every card in the done column
   menu: null,            // slug of the project whose "⋯" menu is open, or "settings"
 };
@@ -348,7 +350,7 @@ async function loadBoard() {
   try {
     // The server leaves out older done tasks unless asked: the board does not show
     // them, and the done column only grows. Search needs them all.
-    const done = state.allDone ? "&done=all" : "";
+    const done = state.allDone || state.view === "table" ? "&done=all" : "";
     const board = await api("GET", "/board?project=" + encodeURIComponent(state.project) + done);
     if (request !== boardRequest) return;
     state.board = board;
@@ -391,8 +393,20 @@ function render() {
   renderNav();
   renderHeader();
   renderColumns();
+  renderTable();
   renderDashboard();
 }
+
+function setView(view) {
+  if ((view !== "board" && view !== "table") || view === state.view) return;
+  state.view = view;
+  try { localStorage.setItem("brokan.view", view); } catch {}
+  // The board normally limits the done column; the table lists every matching task.
+  loadBoard();
+}
+
+$("#view-board").addEventListener("click", () => setView("board"));
+$("#view-table").addEventListener("click", () => setView("table"));
 
 function showDashboard() {
   if (state.task) closeTask();
@@ -742,6 +756,7 @@ function renderHeader() {
   if (state.dashboard) {
     $("#new-task").hidden = true;
     $("#human-only").hidden = true;
+    $("#view-switch").hidden = true;
     $("#header").replaceChildren(el("h1", {}, "Dashboard"), el("span", { class: "sub" }, "Projects · tasks · time"));
     return;
   }
@@ -749,6 +764,9 @@ function renderHeader() {
   const { projects, tasks } = state.board;
   const active = projects.filter((project) => !project.archived);
   const header = $("#header");
+  $("#view-switch").hidden = false;
+  $("#view-board").setAttribute("aria-pressed", String(state.view === "board"));
+  $("#view-table").setAttribute("aria-pressed", String(state.view === "table"));
   $("#new-task").hidden = !active.length || Boolean(p?.archived);
   $("#human-only").hidden = !projects.length;
   $("#human-only").setAttribute("aria-pressed", String(isHumanOnly()));
@@ -782,7 +800,7 @@ async function deleteProject(p) {
 function renderColumns() {
   const columns = $("#columns");
   $("#dashboard").hidden = !state.dashboard;
-  if (state.dashboard) { columns.style.display = "none"; return; }
+  if (state.dashboard || state.view === "table") { columns.style.display = "none"; return; }
   const { statuses, projects, tasks } = state.board;
   if (!projects.length || (state.project === "all" && projects.every((p) => p.archived))) {
     state.layout = "";
@@ -836,6 +854,96 @@ function renderColumns() {
       : null;
     col.querySelector(".cards").replaceChildren(...[more].filter(Boolean), ...mine.map((t) => card(t, all)));
   }
+}
+
+// The table is a second view of the same board, never a second task order. A stable
+// original-index tie break leaves manual kanban order unchanged by column sorting.
+function sortTableTasks(tasks, sort, statuses, projects) {
+  const priorities = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+  const names = new Map(projects.map((p) => [p.slug, p.name]));
+  const value = (t) => {
+    switch (sort.key) {
+      case "title": return t.title;
+      case "project": return names.get(t.project) || t.project;
+      case "status": { const i = statuses.indexOf(t.status); return i < 0 ? statuses.length : i; }
+      case "priority": return priorities[t.priority] ?? priorities.none;
+      case "deadline": return t.deadline_at || null;
+      case "updated": return t.updated_at;
+      default: return null;
+    }
+  };
+  return tasks.map((task, index) => ({ task, index })).sort((a, b) => {
+    const left = value(a.task), right = value(b.task);
+    // Unscheduled work stays last in either deadline direction.
+    if (left == null || right == null) return (left == null ? 1 : 0) - (right == null ? 1 : 0) || a.index - b.index;
+    const compared = typeof left === "number" ? left - right : String(left).localeCompare(String(right), undefined,
+      { sensitivity: "base", numeric: true });
+    return compared * (sort.direction === "asc" ? 1 : -1) || a.index - b.index;
+  }).map((row) => row.task);
+}
+
+function renderTable() {
+  const root = $("#table-view");
+  root.hidden = state.dashboard || state.view !== "table";
+  if (root.hidden || !state.board) return;
+  const { projects, tasks, statuses } = state.board;
+  if (!projects.length || (state.project === "all" && projects.every((p) => p.archived))) {
+    root.replaceChildren(el("div", { class: "empty" }, el("h2", {}, projects.length ? "No active projects" : "Welcome to Brokan"),
+      el("p", {}, projects.length ? "Restore a project from Archived, or create a new one."
+        : "Create your first project in the sidebar to add tasks."),
+      el("button", { class: "btn primary", onclick: showNewProject }, "New project")));
+    return;
+  }
+  const visible = tasks.filter((t) => !isHumanOnly() || t.human);
+  const sorted = sortTableTasks(visible, state.tableSort, statuses, projects);
+  if (!sorted.length) {
+    root.replaceChildren(el("div", { class: "empty" }, el("h2", {}, isHumanOnly() ? "No human tasks" : "No tasks yet"),
+      el("p", {}, isHumanOnly() ? "Turn off the Human filter to see all tasks." : "Use New task to add one here.")));
+    return;
+  }
+  const focusedSort = document.activeElement?.closest("#table-view th button")?.dataset.sort;
+  const focusedTask = document.activeElement?.closest("#table-view a[data-task-id]")?.dataset.taskId;
+  const previousScroll = root.querySelector(".table-scroll");
+  const scrollTop = previousScroll?.scrollTop || 0;
+  const scrollLeft = previousScroll?.scrollLeft || 0;
+  const columns = [["title", "Task"], ["project", "Project"], ["status", "Status"],
+    ["priority", "Priority"], ["deadline", "Deadline"], ["updated", "Updated"]];
+  const header = el("tr", {}, ...columns.map(([name, label]) => {
+    const selected = state.tableSort.key === name;
+    return el("th", { scope: "col", "aria-sort": selected ? (state.tableSort.direction === "asc" ? "ascending" : "descending") : "none" },
+      el("button", { type: "button", "data-sort": name, "aria-label": `Sort by ${label.toLowerCase()}`,
+        onclick: () => {
+          state.tableSort = { key: name, direction: selected && state.tableSort.direction === "asc" ? "desc"
+            : selected ? "asc" : name === "updated" ? "desc" : "asc" };
+          renderTable();
+          root.querySelector(`th button[data-sort="${name}"]`)?.focus();
+        } }, label, selected ? el("span", { class: "sort-arrow", "aria-hidden": "true" },
+          state.tableSort.direction === "asc" ? "↑" : "↓") : null));
+  }));
+  const projectNames = new Map(projects.map((p) => [p.slug, p.name]));
+  const rows = sorted.map((t) => {
+    const deadline = t.deadline_at && new Date(t.deadline_at);
+    return el("tr", { class: state.task === t.id ? "selected" : null },
+      el("th", { scope: "row" }, el("a", { href: `#${state.project}/${t.id}`, "data-task-id": t.id,
+        onclick: (e) => { e.preventDefault(); openTask(t.id).then(() => {
+          if (state.task === t.id) $("#p-title").focus({ preventScroll: true });
+        }); } }, t.title),
+      el("span", { class: "task-key mono" }, key(t), t.human ? " · Human" : "")),
+      el("td", {}, projectGlyph(t.project), projectNames.get(t.project) || t.project),
+      el("td", {}, statusIcon(t.status), t.status),
+      el("td", {}, t.priority && t.priority !== "none" ? t.priority[0].toUpperCase() + t.priority.slice(1) : "—"),
+      el("td", { class: deadlineOverdue(t) ? "overdue" : null }, deadline
+        ? el("time", { datetime: t.deadline_at, title: deadline.toLocaleString() },
+          `${deadlineOverdue(t) ? "Overdue · " : ""}${deadline.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`) : "—"),
+      el("td", {}, timeEl(t.updated_at)));
+  });
+  root.replaceChildren(el("div", { class: "table-scroll" }, el("table", { class: "task-table" },
+    el("thead", {}, header), el("tbody", {}, ...rows))));
+  const nextScroll = root.querySelector(".table-scroll");
+  nextScroll.scrollTop = scrollTop;
+  nextScroll.scrollLeft = scrollLeft;
+  if (focusedSort) root.querySelector(`th button[data-sort="${focusedSort}"]`)?.focus({ preventScroll: true });
+  if (focusedTask) root.querySelector(`a[data-task-id="${focusedTask}"]`)?.focus({ preventScroll: true });
 }
 
 // The board can show only human tasks; off at first, and each browser remembers the choice.
