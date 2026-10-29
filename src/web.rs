@@ -126,12 +126,16 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/ping", get(|| async { "brokan" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
+        .route("/api/dashboard", get(dashboard))
         .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
         .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
+        .route("/api/tasks/{id}/time", get(task_time).post(log_time))
+        .route("/api/tasks/{id}/time/{entry}", delete(delete_time))
+        .route("/api/tasks/{id}/timer", post(start_timer).delete(stop_timer))
         .route("/api/tasks/{id}/move", post(move_task))
         .route("/api/tasks/{id}/comments", post(add_comment))
         .route("/api/comments/{id}", delete(delete_comment))
@@ -311,6 +315,10 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
     .await
 }
 
+async fn dashboard(State(home): Shared) -> Response {
+    with_store(home, |_, s| s.dashboard()).await
+}
+
 #[derive(Deserialize)]
 struct SearchQuery {
     #[serde(default)]
@@ -406,6 +414,31 @@ async fn get_task(State(home): Shared, Path(id): Path<i64>) -> Response {
         Ok(TaskReply { comments: s.list_comments(id)?, images: s.list_images(id)?, task: s.get_task(id)? })
     })
     .await
+}
+
+async fn task_time(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.time_report(id)).await
+}
+
+#[derive(Deserialize)]
+struct Minutes {
+    minutes: i64,
+}
+
+async fn log_time(State(home): Shared, Path(id): Path<i64>, Json(body): Json<Minutes>) -> Response {
+    with_store(home, move |_, s| s.log_time(id, body.minutes)).await
+}
+
+async fn start_timer(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.start_timer(id)).await
+}
+
+async fn stop_timer(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.stop_timer(id)).await
+}
+
+async fn delete_time(State(home): Shared, Path((id, entry)): Path<(i64, i64)>) -> Response {
+    with_store(home, move |_, s| s.delete_time(id, entry)).await
 }
 
 #[derive(Deserialize)]

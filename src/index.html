@@ -148,6 +148,7 @@ header .repo-link {
 header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
 header .repo-link .icon svg { width: 14px; height: 14px; }
 #new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
+#new-task[hidden], #human-only[hidden] { display: none; }
 #new-task .icon svg { width: 16px; height: 16px; }
 /* Show only human tasks: a small icon, coloured while the filter is on. */
 #human-only { width: auto; padding: 6px; color: var(--muted); }
@@ -239,6 +240,41 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 }
 .empty h1 { color: var(--text); font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
 
+/* Dashboard: familiar board typography, quiet chart cards, explicit values beside every graphic. */
+#dashboard { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 28px; }
+#dashboard[hidden] { display: none; }
+.dashboard-intro { color: var(--muted); margin: 0 0 18px; }
+.dashboard-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.dashboard-stat, .chart-card { border: 1px solid var(--border); background: var(--col); border-radius: 18px; padding: 18px 20px; min-width: 0; }
+.dashboard-stat .label, .chart-card .eyebrow { color: var(--muted); font-size: 12px; font-weight: 500; }
+.dashboard-stat strong { display: block; font-size: 26px; line-height: 1.25; letter-spacing: -.03em; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.dashboard-stat small { display: block; color: var(--muted); margin-top: 3px; }
+.dashboard-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.chart-card h2 { margin: 3px 0 18px; font-size: 16px; letter-spacing: -.01em; }
+.chart-card.wide { grid-column: 1 / -1; }
+.chart-card .chart-note { color: var(--faint); font-size: 12px; margin: 14px 0 0; }
+.chart-empty { color: var(--muted); padding: 30px 0; }
+.bar-chart { display: flex; align-items: end; gap: 10px; height: 170px; padding: 4px 0 0; }
+.bar-day { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: end; gap: 7px; min-width: 0; height: 100%; }
+.bar-day .amount { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-day .track { width: min(100%, 42px); flex: 1; border-radius: 7px 7px 3px 3px; display: flex; align-items: end; background: var(--hover); overflow: hidden; }
+.bar-day .fill { width: 100%; min-height: 0; background: var(--link); border-radius: inherit; }
+.bar-day .day { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chart-content { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.chart-svg { width: 154px; height: 154px; flex: none; }
+.chart-legend { list-style: none; padding: 0; margin: 0; min-width: 140px; flex: 1; }
+.chart-legend li { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+.chart-legend .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chart-legend .value { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chart-legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+#dashboard:focus-visible, #dashboard button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+@media (max-width: 740px) {
+  #dashboard { padding: 4px 12px 24px; }
+  .dashboard-stats { grid-template-columns: 1fr; }
+  .dashboard-charts { grid-template-columns: 1fr; }
+  .chart-card.wide { grid-column: auto; }
+}
+
 /* Task panel */
 .panel {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(500px, 100vw); background: var(--panel);
@@ -291,6 +327,19 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .comment .remove .icon svg { width: 14px; height: 14px; }
 @media (hover: none) { .comment .remove { visibility: visible; } }
 .comment .who b { color: var(--text); font-weight: 600; }
+.time-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.time-controls .time-form { display: flex; gap: 8px; align-items: center; }
+.time-controls input { width: 88px; }
+.time-controls button:focus-visible, .time-controls input:focus-visible, .time-entry button:focus-visible {
+  outline: 2px solid var(--link); outline-offset: 2px;
+}
+.time-summary { margin: 8px 0; font-variant-numeric: tabular-nums; }
+.time-running { color: var(--link); font-size: 12px; }
+.time-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 190px; overflow-y: auto; }
+.time-entry { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.time-entry time { flex: 1; min-width: 0; color: var(--muted); }
+.time-entry button { background: none; border: 0; color: var(--muted); padding: 3px 6px; border-radius: 6px; }
+.time-entry button:hover { color: var(--danger); background: var(--danger-bg); }
 /* Attached images: thumbnails that open the full image, with an × to remove. */
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
 .thumbs:empty { display: none; }
@@ -436,6 +485,7 @@ label.setting { cursor: pointer; }
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
+  <section id="dashboard" aria-label="Dashboard" hidden></section>
 </main>
 
 <div class="panel" id="panel" aria-hidden="true">
@@ -459,6 +509,19 @@ label.setting { cursor: pointer; }
       Created <span id="p-created"></span>
       Updated <span id="p-updated"></span>
     </div>
+    <section class="section" aria-label="Time tracking">
+      <h3>Time spent</h3>
+      <div class="time-controls">
+        <button class="btn" id="p-timer" type="button">Start timer</button>
+        <form class="time-form" id="p-time-form">
+          <input class="field" id="p-minutes" type="number" min="1" max="1440" step="1" required placeholder="Minutes" aria-label="Minutes to log">
+          <button class="btn" type="submit">Log time</button>
+        </form>
+      </div>
+      <div class="time-summary" id="p-time-total" aria-live="polite">0m tracked</div>
+      <div class="time-running" id="p-time-running" hidden></div>
+      <ul class="time-list" id="p-time-list" aria-label="Time entries"></ul>
+    </section>
     <div class="section">
       <h3>Description</h3>
       <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>

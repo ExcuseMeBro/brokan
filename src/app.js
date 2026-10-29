@@ -20,6 +20,8 @@ const STATUS_COLORS = ["#8a8a83", "#3b82f6", "#e8a317", "#2f9e44", "#ae3ec9", "#
 
 const state = {
   project: "all",        // slug or "all"
+  dashboard: false,      // #~dashboard is reserved (not a valid project slug)
+  dashboardData: null,
   board: null,           // last /api/board reply
   changes: null,         // change counter seen last
   task: null,            // open task id
@@ -84,6 +86,7 @@ const ICONS = {
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
+  chart: '<path d="M3 3v18h18M7 16v-5M12 16V7M17 16v-9"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
@@ -207,6 +210,13 @@ function timeEl(ts) {
   return el("time", { datetime: ts, title: parseTime(ts).toLocaleString() }, ago(ts));
 }
 
+function duration(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}h${m ? ` ${m}m` : ""}` : `${m}m`;
+}
+
 // ---------- Markdown (small, escapes everything first) ----------
 
 function escapeHtml(s) {
@@ -320,7 +330,7 @@ async function loadBoard() {
 
 // The address is #project or #project/task-id, so a task can be linked to.
 function updateHash() {
-  const hash = "#" + state.project + (state.task ? "/" + state.task : "");
+  const hash = state.dashboard ? "#~dashboard" : "#" + state.project + (state.task ? "/" + state.task : "");
   if (location.hash !== hash) history.replaceState(null, "", hash);
 }
 
@@ -332,6 +342,7 @@ function readHash() {
 }
 
 function setProject(slug) {
+  state.dashboard = false;
   state.project = slug;
   try { localStorage.setItem("brokan.project", slug); } catch {}
   updateHash();
@@ -343,6 +354,27 @@ function render() {
   renderNav();
   renderHeader();
   renderColumns();
+  renderDashboard();
+}
+
+function showDashboard() {
+  if (state.task) closeTask();
+  state.dashboard = true;
+  updateHash();
+  if (state.board) render();
+  loadDashboard();
+}
+
+let dashboardRequest = 0;
+async function loadDashboard() {
+  if (!state.dashboard) return;
+  const request = ++dashboardRequest;
+  try {
+    const data = await api("GET", "/dashboard");
+    if (request !== dashboardRequest || !state.dashboard) return;
+    state.dashboardData = data;
+    renderDashboard();
+  } catch (err) { if (state.dashboard) toast(err.message); }
 }
 
 function renderNav() {
@@ -351,7 +383,7 @@ function renderNav() {
   const { projects } = state.board;
   const open = projects.reduce((n, p) => n + p.open, 0);
   const link = (slug, name, count, glyph) =>
-    el("a", { href: "#" + slug, class: state.project === slug ? "active" : null,
+    el("a", { href: "#" + slug, class: !state.dashboard && state.project === slug ? "active" : null,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph,
       el("span", { class: "name" }, name),
@@ -364,11 +396,103 @@ function renderNav() {
                    "aria-expanded": String(state.menu === p.slug),
                    "aria-controls": state.menu === p.slug ? "project-settings-menu" : null,
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
+  const dashboard = el("a", { href: "#~dashboard", class: state.dashboard ? "active" : null,
+    onclick: (e) => { e.preventDefault(); showDashboard(); } },
+    icon("chart"), el("span", { class: "name" }, "Dashboard"));
   $("#nav").replaceChildren(
+    dashboard,
     link("all", "All projects", open, icon("board")),
     ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
     ...projects.map(item),
   );
+}
+
+// ---------- dashboard ----------
+
+const svgNS = "http://www.w3.org/2000/svg";
+function svgNode(tag, attrs = {}) {
+  const node = document.createElementNS(svgNS, tag);
+  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
+  return node;
+}
+
+// SVG paths, rather than a chart dependency: works with the existing CSP and
+// remains readable as a labelled list when charts are not visible.
+function ringChart(rows, donut, label, total) {
+  const svg = svgNode("svg", { class: "chart-svg", viewBox: "0 0 160 160", role: "img", "aria-label": label });
+  let start = -Math.PI / 2;
+  for (const row of rows) {
+    if (!row.value) continue;
+    const angle = row.value / total * 2 * Math.PI;
+    if (angle > 2 * Math.PI - 1e-8) {
+      svg.append(svgNode("circle", { cx: 80, cy: 80, r: 68, fill: row.color }));
+    } else {
+      const end = start + angle;
+      const pt = (a) => [80 + 68 * Math.cos(a), 80 + 68 * Math.sin(a)].map((v) => v.toFixed(3));
+      const [x1, y1] = pt(start), [x2, y2] = pt(end);
+      svg.append(svgNode("path", { d: `M80 80L${x1} ${y1}A68 68 0 ${angle > Math.PI ? 1 : 0} 1 ${x2} ${y2}Z`, fill: row.color }));
+      start = end;
+    }
+  }
+  if (donut) {
+    svg.append(svgNode("circle", { cx: 80, cy: 80, r: 43, fill: "var(--col)" }));
+    const text = svgNode("text", { x: 80, y: 86, "text-anchor": "middle", fill: "var(--text)",
+      "font-size": 17, "font-weight": 600 });
+    text.textContent = duration(total);
+    svg.append(text);
+  }
+  return svg;
+}
+
+function renderDashboard() {
+  if (!state.dashboard) return;
+  const root = $("#dashboard");
+  const data = state.dashboardData;
+  if (!data || !state.board) { root.replaceChildren(el("p", {}, "Loading dashboard…")); return; }
+  const stat = (label, value, note) => el("div", { class: "dashboard-stat" },
+    el("span", { class: "label" }, label), el("strong", {}, value), el("small", {}, note));
+  const chart = (eyebrow, title, contents, note, wide) => el("section", { class: "chart-card" + (wide ? " wide" : "") },
+    el("span", { class: "eyebrow" }, eyebrow), el("h2", {}, title), contents,
+    note ? el("p", { class: "chart-note" }, note) : null);
+  const statusRows = state.board.statuses.map((status, i) => ({
+    name: status[0].toUpperCase() + status.slice(1),
+    value: data.statuses.find((item) => item.status === status)?.count || 0,
+    color: STATUS_COLORS[i % STATUS_COLORS.length],
+  })).filter((row) => row.value > 0);
+  const projectRows = data.projects.filter((p) => p.seconds > 0).map((p) => ({
+    name: p.name, value: p.seconds, color: projectColor(p.slug),
+  }));
+  const legend = (rows, format) => el("ul", { class: "chart-legend" }, ...rows.map((row) =>
+    el("li", {}, el("span", { class: "swatch", style: `background:${row.color}` }),
+      el("span", { class: "name" }, row.name), el("span", { class: "value" }, format(row.value)))));
+  const circular = (rows, donut, value, format, empty) => value
+    ? el("div", { class: "chart-content" },
+      ringChart(rows, donut, rows.map((r) => `${r.name}: ${format(r.value)}`).join(", "), value), legend(rows, format))
+    : el("p", { class: "chart-empty" }, empty);
+  const days = data.days || [];
+  const max = Math.max(1, ...days.map((d) => d.seconds));
+  const bars = el("div", { class: "bar-chart", role: "img", "aria-label": "Time by day: " + days.map((d) =>
+    `${d.day}: ${duration(d.seconds)}`).join(", ") }, ...days.map((d) =>
+    el("div", { class: "bar-day" }, el("span", { class: "amount" }, d.seconds ? duration(d.seconds) : "0"),
+      el("span", { class: "track" }, el("span", { class: "fill", style: `height:${d.seconds / max * 100}%` })),
+      el("span", { class: "day", title: d.day }, d.day.slice(5)))));
+  const open = data.tasks - (data.statuses.find((s) => s.status === "done")?.count || 0);
+  root.replaceChildren(
+    el("p", { class: "dashboard-intro" }, "A clear view of work and time across every project."),
+    el("div", { class: "dashboard-stats" },
+      stat("Tracked time", duration(data.total_seconds), data.running_seconds ? `${duration(data.running_seconds)} running now` : "All time"),
+      stat("Tasks", String(data.tasks), `${open} open`),
+      stat("Projects", String(data.projects.length), `${projectRows.length} with tracked time`)),
+    el("div", { class: "dashboard-charts" },
+      chart("01 / ACTIVITY", "Time logged · last 7 days",
+        days.some((d) => d.seconds > 0) ? bars : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),
+        "Entries are grouped by start date in UTC. Running time is included.", true),
+      chart("02 / WORK", "Tasks by status",
+        circular(statusRows, false, data.tasks, (v) => `${v} task${v === 1 ? "" : "s"}`, "No tasks yet. Create one to see its status."),
+        "All tasks, including older completed work."),
+      chart("03 / TIME", "Time by project",
+        circular(projectRows, true, data.total_seconds, duration, "No tracked time yet. Start a task timer or log minutes."),
+        "All-time logged and currently running time.")));
 }
 
 // ---------- project menu ----------
@@ -534,6 +658,12 @@ function currentProject() {
 }
 
 function renderHeader() {
+  if (state.dashboard) {
+    $("#new-task").hidden = true;
+    $("#human-only").hidden = true;
+    $("#header").replaceChildren(el("h1", {}, "Dashboard"), el("span", { class: "sub" }, "Projects · tasks · time"));
+    return;
+  }
   const p = currentProject();
   const { projects, tasks } = state.board;
   const header = $("#header");
@@ -568,8 +698,10 @@ async function deleteProject(p) {
 }
 
 function renderColumns() {
-  const { statuses, projects, tasks } = state.board;
   const columns = $("#columns");
+  $("#dashboard").hidden = !state.dashboard;
+  if (state.dashboard) { columns.style.display = "none"; return; }
+  const { statuses, projects, tasks } = state.board;
   if (!projects.length) {
     state.layout = "";
     columns.style.display = "flex";
@@ -819,6 +951,12 @@ async function openTask(id) {
   leavePanelField();
   if (fresh !== id) dropFresh();
   state.task = id;
+  panelTask = null;
+  timeReport = null;
+  $("#p-timer").disabled = true;
+  $("#p-time-list").replaceChildren();
+  $("#p-time-total").textContent = "Loading time…";
+  $("#p-time-running").hidden = true;
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
   $("#p-comment").value = "";
@@ -842,6 +980,8 @@ function closeTask() {
   dropFresh();
   state.task = null;
   panelTask = null;
+  timeReport = null;
+  $("#p-timer").disabled = true;
   updateHash();
   panel.classList.remove("shown");
   panel.setAttribute("aria-hidden", "true");
@@ -862,6 +1002,7 @@ async function refreshTask() {
   if (state.task !== id) return;
   const { task, comments, images } = data;
   panelTask = task;
+  refreshTime();
   $("#p-key").textContent = key(task);
   $("#p-key").title = `Copy ${key(task)}`;
   // Never overwrite what is being typed or picked.
@@ -896,6 +1037,76 @@ async function refreshTask() {
       attached.length ? el("div", { class: "thumbs" }, attached.map((i) => thumb(i.file))) : null);
   }));
 }
+
+let timeReport = null;
+async function refreshTime() {
+  const id = state.task;
+  if (!id) return;
+  try {
+    const report = await api("GET", `/tasks/${id}/time`);
+    if (state.task === id) renderTime(report);
+  } catch (err) { if (state.task === id) toast(err.message); }
+}
+
+function renderTime(report) {
+  timeReport = report;
+  $("#p-timer").disabled = false;
+  $("#p-time-total").textContent = `${duration(report.total_seconds)} tracked`;
+  $("#p-timer").textContent = report.running_since == null ? "Start timer" : "Stop timer";
+  $("#p-timer").setAttribute("aria-label", report.running_since == null ? "Start task timer" : "Stop task timer");
+  $("#p-time-running").hidden = report.running_since == null;
+  if (report.running_since != null) updateRunningTime();
+  $("#p-time-list").replaceChildren(...report.entries.map((entry) =>
+    el("li", { class: "time-entry" },
+      el("span", { class: "mono" }, entry.ended_at == null ? "Running" : duration(entry.seconds)),
+      el("time", { datetime: new Date(entry.started_at * 1000).toISOString() },
+        new Date(entry.started_at * 1000).toLocaleString()),
+      entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
+        "aria-label": `Remove ${duration(entry.seconds)} time entry`, onclick: async () => {
+          if (!confirm(`Remove this ${duration(entry.seconds)} time entry?`)) return;
+          try {
+            const result = await api("DELETE", `/tasks/${entry.task_id}/time/${entry.id}`);
+            if (state.task === entry.task_id) renderTime(result);
+            if (state.dashboard) loadDashboard();
+          } catch (err) { toast(err.message); }
+        } }, "Remove") : null)));
+}
+
+function updateRunningTime() {
+  if (timeReport?.running_since == null || !state.task) return;
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timeReport.running_since);
+  $("#p-time-running").textContent = `Timer running · ${duration(elapsed)} elapsed`;
+  $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, Math.floor(Date.now() / 1000) - timeReport.as_of))} tracked`;
+}
+setInterval(updateRunningTime, 1000);
+
+$("#p-timer").addEventListener("click", async (e) => {
+  if (!panelTask || e.currentTarget.disabled) return;
+  const id = panelTask.id;
+  const running = timeReport?.running_since != null;
+  e.currentTarget.disabled = true;
+  try {
+    const result = await api(running ? "DELETE" : "POST", `/tasks/${id}/timer`);
+    if (state.task === id) renderTime(result);
+    if (state.dashboard) loadDashboard();
+  } catch (err) { toast(err.message); }
+  e.currentTarget.disabled = false;
+});
+
+$("#p-time-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!panelTask) return;
+  const id = panelTask.id;
+  const button = e.currentTarget.querySelector("button");
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const report = await api("POST", `/tasks/${id}/time`, { minutes: Number($("#p-minutes").value) });
+    if (state.task === id) { renderTime(report); $("#p-minutes").value = ""; }
+    if (state.dashboard) loadDashboard();
+  } catch (err) { toast(err.message); }
+  button.disabled = false;
+});
 
 async function deleteComment(c) {
   if (!confirm("Delete this comment? This cannot be undone.")) return;
@@ -1200,7 +1411,8 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("hashchange", () => {
   const { slug, task } = readHash();
-  if ((slug || "all") !== state.project) setProject(slug || "all");
+  if (slug === "~dashboard") { if (!state.dashboard) showDashboard(); return; }
+  if (state.dashboard || (slug || "all") !== state.project) setProject(slug || "all");
   if (task && task !== state.task) openTask(task);
   else if (!task && state.task) closeTask();
 });
@@ -1214,6 +1426,7 @@ async function poll() {
     if (changes !== state.changes) {
       state.changes = changes;
       await loadBoard();
+      if (state.dashboard) loadDashboard();
       if (state.task) refreshTask();
     }
   } catch {
@@ -1437,6 +1650,9 @@ checkUpdate();
 setInterval(checkUpdate, 24 * 60 * 60 * 1000);
 loadSyncRemote();
 
+// Running time changes without a database write; refresh the dashboard periodically.
+setInterval(() => { if (state.dashboard && !document.hidden) loadDashboard(); }, 30000);
+
 // Relative times ("5m ago") drift; refresh them now and then.
 setInterval(() => {
   document.querySelectorAll("time[datetime]").forEach((t) => { t.textContent = ago(t.getAttribute("datetime")); });
@@ -1444,6 +1660,8 @@ setInterval(() => {
 
 {
   const { slug, task } = readHash();
-  state.project = slug || localStorageGet("brokan.project") || "all";
-  loadBoard().then(() => { if (task) openTask(task); });
+  state.dashboard = slug === "~dashboard";
+  state.project = state.dashboard ? "all" : slug || localStorageGet("brokan.project") || "all";
+  loadBoard().then(() => { if (task && !state.dashboard) openTask(task); });
+  if (state.dashboard) loadDashboard();
 }

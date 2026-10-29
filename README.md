@@ -41,6 +41,8 @@ Every command takes `--home <dir>` to use another data folder. Background startu
 
 Set a task's Priority in its detail panel: None, Low, Medium, High or Urgent. Cards show their priority; agents can set it through MCP too. `next_task` takes the highest-priority `todo` task first and breaks ties by manual card order. Dragging cards keeps its usual manual order.
 
+Open a task to **Start timer** or **Log time** in minutes. One timer can run across the board at a time, and it keeps its start time if Brokan restarts. The task shows its entries so a mistaken completed entry can be removed. The sidebar **Dashboard** shows a seven-day bar chart of tracked time, a pie of task statuses and a donut of time by project. Running time is included; the seven-day chart groups whole entries by their start date in UTC.
+
 Need somewhere to park ideas? Turn on the Backlog column in Settings, at the bottom of the sidebar: agents leave its tasks alone until you move them to `todo`.
 
 Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Agents get its file path and can open it.

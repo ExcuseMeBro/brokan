@@ -57,6 +57,21 @@ const MIGRATIONS: &[&str] = &[
         CHECK (icon IS NULL OR icon IN
             ('folder', 'code', 'terminal', 'globe', 'database', 'server',
              'rocket', 'book', 'briefcase', 'bug', 'palette', 'zap'));",
+    // 9: time entries are additive, so existing boards and older clients keep working.
+    // Only one timer can run at a time across the board.
+    "CREATE TABLE time_entries (
+         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+         task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+         started_at INTEGER NOT NULL,
+         ended_at   INTEGER,
+         seconds    INTEGER NOT NULL DEFAULT 0 CHECK (seconds >= 0),
+         CHECK ((ended_at IS NULL AND seconds = 0) OR (ended_at IS NOT NULL AND seconds > 0))
+     );
+     CREATE INDEX time_entries_by_task ON time_entries(task_id, started_at);
+     CREATE UNIQUE INDEX time_entries_one_running ON time_entries((1)) WHERE ended_at IS NULL;
+     CREATE TRIGGER time_entries_insert AFTER INSERT ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER time_entries_update AFTER UPDATE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER time_entries_delete AFTER DELETE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -172,6 +187,58 @@ pub struct Image {
     pub comment_id: Option<i64>,
     /// Its file name in the data folder's `images/`, like `6fec521a01297ab5.png`.
     pub file: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeEntry {
+    pub id: i64,
+    pub task_id: i64,
+    /// Unix seconds (UTC). A manual entry has equal start and end times.
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    /// Completed time; zero only while the timer is running.
+    pub seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TimeReport {
+    pub entries: Vec<TimeEntry>,
+    /// Includes the elapsed time of a running timer as of the response.
+    pub total_seconds: i64,
+    pub running_since: Option<i64>,
+    /// Snapshot time, so the client can display the running total between requests.
+    pub as_of: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StatusCount {
+    pub status: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectTime {
+    pub slug: String,
+    pub name: String,
+    pub color: Option<String>,
+    pub seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DayTime {
+    pub day: String,
+    pub seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Dashboard {
+    pub statuses: Vec<StatusCount>,
+    pub projects: Vec<ProjectTime>,
+    pub days: Vec<DayTime>,
+    /// All-time total, including active timers as of the response.
+    pub total_seconds: i64,
+    pub running_seconds: i64,
+    pub tasks: i64,
 }
 
 /// Fields of a task to change; `None` leaves a field as it is.
@@ -829,6 +896,143 @@ impl Store {
         Ok(task)
     }
 
+    // Time tracking. All times are UTC Unix seconds; only completed entries store
+    // seconds. The UI counts an active timer as of each response without writing
+    // the database on every tick.
+
+    fn unix_now(c: &Connection) -> Result<i64> {
+        Ok(c.query_row("SELECT unixepoch()", [], |r| r.get(0))?)
+    }
+
+    pub fn time_report(&self, task_id: i64) -> Result<TimeReport> {
+        self.get_task(task_id)?;
+        let now = Self::unix_now(&self.conn)?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, task_id, started_at, ended_at, seconds FROM time_entries
+             WHERE task_id = ?1 ORDER BY started_at DESC, id DESC",
+        )?;
+        let entries: Vec<TimeEntry> = stmt
+            .query_map([task_id], |r| {
+                Ok(TimeEntry {
+                    id: r.get(0)?,
+                    task_id: r.get(1)?,
+                    started_at: r.get(2)?,
+                    ended_at: r.get(3)?,
+                    seconds: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let total_seconds =
+            entries.iter().map(|e| e.ended_at.map_or_else(|| (now - e.started_at).max(0), |_| e.seconds)).sum();
+        let running_since = entries.iter().find(|e| e.ended_at.is_none()).map(|e| e.started_at);
+        Ok(TimeReport { entries, total_seconds, running_since, as_of: now })
+    }
+
+    pub fn start_timer(&self, task_id: i64) -> Result<TimeReport> {
+        self.write(|c| {
+            self.get_task(task_id)?;
+            let running: Option<i64> =
+                c.query_row("SELECT task_id FROM time_entries WHERE ended_at IS NULL", [], |r| r.get(0)).optional()?;
+            match running {
+                Some(id) if id == task_id => Ok(()), // a repeated start is a no-op
+                Some(id) => Err(Error::Invalid(format!("timer already running for task #{id}; stop it first"))),
+                None => {
+                    c.execute("INSERT INTO time_entries (task_id, started_at) VALUES (?1, unixepoch())", [task_id])?;
+                    Ok(())
+                }
+            }
+        })?;
+        self.time_report(task_id)
+    }
+
+    pub fn stop_timer(&self, task_id: i64) -> Result<TimeReport> {
+        self.write(|c| {
+            self.get_task(task_id)?;
+            let now = Self::unix_now(c)?;
+            c.execute(
+                "UPDATE time_entries SET ended_at = ?1, seconds = max(1, ?1 - started_at)
+                 WHERE task_id = ?2 AND ended_at IS NULL",
+                params![now, task_id],
+            )?;
+            Ok(()) // a repeated stop is a no-op
+        })?;
+        self.time_report(task_id)
+    }
+
+    /// Adds a manual entry in whole minutes (1 minute to 24 hours).
+    pub fn log_time(&self, task_id: i64, minutes: i64) -> Result<TimeReport> {
+        if !(1..=1440).contains(&minutes) {
+            return Err(Error::Invalid("minutes must be between 1 and 1440".into()));
+        }
+        self.write(|c| {
+            self.get_task(task_id)?;
+            c.execute(
+                "INSERT INTO time_entries (task_id, started_at, ended_at, seconds)
+                 VALUES (?1, unixepoch(), unixepoch(), ?2)",
+                params![task_id, minutes * 60],
+            )?;
+            Ok(())
+        })?;
+        self.time_report(task_id)
+    }
+
+    pub fn delete_time(&self, task_id: i64, entry_id: i64) -> Result<TimeReport> {
+        self.write(|c| {
+            self.get_task(task_id)?;
+            let removed = c.execute(
+                "DELETE FROM time_entries WHERE id = ?1 AND task_id = ?2 AND ended_at IS NOT NULL",
+                params![entry_id, task_id],
+            )?;
+            if removed == 0 {
+                return Err(Error::NotFound(format!("no completed time entry #{entry_id} for task #{task_id}")));
+            }
+            Ok(())
+        })?;
+        self.time_report(task_id)
+    }
+
+    /// Counts every task, even older done tasks omitted from the board response.
+    /// The seven UTC days group each entry by when it began; manual entries use
+    /// the day they were logged. Active elapsed time is included at query time.
+    pub fn dashboard(&self) -> Result<Dashboard> {
+        let now = Self::unix_now(&self.conn)?;
+        let seconds = "CASE WHEN e.ended_at IS NULL THEN max(0, ?1 - e.started_at) ELSE e.seconds END";
+        let mut stmt = self.conn.prepare("SELECT status, count(*) FROM tasks GROUP BY status")?;
+        let statuses: Vec<StatusCount> = stmt
+            .query_map([], |r| Ok(StatusCount { status: r.get(0)?, count: r.get(1)? }))?
+            .collect::<rusqlite::Result<_>>()?;
+        let tasks = statuses.iter().map(|s| s.count).sum();
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT p.slug, p.name, p.color, coalesce(sum({seconds}), 0)
+             FROM projects p LEFT JOIN tasks t ON t.project_id = p.id
+             LEFT JOIN time_entries e ON e.task_id = t.id
+             GROUP BY p.id ORDER BY p.slug"
+        ))?;
+        let projects: Vec<ProjectTime> = stmt
+            .query_map([now], |r| {
+                Ok(ProjectTime { slug: r.get(0)?, name: r.get(1)?, color: r.get(2)?, seconds: r.get(3)? })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let total_seconds = projects.iter().map(|p| p.seconds).sum();
+        let running_seconds: i64 = self.conn.query_row(
+            "SELECT coalesce(sum(max(0, ?1 - started_at)), 0) FROM time_entries WHERE ended_at IS NULL",
+            [now],
+            |r| r.get(0),
+        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE days(day) AS (
+                SELECT date('now', '-6 days') UNION ALL
+                SELECT date(day, '+1 day') FROM days WHERE day < date('now')
+             ) SELECT days.day, coalesce(sum({seconds}), 0) FROM days
+             LEFT JOIN time_entries e ON date(e.started_at, 'unixepoch') = days.day
+             GROUP BY days.day ORDER BY days.day"
+        ))?;
+        let days: Vec<DayTime> = stmt
+            .query_map([now], |r| Ok(DayTime { day: r.get(0)?, seconds: r.get(1)? }))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Dashboard { statuses, projects, days, total_seconds, running_seconds, tasks })
+    }
+
     // Comments
 
     pub fn list_comments(&self, task_id: i64) -> Result<Vec<Comment>> {
@@ -1186,6 +1390,96 @@ mod tests {
             ("New name".into(), Some("red"), Some("rocket"))
         );
         assert_eq!(s.update_project("web", None, None, Some("folder")).unwrap().icon.as_deref(), Some("folder"));
+    }
+
+    #[test]
+    fn time_migration_preserves_existing_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..8] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '8'), ('compatible', '4')")
+                .unwrap();
+            s.conn
+                .execute_batch(
+                    "INSERT INTO projects (slug, name) VALUES ('api', 'API');
+                INSERT INTO tasks (project_id, title, status, position) VALUES (1, 'Existing', 'done', 1);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let old = s.get_task(1).unwrap();
+        assert_eq!((old.title.as_str(), old.status.as_str()), ("Existing", "done"));
+        assert!(s.time_report(old.id).unwrap().entries.is_empty());
+        assert_eq!(s.dashboard().unwrap().tasks, 1);
+        s.log_time(old.id, 30).unwrap();
+        assert_eq!(Store::open(&path, None).unwrap().time_report(old.id).unwrap().total_seconds, 1800);
+    }
+
+    #[test]
+    fn timer_and_dashboard_account_for_live_and_manual_time() {
+        let (dir, s) = store();
+        let api = s.create_project("api", "API", None).unwrap();
+        let web = s.create_project("web", "Website", None).unwrap();
+        let first = s.create_task(api.id, "First", "").unwrap();
+        let second = s.create_task(web.id, "Second", "").unwrap();
+        s.move_task(second.id, "done", None).unwrap();
+        assert_eq!(s.dashboard().unwrap().tasks, 2);
+        assert!(s.log_time(first.id, 0).is_err());
+        assert!(s.log_time(first.id, 1441).is_err());
+        assert!(s.time_report(first.id).unwrap().entries.is_empty());
+        assert_eq!(s.log_time(first.id, 30).unwrap().total_seconds, 1800);
+        assert_eq!(s.log_time(second.id, 20).unwrap().total_seconds, 1200);
+        let before = s.changes().unwrap();
+        let running = s.start_timer(first.id).unwrap();
+        assert!(running.running_since.is_some());
+        assert_eq!(running.entries.len(), 2);
+        assert_eq!(
+            Store::open(&dir.path().join("brokan.db"), None).unwrap().time_report(first.id).unwrap().running_since,
+            running.running_since,
+            "timer survives reopening the board"
+        );
+        assert!(s.delete_time(first.id, running.entries[0].id).is_err(), "running entries cannot be deleted");
+        s.start_timer(first.id).unwrap();
+        assert_eq!(s.time_report(first.id).unwrap().entries.len(), 2);
+        assert!(s.start_timer(second.id).unwrap_err().to_string().contains("stop it first"));
+        assert_eq!(s.changes().unwrap(), before + 1, "only the first start writes");
+        let current = s.dashboard().unwrap();
+        assert_eq!((current.tasks, current.projects.len(), current.days.len()), (2, 2, 7));
+        assert_eq!(current.total_seconds, 3000 + current.running_seconds);
+        assert_eq!(current.days.iter().map(|d| d.seconds).sum::<i64>(), current.total_seconds);
+        assert_eq!(current.projects.iter().find(|p| p.slug == "api").unwrap().seconds, 1800 + current.running_seconds);
+        let stopped = s.stop_timer(first.id).unwrap();
+        assert!(stopped.running_since.is_none());
+        assert!(stopped.total_seconds >= 1801);
+        assert_eq!(s.stop_timer(first.id).unwrap().total_seconds, stopped.total_seconds);
+        let old = s.time_report(first.id).unwrap().entries.last().unwrap().id;
+        assert!(s.delete_time(second.id, old).is_err(), "wrong task must not delete an entry");
+        assert_eq!(s.delete_time(first.id, old).unwrap().total_seconds, stopped.total_seconds - 1800);
+        assert!(s.delete_time(first.id, old).is_err());
+        let completed = s.time_report(first.id).unwrap().entries[0].id;
+        s.conn
+            .execute(
+                "UPDATE time_entries SET started_at = unixepoch('now', '-9 days'),
+                ended_at = unixepoch('now', '-9 days') WHERE id = ?1",
+                [completed],
+            )
+            .unwrap();
+        let historical = s.dashboard().unwrap();
+        assert!(
+            historical.days.iter().map(|d| d.seconds).sum::<i64>() < historical.total_seconds,
+            "seven-day bars exclude older work but all-time totals include it"
+        );
+        s.delete_task(first.id).unwrap();
+        assert_eq!(s.dashboard().unwrap().total_seconds, 1200);
+        assert!(s.time_report(first.id).is_err());
     }
 
     #[test]
