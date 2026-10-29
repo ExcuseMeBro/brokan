@@ -41,6 +41,8 @@ Every command takes `--home <dir>` to use another data folder. Background startu
 
 Set a task's Priority in its detail panel: None, Low, Medium, High or Urgent. Cards show their priority; agents can set it through MCP too. `next_task` takes the highest-priority `todo` task first and breaks ties by manual card order. Dragging cards keeps its usual manual order.
 
+Set or clear a **Deadline** in a task's detail panel using your local date and time. Cards highlight overdue unfinished tasks; completed tasks keep their deadline without an overdue warning. The API and MCP `deadline_at` field uses `YYYY-MM-DDTHH:MM:SSZ` (UTC); PATCH with `null` clears it. Deadlines do not reorder the board or change `next_task` priority.
+
 Open a task to **Start timer** or **Log time** in minutes. One timer can run across the board at a time, and it keeps its start time if Brokan restarts. The task shows its entries so a mistaken completed entry can be removed. The sidebar **Dashboard** shows a seven-day bar chart of tracked time, a pie of task statuses and a donut of time by project. Running time is included; the seven-day chart groups whole entries by their start date in UTC.
 
 Use a project's ⋯ menu to **Archive project**; it moves into the sidebar **Archived** section, where you can still browse its tasks and restore it. Archived projects are excluded from All projects, search, new task choices and agents' `next_task`. Their tasks, repo links and logged time are not deleted; exports and historical Dashboard totals still include them. Restore a project to add tasks again. Older Brokan versions must be updated before opening a board with archives, so they cannot mistakenly assign archived tasks to agents.

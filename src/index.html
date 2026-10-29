@@ -217,6 +217,8 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .card .priority.medium { color: #725400; background: #fff4d6; }
 .card .priority.high { color: #a33c0e; background: #fff0e5; }
 .card .priority.urgent { color: var(--danger); background: var(--danger-bg); }
+.card .deadline-badge { display: block; width: fit-content; max-width: 100%; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.card .deadline-badge.overdue, #p-deadline-hint.overdue { color: var(--danger); font-weight: 600; }
 @media (prefers-color-scheme: dark) {
   .card .priority.medium { color: #f5ce69; background: #3b2f11; }
   .card .priority.high { color: #ffad7a; background: #42251b; }
@@ -318,6 +320,11 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
 .props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
 .props span { color: var(--text); }
+.props .deadline-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deadline-field input { min-width: 0; max-width: 100%; padding: 4px 8px; }
+.deadline-field button { font-size: 12px; padding: 4px 6px; }
+.deadline-field input:focus-visible, .deadline-field button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+#p-deadline-hint { color: var(--faint); font-size: 11px; }
 .section h3 {
   font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600;
   display: flex; align-items: center; gap: 8px;
@@ -516,6 +523,11 @@ label.setting { cursor: pointer; }
         <option value="none">None</option><option value="low">Low</option><option value="medium">Medium</option>
         <option value="high">High</option><option value="urgent">Urgent</option>
       </select></span>
+      Deadline <span class="deadline-field">
+        <input class="field" id="p-deadline" type="datetime-local" aria-label="Task deadline, local date and time" aria-describedby="p-deadline-hint">
+        <button class="ghost" id="p-deadline-clear" type="button" aria-label="Clear task deadline" hidden>Clear</button>
+        <span id="p-deadline-hint">Local time</span>
+      </span>
       Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span>
       Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>
       Created <span id="p-created"></span>

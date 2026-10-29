@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// The oldest schema version whose Brokan can still use a database at the latest one.
 /// Adding a table or a column with a default generally leaves older versions working.
@@ -74,6 +74,8 @@ const MIGRATIONS: &[&str] = &[
      CREATE TRIGGER time_entries_delete AFTER DELETE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
     // 10: archive projects without deleting their tasks, repos or time entries.
     "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));",
+    // 11: an optional UTC deadline; existing tasks remain unscheduled.
+    "ALTER TABLE tasks ADD COLUMN deadline_at TEXT;",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -159,6 +161,8 @@ pub struct Task {
     /// Work for a person: agents leave it alone, and `next_task` never picks it.
     pub human: bool,
     pub priority: String,
+    /// UTC instant, YYYY-MM-DDTHH:MM:SSZ; None means no deadline.
+    pub deadline_at: Option<String>,
     pub status: String,
     pub position: f64,
     pub created_at: String,
@@ -256,6 +260,15 @@ pub struct TaskPatch {
     pub tags: Option<String>,
     pub human: Option<bool>,
     pub priority: Option<String>,
+    /// None leaves the deadline unchanged; Some(None) clears it.
+    pub deadline_at: Option<Option<String>>,
+}
+
+/// On JSON patches, distinguish an omitted field from an explicit null (clear).
+pub fn nullable_string<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// The board's columns, left to right. New tasks go in todo, agents take theirs from
@@ -269,6 +282,43 @@ fn check_priority(priority: &str) -> Result<&str> {
     } else {
         Err(Error::Invalid(format!("unknown priority {priority:?}; use one of: {}", PRIORITIES.join(", "))))
     }
+}
+
+/// Accept only canonical UTC instants. Validating before a transaction avoids partial task writes.
+fn check_deadline(deadline: &str) -> Result<&str> {
+    let b = deadline.as_bytes();
+    let invalid = || Error::Invalid("deadline_at must be a valid UTC date/time (YYYY-MM-DDTHH:MM:SSZ)".into());
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+        || ![0..4, 5..7, 8..10, 11..13, 14..16, 17..19].iter().all(|r| b[r.clone()].iter().all(u8::is_ascii_digit))
+    {
+        return Err(invalid());
+    }
+    let number =
+        |r: std::ops::Range<usize>| -> u32 { b[r].iter().fold(0, |n, digit| n * 10 + u32::from(digit - b'0')) };
+    let year = number(0..4);
+    let month = number(5..7);
+    let day = number(8..10);
+    let hour = number(11..13);
+    let minute = number(14..16);
+    let second = number(17..19);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => 0,
+    };
+    if year == 0 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return Err(invalid());
+    }
+    Ok(deadline)
 }
 
 /// An optional column before todo, for tasks that agents leave alone.
@@ -600,7 +650,7 @@ impl Store {
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
-            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human, t.priority
+            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human, t.priority, t.deadline_at
         FROM tasks t JOIN projects p ON p.id = t.project_id";
 
     fn task_row(r: &Row) -> rusqlite::Result<Task> {
@@ -612,6 +662,7 @@ impl Store {
             tags: r.get::<_, String>(9)?.split(',').filter(|t| !t.is_empty()).map(String::from).collect(),
             human: r.get(10)?,
             priority: r.get(11)?,
+            deadline_at: r.get(12)?,
             status: r.get(4)?,
             position: r.get(5)?,
             created_at: r.get(6)?,
@@ -738,7 +789,8 @@ impl Store {
         self.create_task_in(project_id, None, title, description, None)
     }
 
-    /// Adds a task at the bottom of `status`, todo when left out.
+    /// Adds a task at the bottom of `status`, todo when left out (test helper).
+    #[cfg(test)]
     pub fn create_task_in(
         &self,
         project_id: i64,
@@ -747,16 +799,30 @@ impl Store {
         description: &str,
         priority: Option<&str>,
     ) -> Result<Task> {
+        self.create_task_with_deadline(project_id, status, title, description, priority, None)
+    }
+
+    /// Create a task with an optional UTC deadline, validating it before any write.
+    pub fn create_task_with_deadline(
+        &self,
+        project_id: i64,
+        status: Option<&str>,
+        title: &str,
+        description: &str,
+        priority: Option<&str>,
+        deadline_at: Option<&str>,
+    ) -> Result<Task> {
         let title = clean_title(title)?;
         let status = status.unwrap_or(STATUSES[0]);
         self.check_status(status)?;
         let priority = check_priority(priority.unwrap_or(PRIORITIES[0]))?;
+        let deadline_at = deadline_at.map(check_deadline).transpose()?;
         self.ensure_active_project(project_id)?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
-                "INSERT INTO tasks (project_id, title, description, status, position, priority) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![project_id, title, description.trim(), status, position, priority],
+                "INSERT INTO tasks (project_id, title, description, status, position, priority, deadline_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![project_id, title, description.trim(), status, position, priority, deadline_at],
             )?;
             Ok(c.last_insert_rowid())
         })?;
@@ -786,6 +852,9 @@ impl Store {
         if let Some(p) = &patch.priority {
             check_priority(p)?;
         }
+        if let Some(Some(deadline)) = &patch.deadline_at {
+            check_deadline(deadline)?;
+        }
         self.write(|c| {
             let current = self.get_task(id)?;
             if let Some(title) = title {
@@ -810,6 +879,14 @@ impl Store {
                 c.execute(
                     &format!("UPDATE tasks SET priority = ?1, updated_at = {NOW} WHERE id = ?2 AND priority <> ?1"),
                     params![priority, id],
+                )?;
+            }
+            if let Some(deadline_at) = &patch.deadline_at {
+                c.execute(
+                    &format!(
+                        "UPDATE tasks SET deadline_at = ?1, updated_at = {NOW} WHERE id = ?2 AND deadline_at IS NOT ?1"
+                    ),
+                    params![deadline_at, id],
                 )?;
             }
             if let Some(t) = &patch.tags {
@@ -1458,6 +1535,80 @@ mod tests {
         assert_eq!(s.dashboard().unwrap().tasks, 1);
         s.log_time(old.id, 30).unwrap();
         assert_eq!(Store::open(&path, None).unwrap().time_report(old.id).unwrap().total_seconds, 1800);
+    }
+
+    #[test]
+    fn deadline_migrates_validates_and_clears_without_partial_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..10] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', '10'), ('compatible', '10');
+                 INSERT INTO projects (slug, name) VALUES ('old', 'Old');
+                 INSERT INTO tasks (project_id, title, status, position) VALUES (1, 'Existing', 'todo', 1);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.get_task(1).unwrap().deadline_at, None);
+        for bad in [
+            "",
+            "2025-02-29T12:00:00Z",
+            "2024-04-31T12:00:00Z",
+            "2024-00-01T00:00:00Z",
+            "2024-02-29T24:00:00Z",
+            "2024-02-29T12:60:00Z",
+            "2024-02-29T12:00:00+00:00",
+            "2024-02-29",
+        ] {
+            assert!(
+                s.update_task(
+                    1,
+                    TaskPatch {
+                        title: Some("Changed".into()),
+                        deadline_at: Some(Some(bad.into())),
+                        ..Default::default()
+                    }
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+            assert!(s.create_task_with_deadline(1, None, "New", "", None, Some(bad)).is_err(), "{bad:?}");
+            assert_eq!(s.get_task(1).unwrap().title, "Existing");
+            assert_eq!(s.list_tasks(Some(1), None).unwrap().len(), 1);
+        }
+        let date = "2024-02-29T12:30:00Z";
+        let t = s.create_task_with_deadline(1, None, "Scheduled", "", None, Some(date)).unwrap();
+        assert_eq!(t.deadline_at.as_deref(), Some(date));
+        let changed = s
+            .update_task(
+                1,
+                TaskPatch {
+                    deadline_at: Some(Some("2024-12-31T23:59:59Z".into())),
+                    priority: Some("high".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.deadline_at.as_deref(), Some("2024-12-31T23:59:59Z"));
+        assert_eq!(
+            s.update_task(1, TaskPatch { status: Some("doing".into()), ..Default::default() }).unwrap().deadline_at,
+            changed.deadline_at
+        );
+        assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().deadline_at, changed.deadline_at);
+        assert_eq!(
+            s.update_task(1, TaskPatch { deadline_at: Some(None), ..Default::default() }).unwrap().deadline_at,
+            None
+        );
+        assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().deadline_at, None);
     }
 
     #[test]

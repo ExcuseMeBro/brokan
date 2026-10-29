@@ -197,6 +197,8 @@ struct CreateTaskArgs {
     human: Option<bool>,
     /// none, low, medium, high or urgent.
     priority: Option<String>,
+    /// Optional UTC deadline, YYYY-MM-DDTHH:MM:SSZ.
+    deadline_at: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -215,6 +217,9 @@ struct UpdateTaskArgs {
     human: Option<bool>,
     /// none, low, medium, high or urgent.
     priority: Option<String>,
+    /// UTC YYYY-MM-DDTHH:MM:SSZ; null clears, omit to keep current deadline.
+    #[serde(default, deserialize_with = "store::nullable_string")]
+    deadline_at: Option<Option<String>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -247,13 +252,17 @@ impl Brokan {
     /// `null` of optional fields: agents read this list in every session, so each byte counts.
     fn tools() -> ToolRouter<Self> {
         let mut router = Self::tool_router();
-        for route in router.map.values_mut() {
+        for (name, route) in &mut router.map {
             let mut schema = (*route.attr.input_schema).clone();
             schema.remove("$schema");
             // Optional fields are typed `["string", "null"]`; leaving them out of
             // `required` already says they're optional.
             if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
-                for prop in props.values_mut() {
+                for (field, prop) in props {
+                    // Unlike other optional fields, an explicit null clears a task's deadline.
+                    if name == "update_task" && field == "deadline_at" {
+                        continue;
+                    }
                     if let Some(kind) = prop.get_mut("type")
                         && let Some(first) = kind.as_array().and_then(|k| k.first()).cloned()
                     {
@@ -413,12 +422,13 @@ impl Brokan {
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let description = args.description.as_deref().unwrap_or("");
                 let priority = args.priority.map(|p| p.trim().to_ascii_lowercase());
-                let mut t = store.create_task_in(
+                let mut t = store.create_task_with_deadline(
                     project.id,
                     status.as_deref(),
                     &args.title,
                     description,
                     priority.as_deref(),
+                    args.deadline_at.as_deref(),
                 )?;
                 if args.tags.is_some() || args.human.is_some() {
                     t = store
@@ -445,6 +455,7 @@ impl Brokan {
                         project_id: None,
                         human: args.human,
                         priority: args.priority.map(|p| p.trim().to_ascii_lowercase()),
+                        deadline_at: args.deadline_at,
                     },
                 )?;
                 let moved = if before.status != after.status {
@@ -525,6 +536,9 @@ fn task_line(out: &mut String, t: &Task) {
     if t.priority != "none" {
         let _ = write!(out, " [priority: {}]", t.priority);
     }
+    if let Some(deadline) = &t.deadline_at {
+        let _ = write!(out, " [deadline: {deadline}]");
+    }
     write_tags(out, t);
     match t.comments {
         0 => {}
@@ -554,6 +568,9 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     let mut out = format!("{}#{} {}", t.project, t.id, t.title);
     write_tags(&mut out, t);
     let _ = write!(out, "\nstatus: {}, priority: {}", t.status, t.priority);
+    if let Some(deadline) = &t.deadline_at {
+        let _ = write!(out, ", deadline: {deadline}");
+    }
     if t.human {
         out.push_str(", human: for the user, not for agents");
     }

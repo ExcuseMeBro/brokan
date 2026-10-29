@@ -208,7 +208,28 @@ function ago(ts) {
 }
 
 function timeEl(ts) {
-  return el("time", { datetime: ts, title: parseTime(ts).toLocaleString() }, ago(ts));
+  return el("time", { datetime: ts, "data-relative": true, title: parseTime(ts).toLocaleString() }, ago(ts));
+}
+
+// The picker uses the user's local time, while the API stores a UTC instant.
+function localDeadline(ts) {
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function deadlineOverdue(t) {
+  return !!t.deadline_at && t.status !== "done" && new Date(t.deadline_at).getTime() < Date.now();
+}
+
+function deadlineBadge(t) {
+  if (!t.deadline_at) return null;
+  const date = new Date(t.deadline_at);
+  const overdue = deadlineOverdue(t);
+  const label = overdue ? "Overdue" : "Deadline";
+  return el("span", { class: `deadline-badge${overdue ? " overdue" : ""}`, "data-done": t.status === "done" ? "true" : "false" },
+    `${label} · `, el("time", { datetime: t.deadline_at, title: date.toLocaleString() },
+      date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })));
 }
 
 function duration(seconds) {
@@ -850,6 +871,7 @@ function card(t, showProject) {
     t.priority && t.priority !== "none"
       ? el("span", { class: `priority ${t.priority}`, title: `${t.priority} priority` },
           t.priority[0].toUpperCase() + t.priority.slice(1)) : null,
+    deadlineBadge(t),
     t.tags.length ? el("div", { class: "tags" }, t.tags.map((tag) => el("span", { class: "tag" }, tag))) : null);
   node.addEventListener("dragstart", (e) => {
     state.dragging = t.id;
@@ -1048,6 +1070,9 @@ async function refreshTask() {
   if (!statuses.includes(task.status)) status.append(el("option", { value: task.status }, task.status));
   status.value = task.status;
   if (document.activeElement !== $("#p-priority")) $("#p-priority").value = task.priority || "none";
+  if (document.activeElement !== $("#p-deadline")) $("#p-deadline").value = task.deadline_at ? localDeadline(task.deadline_at) : "";
+  $("#p-deadline-clear").hidden = !task.deadline_at;
+  updateDeadlineHint(task);
   $("#p-human").checked = task.human;
   $("#p-created").replaceChildren(timeEl(task.created_at));
   $("#p-updated").replaceChildren(timeEl(task.updated_at));
@@ -1067,6 +1092,12 @@ async function refreshTask() {
       c.body ? body : null,
       attached.length ? el("div", { class: "thumbs" }, attached.map((i) => thumb(i.file))) : null);
   }));
+}
+
+function updateDeadlineHint(task) {
+  const overdue = deadlineOverdue(task);
+  $("#p-deadline-hint").textContent = overdue ? "Overdue · local time" : "Local time";
+  $("#p-deadline-hint").classList.toggle("overdue", overdue);
 }
 
 let timeReport = null;
@@ -1177,7 +1208,8 @@ async function patchTask(fields) {
     await api("PATCH", `/tasks/${panelTask.id}`, fields);
     await refreshTask();
     loadBoard();
-  } catch (e) { toast(e.message); refreshTask(); }
+    return true;
+  } catch (e) { toast(e.message); refreshTask(); return false; }
 }
 
 // Escape undoes the field's edit; on a task just added and not saved yet, it drops the task.
@@ -1240,6 +1272,25 @@ $("#p-desc-view").addEventListener("focus", editDesc);
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 $("#p-priority").addEventListener("change", (e) => patchTask({ priority: e.target.value }));
+$("#p-deadline").addEventListener("change", async (e) => {
+  const field = e.target;
+  if (!field.value) {
+    // A half-edited picker is not a clear operation; use the explicit Clear button.
+    field.value = panelTask?.deadline_at ? localDeadline(panelTask.deadline_at) : "";
+    return;
+  }
+  const date = new Date(field.value);
+  if (!Number.isFinite(date.getTime()) || localDeadline(date.toISOString()) !== field.value.slice(0, 16)) {
+    toast("Choose a valid local date and time");
+    field.value = panelTask?.deadline_at ? localDeadline(panelTask.deadline_at) : "";
+    return;
+  }
+  const saved = await patchTask({ deadline_at: date.toISOString().replace(/\.\d{3}Z$/, "Z") });
+  if (!saved && panelTask) field.value = panelTask.deadline_at ? localDeadline(panelTask.deadline_at) : "";
+});
+$("#p-deadline-clear").addEventListener("click", async () => {
+  if (await patchTask({ deadline_at: null })) $("#p-deadline").focus();
+});
 $("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));
 
 // ---------- images ----------
@@ -1684,9 +1735,15 @@ loadSyncRemote();
 // Running time changes without a database write; refresh the dashboard periodically.
 setInterval(() => { if (state.dashboard && !document.hidden) loadDashboard(); }, 30000);
 
-// Relative times ("5m ago") drift; refresh them now and then.
+// Refresh relative timestamps and overdue state without replacing absolute deadline/time-entry dates.
 setInterval(() => {
-  document.querySelectorAll("time[datetime]").forEach((t) => { t.textContent = ago(t.getAttribute("datetime")); });
+  document.querySelectorAll("time[data-relative]").forEach((t) => { t.textContent = ago(t.getAttribute("datetime")); });
+  document.querySelectorAll(".deadline-badge").forEach((badge) => {
+    const overdue = badge.dataset.done !== "true" && new Date(badge.querySelector("time").dateTime).getTime() < Date.now();
+    badge.classList.toggle("overdue", overdue);
+    badge.firstChild.textContent = overdue ? "Overdue · " : "Deadline · ";
+  });
+  if (state.task && panelTask?.id === state.task) updateDeadlineHint(panelTask);
 }, 60000);
 
 {
