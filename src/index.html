@@ -524,6 +524,11 @@ header .sub { color: var(--muted); }
 .settings-pane .row a:hover { color: var(--text); }
 .settings-pane .row .btn { margin-left: auto; }
 .settings-pane .btn:disabled { opacity: .6; cursor: default; }
+.about-brand { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 12px 0 20px; }
+.about-brand img { display: block; width: 180px; max-width: 100%; height: auto; }
+.about-brand a { color: var(--link); font-weight: 600; text-underline-offset: 3px; }
+.about-brand a:hover { color: var(--text); }
+.about-brand a:focus-visible { outline: 2px solid var(--link); outline-offset: 4px; border-radius: 2px; }
 .setting { display: flex; align-items: center; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .setting .text span { color: var(--muted); font-size: 13px; }
@@ -690,6 +695,10 @@ label.setting { cursor: pointer; }
       </form>
       <section class="settings-pane" data-section="about">
         <h3>About</h3>
+        <div class="about-brand">
+          <img src="/logo.png" alt="bro logo" width="180" height="81">
+          <a href="https://brodev.uz" target="_blank" rel="noopener noreferrer">brodev.uz <span aria-hidden="true">↗</span></a>
+        </div>
         <div class="setting">
           <span class="text">Version<span id="settings-version"></span></span>
           <button class="btn" id="settings-update">Check for updates</button>

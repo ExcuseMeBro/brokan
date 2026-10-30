@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="src/logo.png" alt="Brokan logo" width="220">
+  <a href="https://brodev.uz"><img src="src/logo.png" alt="brodev.uz — bro logo" width="220"></a><br>
+  <a href="https://brodev.uz">brodev.uz</a>
 </p>
 
 <p align="center">
