@@ -49,6 +49,12 @@ pub struct Todo {
     pub text: String,
 }
 
+#[derive(Serialize)]
+pub struct BranchDetails {
+    pub commits: Vec<String>,
+    pub todos: Vec<Todo>,
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-C"])
@@ -136,17 +142,36 @@ fn worktrees(repo: &Path, root: &Path) -> Vec<(Option<String>, String)> {
 
 fn scan_repo(path: &Path, root: &Path) -> Result<Repo, String> {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
-    let local = git(path, &["for-each-ref", "--format=%(refname:short)%09%(upstream:short)", "refs/heads"])?;
+    let local = git(
+        path,
+        &["for-each-ref", "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track,nobracket)", "refs/heads"],
+    )?;
     let warning = (local.lines().count() > MAX_BRANCHES).then(|| format!("Showing first {MAX_BRANCHES} branches"));
-    let entries: Vec<_> = local.lines().take(MAX_BRANCHES).filter_map(|s| s.split_once('\t')).collect();
     let base = ["dev", "main", "master"]
         .into_iter()
-        .find(|candidate| entries.iter().any(|(name, _)| name == candidate))
+        .find(|candidate| local.lines().any(|line| line.split('\t').next() == Some(candidate)))
         .map(str::to_string);
+    let entries: Vec<_> = local
+        .lines()
+        .take(MAX_BRANCHES)
+        .filter_map(|s| {
+            let mut fields = s.splitn(3, '\t');
+            Some((fields.next()?, fields.next()?, fields.next()?))
+        })
+        .collect();
+    // Git computes upstream ahead/behind in for-each-ref and base divergence in
+    // one pass, instead of starting 2-3 Git processes for every local branch.
+    let not_merged = base.as_ref().map(|base| {
+        git(
+            path,
+            &["for-each-ref", &format!("--no-merged=refs/heads/{base}"), "--format=%(refname:short)", "refs/heads"],
+        )
+        .map(|output| output.lines().map(str::to_string).collect::<HashSet<_>>())
+    });
     let wt = worktrees(path, root);
     let stash_count = git(path, &["stash", "list", "--format=%gd"]).unwrap_or_default().lines().count();
     let mut branches = Vec::new();
-    for (name, upstream) in entries {
+    for (name, upstream, track) in entries {
         let worktree = wt.iter().find(|(branch, _)| branch.as_deref() == Some(name)).map(|(_, p)| p.clone());
         let status =
             worktree.as_ref().map(|p| git(Path::new(p), &["status", "--porcelain", "--untracked-files=normal"]));
@@ -155,36 +180,22 @@ fn scan_repo(path: &Path, root: &Path) -> Result<Repo, String> {
         if let Some(Err(error)) = status {
             errors.push(format!("status: {error}"));
         }
-        let upstream_unknown =
-            upstream.is_empty() || git(path, &["rev-parse", "--verify", "--quiet", upstream]).is_err();
-        let unpushed = if upstream_unknown {
+        let upstream_unknown = upstream.is_empty() || track == "gone";
+        let unpushed = !upstream_unknown
+            && track.split(',').any(|part| {
+                part.trim().strip_prefix("ahead ").is_some_and(|count| count.parse::<usize>().is_ok_and(|n| n > 0))
+            });
+        let unmerged = if base.as_deref() == Some(name) {
             false
         } else {
-            match git(path, &["rev-list", "--count", &format!("{upstream}..{name}")]) {
-                Ok(s) => s.trim().parse::<usize>().unwrap_or(0) > 0,
-                Err(error) => {
-                    errors.push(format!("upstream: {error}"));
-                    false
-                }
-            }
-        };
-        let unmerged = if let Some(b) = base.as_deref().filter(|b| *b != name) {
-            match git(path, &["rev-list", "--count", &format!("{b}..{name}")]) {
-                Ok(s) => s.trim().parse::<usize>().unwrap_or(0) > 0,
-                Err(error) => {
+            match &not_merged {
+                Some(Ok(branches)) => branches.contains(name),
+                Some(Err(error)) => {
                     errors.push(format!("base: {error}"));
                     false
                 }
+                None => false,
             }
-        } else {
-            false
-        };
-        let commits =
-            git(path, &["log", "-3", "--format=%s", name]).unwrap_or_default().lines().map(str::to_string).collect();
-        let todos = if let Some(b) = base.as_deref().filter(|b| *b != name) {
-            diff(path, b, name).ok().flatten().map(|text| added_todos(&text)).unwrap_or_default()
-        } else {
-            Vec::new()
         };
         branches.push(Branch {
             name: name.into(),
@@ -195,8 +206,8 @@ fn scan_repo(path: &Path, root: &Path) -> Result<Repo, String> {
             unmerged,
             upstream_unknown,
             status_error: (!errors.is_empty()).then(|| errors.join("; ")),
-            commits,
-            todos,
+            commits: Vec::new(),
+            todos: Vec::new(),
         });
     }
     let worktrees = wt
@@ -256,6 +267,36 @@ pub fn scan(configured: Option<&Path>) -> Result<Overview, String> {
     Ok(Overview { root: Some(root.display().to_string()), repos, warnings })
 }
 
+/// Expensive commit and diff details are read only when a branch is expanded.
+/// Resolve the repository and branch against the configured root and local refs;
+/// neither query parameter may become a filesystem path or a Git option.
+pub fn details(configured: Option<&Path>, repo: &str, branch: &str) -> Result<BranchDetails, String> {
+    let root = configured.ok_or("Git root is not configured")?.canonicalize().map_err(|e| e.to_string())?;
+    if repo.is_empty() || repo == "." || repo == ".." || repo.contains('/') {
+        return Err("Invalid repository name".into());
+    }
+    let path = root.join(repo);
+    if !path.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_dir())
+        || !path.join(".git").exists()
+        || !path.canonicalize().is_ok_and(|canonical| canonical.parent() == Some(root.as_path()))
+    {
+        return Err("Repository not found in configured folder".into());
+    }
+    let local = git(&path, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
+    if !local.lines().any(|name| name == branch) {
+        return Err("Local branch not found".into());
+    }
+    let reference = format!("refs/heads/{branch}");
+    let commits = git(&path, &["log", "-3", "--format=%s", &reference])?.lines().map(str::to_string).collect();
+    let base = ["dev", "main", "master"].into_iter().find(|name| local.lines().any(|line| line == *name));
+    let todos = if let Some(base) = base.filter(|base| *base != branch) {
+        diff(&path, base, &reference)?.map(|text| added_todos(&text)).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    Ok(BranchDetails { commits, todos })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,10 +345,35 @@ mod tests {
         assert!(feature.unmerged);
         assert!(feature.upstream_unknown);
         assert!(!feature.unpushed); // Without an upstream, do not claim it is pushed or unpushed.
-        assert_eq!(feature.todos.len(), 1);
-        assert_eq!(feature.todos[0].line, 2);
+        assert!(feature.commits.is_empty() && feature.todos.is_empty()); // Lazy until expanded.
+        let expanded = details(Some(temp.path()), "project", "feature").unwrap();
+        assert_eq!(expanded.todos.len(), 1);
+        assert_eq!(expanded.todos[0].line, 2);
+        assert_eq!(expanded.commits[0], "Add feature");
+        assert!(details(Some(temp.path()), "../project", "feature").is_err());
+        assert!(details(Some(temp.path()), "project", "--help").is_err());
         assert!(project.worktrees.iter().any(|w| w.contains("feature")));
         assert!(project.worktrees.iter().any(|w| w.contains("detached HEAD")));
         assert_eq!(git(&repo, &["status", "--porcelain"]).unwrap(), before);
+
+        // One bulk for-each-ref query must still distinguish ahead from no upstream.
+        let bare = temp.path().join("remote.git");
+        let init = Command::new("git").args(["init", "--bare", "-q"]).arg(&bare).output().unwrap();
+        assert!(init.status.success());
+        run(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        run(&["push", "-qu", "origin", "feature"]);
+        fs::write(repo.join("readme"), "start\nTODO later\nMore work\n").unwrap();
+        run(&["commit", "-qam", "More work"]);
+        let scanned = scan(Some(temp.path())).unwrap();
+        let feature = scanned.repos[0].branches.iter().find(|branch| branch.name == "feature").unwrap();
+        assert!(!feature.upstream_unknown);
+        assert!(feature.unpushed);
+        assert!(feature.unmerged);
+
+        run(&["update-ref", "-d", "refs/remotes/origin/feature"]);
+        let missing = scan(Some(temp.path())).unwrap();
+        let feature = missing.repos[0].branches.iter().find(|branch| branch.name == "feature").unwrap();
+        assert!(feature.upstream_unknown);
+        assert!(!feature.unpushed); // A missing tracking ref is not evidence of ahead/behind.
     }
 }

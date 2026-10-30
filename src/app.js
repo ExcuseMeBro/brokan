@@ -581,7 +581,31 @@ function renderGitOverview() {
         el("ul", {}, ...r.worktrees.map((w) => el("li", {}, w))))),
     visible.length ? el("div", { class: "git-list" }, ...visible.map(({ repo, branch }) => {
       const flags = gitFlags(branch, repo);
-      return el("details", { class: "git-branch" },
+      const results = el("div", { class: "git-branch-results", "aria-live": "polite" },
+        el("p", {}, "Expand to load commits and TODOs…"));
+      let loading = false;
+      let loaded = false;
+      async function loadDetails() {
+        if (loading || loaded) return;
+        loading = true;
+        results.replaceChildren(el("p", {}, "Loading branch details…"));
+        try {
+          const details = await api("GET", `/git-overview/details?repo=${encodeURIComponent(repo.name)}&branch=${encodeURIComponent(branch.name)}`);
+          results.replaceChildren(
+            el("h3", {}, "Recent commits"),
+            details.commits.length ? el("ul", {}, ...details.commits.map((c) => el("li", {}, c))) : el("p", {}, "No commits"),
+            el("h3", {}, "New TODO / FIXME / HACK lines since base"),
+            details.todos.length ? el("ul", {}, ...details.todos.map((t) =>
+              el("li", {}, el("code", {}, `${t.file}:${t.line}`), " ", t.text))) : el("p", {}, "None found (large diffs may be skipped)."));
+          loaded = true;
+        } catch (error) {
+          results.replaceChildren(el("p", { role: "alert", class: "git-warning" }, error.message),
+            el("button", { class: "btn", type: "button", onclick: loadDetails }, "Retry details"));
+        } finally {
+          loading = false;
+        }
+      }
+      return el("details", { class: "git-branch", ontoggle: (e) => e.currentTarget.open && loadDetails() },
         el("summary", {}, icon("branch"), el("strong", {}, branch.name),
           el("span", { class: "git-repo" }, repo.name),
           el("span", { class: "git-badges" }, ...flags.map((f) => el("span", { class: "git-badge" }, f)))),
@@ -590,12 +614,7 @@ function renderGitOverview() {
           el("p", {}, "Upstream: ", branch.upstream || "Not configured"),
           el("p", {}, "Base: ", repo.base || "No dev/main/master branch"),
           branch.status_error ? el("p", { class: "git-warning" }, branch.status_error) : null,
-          el("p", {}, `Stashes in repository: ${repo.stash_count}`),
-          el("h3", {}, "Recent commits"),
-          branch.commits.length ? el("ul", {}, ...branch.commits.map((c) => el("li", {}, c))) : el("p", {}, "No commits"),
-          el("h3", {}, "New TODO / FIXME / HACK lines since base"),
-          branch.todos.length ? el("ul", {}, ...branch.todos.map((t) =>
-            el("li", {}, el("code", {}, `${t.file}:${t.line}`), " ", t.text))) : el("p", {}, "None found (large diffs may be skipped).")));
+          el("p", {}, `Stashes in repository: ${repo.stash_count}`), results));
     })) : el("p", { class: "git-empty" }, repos.length ? "No branches match these filters." : "No Git repositories found directly inside this folder."));
 }
 

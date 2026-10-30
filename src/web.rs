@@ -128,6 +128,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/board", get(board))
         .route("/api/dashboard", get(dashboard))
         .route("/api/git-overview", get(git_overview))
+        .route("/api/git-overview/details", get(git_overview_details))
         .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
@@ -236,6 +237,23 @@ type Shared = State<Arc<Home>>;
 
 async fn git_overview(State(home): Shared) -> Response {
     let result = tokio::task::spawn_blocking(move || crate::git_overview::scan(home.git_root.as_deref())).await;
+    match result {
+        Ok(Ok(data)) => Json(data).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitDetailQuery {
+    repo: String,
+    branch: String,
+}
+
+async fn git_overview_details(State(home): Shared, Query(q): Query<GitDetailQuery>) -> Response {
+    let result =
+        tokio::task::spawn_blocking(move || crate::git_overview::details(home.git_root.as_deref(), &q.repo, &q.branch))
+            .await;
     match result {
         Ok(Ok(data)) => Json(data).into_response(),
         Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
