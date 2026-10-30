@@ -494,7 +494,7 @@ function svgNode(tag, attrs = {}) {
 
 // SVG paths, rather than a chart dependency: works with the existing CSP and
 // remains readable as a labelled list when charts are not visible.
-function ringChart(rows, donut, label, total) {
+function ringChart(rows, donut, label, total, centerText) {
   const svg = svgNode("svg", { class: "chart-svg", viewBox: "0 0 160 160", role: "img", "aria-label": label });
   let start = -Math.PI / 2;
   for (const row of rows) {
@@ -514,10 +514,35 @@ function ringChart(rows, donut, label, total) {
     svg.append(svgNode("circle", { cx: 80, cy: 80, r: 43, fill: "var(--col)" }));
     const text = svgNode("text", { x: 80, y: 86, "text-anchor": "middle", fill: "var(--text)",
       "font-size": 17, "font-weight": 600 });
-    text.textContent = duration(total);
+    text.textContent = centerText;
     svg.append(text);
   }
   return svg;
+}
+
+function mcpLatency(ms) {
+  if (ms == null) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${ms} ms`;
+}
+
+function mcpDayChart(days, latency) {
+  const max = Math.max(1, ...days.map((d) => latency ? d.slowest_ms || 0 : d.calls));
+  const label = latency ? "Daily fastest and slowest MCP response time" : "Daily MCP tool calls";
+  const bar = (value, type, day) => el("span", {
+    class: `mcp-bar ${type}`, style: `height:${value ? Math.max(3, value / max * 100) : 0}%`,
+    title: `${day}: ${latency ? mcpLatency(value) : `${value} calls`}`,
+  });
+  return el("div", { class: "mcp-scroll", tabindex: "0", role: "region", "aria-label": `${label}, last 30 UTC days` },
+    el("div", { class: "mcp-chart" }, ...days.map((d, i) => {
+      const details = latency
+        ? (d.calls ? `fastest ${mcpLatency(d.fastest_ms)}, slowest ${mcpLatency(d.slowest_ms)}` : "no calls")
+        : `${d.calls} calls`;
+      return el("div", { class: "mcp-day", role: "img", "aria-label": `${d.day}: ${details}` },
+        el("div", { class: "mcp-tracks" }, ...(latency
+          ? [bar(d.fastest_ms, "fast", d.day), bar(d.slowest_ms, "slow", d.day)]
+          : [bar(d.calls, "calls", d.day)])),
+        el("span", { class: "mcp-tick", title: d.day }, i % 5 === 0 || i === days.length - 1 ? d.day.slice(5) : "·"));
+    })));
 }
 
 function renderDashboard() {
@@ -543,7 +568,8 @@ function renderDashboard() {
       el("span", { class: "name" }, row.name), el("span", { class: "value" }, format(row.value)))));
   const circular = (rows, donut, value, format, empty) => value
     ? el("div", { class: "chart-content" },
-      ringChart(rows, donut, rows.map((r) => `${r.name}: ${format(r.value)}`).join(", "), value), legend(rows, format))
+      ringChart(rows, donut, rows.map((r) => `${r.name}: ${format(r.value)}`).join(", "), value,
+        donut === "tasks" ? String(value) : duration(value)), legend(rows, format))
     : el("p", { class: "chart-empty" }, empty);
   const days = data.days || [];
   const max = Math.max(1, ...days.map((d) => d.seconds));
@@ -552,6 +578,9 @@ function renderDashboard() {
     el("div", { class: "bar-day" }, el("span", { class: "amount" }, d.seconds ? duration(d.seconds) : "0"),
       el("span", { class: "track" }, el("span", { class: "fill", style: `height:${d.seconds / max * 100}%` })),
       el("span", { class: "day", title: d.day }, d.day.slice(5)))));
+  const mcp = data.mcp;
+  const mcpDays = mcp?.days || [];
+  const mcpHasCalls = mcp?.total_calls > 0;
   const open = data.tasks - (data.statuses.find((s) => s.status === "done")?.count || 0);
   const now = new Date();
   const deadlines = (data.deadlines || []).filter((d) => deadlineDaysLeft(d.deadline_at, now) <= 7);
@@ -574,14 +603,29 @@ function renderDashboard() {
       stat("Tracked time", duration(data.total_seconds), data.running_seconds ? `${duration(data.running_seconds)} running now` : "All time"),
       stat("Tasks", String(data.tasks), `${open} open`),
       stat("Projects", String(data.projects.length), `${projectRows.length} with tracked time`)),
+    el("div", { class: "dashboard-stats" },
+      stat("MCP tool calls", String(mcp?.total_calls || 0), "Last 30 UTC days"),
+      stat("Average calls / hour", mcp?.average_per_hour > 0 && mcp.average_per_hour < .01
+        ? "<0.01" : (mcp?.average_per_hour || 0).toFixed(2), "Elapsed clock hours in this 30-day window"),
+      el("div", { class: "dashboard-stat mcp-range" }, el("span", { class: "label" }, "Fastest / slowest"),
+        el("strong", {}, `${mcpLatency(mcp?.fastest_ms)} / ${mcpLatency(mcp?.slowest_ms)}`),
+        el("small", {}, "MCP tool response · last 30 UTC days"))),
     chart("NEXT UP", "Deadlines · next 7 days", deadlineList,
       "Local calendar days. Shows up to 12 nearest upcoming and 5 recently overdue tasks; completed and archived work is excluded.", true),
     el("div", { class: "dashboard-charts" },
+      chart("MCP / 30 DAYS", "Tool calls by UTC day",
+        mcpHasCalls ? mcpDayChart(mcpDays, false) : el("p", { class: "chart-empty" }, "No MCP tool calls recorded yet."),
+        "Counts successful tools and tool-returned errors. Earlier calls, before this version, are not available.", true),
+      chart("MCP / RESPONSE TIME", "Daily fastest and slowest",
+        mcpHasCalls ? el("div", {}, el("p", { class: "mcp-legend" },
+          el("span", { class: "mcp-key fast" }, "Fastest"), el("span", { class: "mcp-key slow" }, "Slowest")),
+          mcpDayChart(mcpDays, true)) : el("p", { class: "chart-empty" }, "No MCP response times recorded yet."),
+        "Server-side elapsed time, in milliseconds; UTC days. Only daily counts and min/max are stored — no arguments or replies.", true),
       chart("01 / ACTIVITY", "Time logged · last 7 days",
         days.some((d) => d.seconds > 0) ? bars : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),
         "Entries are grouped by start date in UTC. Running time is included.", true),
       chart("02 / WORK", "Tasks by status",
-        circular(statusRows, false, data.tasks, (v) => `${v} task${v === 1 ? "" : "s"}`, "No tasks yet. Create one to see its status."),
+        circular(statusRows, "tasks", data.tasks, (v) => `${v} task${v === 1 ? "" : "s"}`, "No tasks yet. Create one to see its status."),
         "All tasks, including older completed work."),
       chart("03 / TIME", "Time by project",
         circular(projectRows, true, data.total_seconds, duration, "No tracked time yet. Start a task timer or log minutes."),

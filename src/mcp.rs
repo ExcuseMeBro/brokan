@@ -5,6 +5,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -269,9 +270,15 @@ impl Brokan {
     /// outcome into text; errors go back to the agent as tool errors it can read.
     async fn run(&self, f: impl FnOnce(&Ctx, &Store) -> store::Result<String> + Send + 'static) -> CallToolResult {
         let ctx = self.ctx.clone();
+        let started = Instant::now();
         let outcome = tokio::task::spawn_blocking(move || {
             let store = ctx.home.store().map_err(|e| e.to_string())?;
-            f(&ctx, &store).map_err(|e| e.to_string())
+            let result = f(&ctx, &store).map_err(|e| e.to_string());
+            if let Err(e) = store.record_mcp_call(started.elapsed()) {
+                // A telemetry write must not turn a successful tool into a failure.
+                eprintln!("Brokan MCP metrics unavailable: {e}");
+            }
+            result
         })
         .await
         .unwrap_or_else(|e| Err(format!("internal error: {e}")));

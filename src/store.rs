@@ -79,6 +79,14 @@ const MIGRATIONS: &[&str] = &[
     // 12: optional planned start; a deadline without a start is a milestone.
     "ALTER TABLE tasks ADD COLUMN start_at TEXT
         CHECK (start_at IS NULL OR deadline_at IS NULL OR start_at <= deadline_at);",
+    // 13: aggregated tool-call timings only. No names, arguments, responses or prompts.
+    // Deliberately no changes trigger: MCP telemetry must not redraw every board.
+    "CREATE TABLE mcp_daily_stats (
+         day TEXT PRIMARY KEY,
+         calls INTEGER NOT NULL CHECK (calls > 0),
+         fastest_ms INTEGER NOT NULL CHECK (fastest_ms > 0),
+         slowest_ms INTEGER NOT NULL CHECK (slowest_ms >= fastest_ms)
+     );",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -251,7 +259,26 @@ pub struct DashboardDeadline {
 }
 
 #[derive(Debug, Serialize)]
+pub struct McpDay {
+    pub day: String,
+    pub calls: i64,
+    pub fastest_ms: Option<i64>,
+    pub slowest_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct McpStats {
+    pub days: Vec<McpDay>,
+    pub total_calls: i64,
+    /// Total calls divided by elapsed clock hours since the first UTC day in this window.
+    pub average_per_hour: f64,
+    pub fastest_ms: Option<i64>,
+    pub slowest_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Dashboard {
+    pub mcp: McpStats,
     pub statuses: Vec<StatusCount>,
     pub projects: Vec<ProjectTime>,
     pub days: Vec<DayTime>,
@@ -1150,6 +1177,57 @@ impl Store {
         self.time_report(task_id)
     }
 
+    /// A tool call is recorded after execution; only UTC day and elapsed milliseconds
+    /// are persisted. A failed metric write never changes the tool result.
+    pub fn record_mcp_call(&self, elapsed: Duration) -> Result<()> {
+        let now = Self::unix_now(&self.conn)?;
+        let ms = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX).max(1);
+        self.record_mcp_call_at(now, ms)
+    }
+
+    fn record_mcp_call_at(&self, now: i64, ms: i64) -> Result<()> {
+        if ms < 1 {
+            return Err(Error::Invalid("MCP call duration must be positive".into()));
+        }
+        self.write(|c| {
+            c.execute(
+                "INSERT INTO mcp_daily_stats (day, calls, fastest_ms, slowest_ms)
+                 VALUES (date(?1, 'unixepoch'), 1, ?2, ?2)
+                 ON CONFLICT(day) DO UPDATE SET calls = calls + 1,
+                    fastest_ms = min(fastest_ms, excluded.fastest_ms),
+                    slowest_ms = max(slowest_ms, excluded.slowest_ms)",
+                params![now, ms],
+            )?;
+            c.execute("DELETE FROM mcp_daily_stats WHERE day < date(?1, 'unixepoch', '-29 days')", [now])?;
+            Ok(())
+        })
+    }
+
+    fn mcp_stats_at(&self, now: i64) -> Result<McpStats> {
+        let mut stmt = self.conn.prepare(
+            "WITH RECURSIVE days(day, n) AS (
+                 SELECT date(?1, 'unixepoch', '-29 days'), 1 UNION ALL
+                 SELECT date(day, '+1 day'), n + 1 FROM days WHERE n < 30
+             ) SELECT days.day, coalesce(m.calls, 0), m.fastest_ms, m.slowest_ms FROM days
+             LEFT JOIN mcp_daily_stats m ON m.day = days.day ORDER BY days.day",
+        )?;
+        let days: Vec<McpDay> = stmt
+            .query_map([now], |r| {
+                Ok(McpDay { day: r.get(0)?, calls: r.get(1)?, fastest_ms: r.get(2)?, slowest_ms: r.get(3)? })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let total_calls = days.iter().map(|d| d.calls).sum();
+        let fastest_ms = days.iter().filter_map(|d| d.fastest_ms).min();
+        let slowest_ms = days.iter().filter_map(|d| d.slowest_ms).max();
+        let start: i64 = self.conn.query_row(
+            "SELECT CAST(strftime('%s', date(?1, 'unixepoch', '-29 days')) AS INTEGER)",
+            [now],
+            |r| r.get(0),
+        )?;
+        let elapsed_hours = (now - start).max(1) as f64 / 3600.0;
+        Ok(McpStats { days, total_calls, average_per_hour: total_calls as f64 / elapsed_hours, fastest_ms, slowest_ms })
+    }
+
     /// Counts every task, even older done tasks omitted from the board response.
     /// The seven UTC days group each entry by when it began; manual entries use
     /// the day they were logged. Active elapsed time is included at query time.
@@ -1215,7 +1293,16 @@ impl Store {
             })?;
             deadlines.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
-        Ok(Dashboard { statuses, projects, days, total_seconds, running_seconds, tasks, deadlines })
+        Ok(Dashboard {
+            mcp: self.mcp_stats_at(now)?,
+            statuses,
+            projects,
+            days,
+            total_seconds,
+            running_seconds,
+            tasks,
+            deadlines,
+        })
     }
 
     // Comments
@@ -1476,6 +1563,63 @@ mod tests {
         let v: String =
             s.conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, MIGRATIONS.len().to_string());
+    }
+
+    #[test]
+    fn mcp_stats_migrate_from_v12_without_changing_tasks() {
+        let (_dir, s) = store();
+        let p = s.create_project("api", "", None).unwrap();
+        let task = s.create_task(p.id, "Keep me", "").unwrap();
+        s.conn
+            .execute_batch(
+                "DROP TABLE mcp_daily_stats;
+             UPDATE meta SET value = '12' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.get_task(task.id).unwrap().title, "Keep me");
+        assert_eq!(s.mcp_stats_at(1_761_824_800).unwrap().days.len(), 30);
+        assert_eq!(s.mcp_stats_at(1_761_824_800).unwrap().total_calls, 0);
+        s.migrate().unwrap();
+    }
+
+    #[test]
+    fn mcp_stats_roll_up_min_max_include_empty_days_and_expire_older_data() {
+        let (dir, s) = store();
+        let now: i64 = s.conn.query_row("SELECT unixepoch('2026-10-30 12:00:00')", [], |r| r.get(0)).unwrap();
+        let before: String =
+            s.conn.query_row("SELECT value FROM meta WHERE key = 'changes'", [], |r| r.get(0)).unwrap();
+        s.record_mcp_call_at(now - 30 * 86_400, 900).unwrap();
+        s.record_mcp_call_at(now - 29 * 86_400, 700).unwrap();
+        s.record_mcp_call_at(now, 4).unwrap();
+        s.record_mcp_call_at(now, 30).unwrap();
+        assert!(s.record_mcp_call_at(now, 0).is_err());
+        let stats = s.mcp_stats_at(now).unwrap();
+        assert_eq!(stats.days.len(), 30);
+        assert_eq!(stats.days.first().unwrap().day, "2026-10-01");
+        assert_eq!(stats.days.first().unwrap().calls, 1);
+        assert_eq!(stats.days[1].calls, 0);
+        assert_eq!(stats.days[1].fastest_ms, None);
+        assert_eq!(stats.days.last().unwrap().day, "2026-10-30");
+        assert_eq!(
+            (
+                stats.days.last().unwrap().calls,
+                stats.days.last().unwrap().fastest_ms,
+                stats.days.last().unwrap().slowest_ms
+            ),
+            (2, Some(4), Some(30))
+        );
+        assert_eq!((stats.total_calls, stats.fastest_ms, stats.slowest_ms), (3, Some(4), Some(700)));
+        assert!((stats.average_per_hour - 3.0 / 708.0).abs() < 1e-10);
+        assert_eq!(s.conn.query_row("SELECT count(*) FROM mcp_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            s.conn.query_row("SELECT value FROM meta WHERE key = 'changes'", [], |r| r.get::<_, String>(0)).unwrap(),
+            before
+        );
+        drop(s);
+        let reopened = Store::open(&dir.path().join("brokan.db"), None).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(reopened.mcp_stats_at(now).unwrap().total_calls, 3);
     }
 
     #[test]
