@@ -46,7 +46,7 @@ test('table renders semantic sortable headers, all supplied rows and task links'
   const el = (tag, attrs = {}, ...children) => ({ tag, attrs, children: children.flat().filter((v) => v != null && v !== false) });
   const walk = (node, match) => (!node || typeof node !== 'object') ? []
     : [...(match(node) ? [node] : []), ...(node.children || []).flatMap((child) => walk(child, match))];
-  const render = vm.runInNewContext(`(${body('renderTable', 'isHumanOnly')})`, {
+  const render = vm.runInNewContext(`(${body('renderTable', 'localDayNumber')})`, {
     state, $, el, sortTableTasks, isHumanOnly: () => false,
     document: { activeElement: null }, showNewProject() {}, openTask: async () => {},
     projectGlyph: () => '', statusIcon: () => '', deadlineOverdue: () => false,
@@ -79,7 +79,7 @@ test('table view shows filtered human tasks, archived projects and hides for das
     tableSort: { key: 'status', direction: 'asc' }, board: { statuses, projects: [{ ...projects[0], archived: true }],
       tasks: [{ ...tasks[1], human: true }, { ...tasks[3], human: false }] } };
   const el = (tag, attrs = {}, ...children) => ({ tag, attrs, children: children.flat().filter((v) => v != null && v !== false) });
-  const render = vm.runInNewContext(`(${body('renderTable', 'isHumanOnly')})`, {
+  const render = vm.runInNewContext(`(${body('renderTable', 'localDayNumber')})`, {
     state, $: () => root, el, sortTableTasks, isHumanOnly: () => true,
     document: { activeElement: null }, showNewProject() {}, openTask: async () => {},
     projectGlyph: () => '', statusIcon: () => '', deadlineOverdue: () => false,

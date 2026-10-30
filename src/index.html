@@ -146,7 +146,7 @@ header .sub { color: var(--muted); }
 #new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
 #new-task[hidden], #human-only[hidden] { display: none; }
 #new-task .icon svg { width: 16px; height: 16px; }
-/* Board and table share the project and filters; the choice is local to this browser. */
+/* All task views share the project and filters; the choice is local to this browser. */
 .view-switch { display: flex; gap: 2px; background: var(--field); border-radius: 10px; padding: 3px; }
 .view-switch[hidden] { display: none; }
 .view-switch button { border: 0; border-radius: 8px; padding: 5px 10px; background: none; color: var(--muted); }
@@ -273,6 +273,45 @@ header .sub { color: var(--muted); }
 .task-table td .icon, .task-table td .status-icon { vertical-align: middle; margin-right: 7px; }
 .task-table td.overdue { color: var(--danger); font-weight: 600; }
 .task-table td time { font-variant-numeric: tabular-nums; }
+/* Calendar and Gantt share one local-month navigator and the board's task/project colors. */
+#timeline-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 0 24px 24px; }
+#timeline-view[hidden] { display: none; }
+.timeline-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.timeline-heading h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.timeline-heading p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+.timeline-controls { display: inline-flex; gap: 6px; }
+.timeline-controls .btn { min-height: 34px; padding: 5px 12px; border-radius: 8px; }
+#timeline-view button:focus-visible, #timeline-view a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.timeline-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
+.timeline-empty { color: var(--muted); padding: 24px; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(130px, 1fr)); min-width: 910px; }
+.calendar-weekday { position: sticky; top: 0; z-index: 1; padding: 9px 12px; background: var(--col); color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
+.calendar-cell { min-height: 132px; min-width: 0; padding: 8px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.calendar-cell:nth-child(7n) { border-right: 0; }
+.calendar-cell.outside { background: var(--field); }
+.calendar-cell h3 { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.calendar-cell.today h3 span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--accent-text); background: var(--accent); }
+.calendar-events { list-style: none; padding: 0; margin: 0; display: grid; align-content: start; gap: 4px; max-height: 160px; overflow: auto; }
+.calendar-events li { padding: 4px 6px; border-left: 3px solid var(--event-color); border-radius: 3px 7px 7px 3px; background: var(--col); font-size: 12px; }
+.calendar-events .event-kind { display: block; font-size: 11px; color: var(--muted); }
+.calendar-events a { display: block; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
+.calendar-events a:hover { text-decoration: underline; }
+.gantt-chart { border-spacing: 0; table-layout: fixed; text-align: left; }
+.gantt-label-col { width: 220px; }
+.gantt-chart col:not(.gantt-label-col) { width: 38px; }
+.gantt-chart thead th { position: sticky; top: 0; z-index: 2; height: 34px; border-bottom: 1px solid var(--border); background: var(--col); color: var(--muted); font-size: 11px; font-weight: 500; text-align: center; }
+.gantt-chart thead th.today { color: var(--link); font-weight: 700; }
+.gantt-chart .gantt-task { position: sticky; left: 0; z-index: 1; text-align: left; padding: 8px 10px; background: var(--bg); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.gantt-chart thead .gantt-task { z-index: 3; background: var(--col); }
+.gantt-title { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+.gantt-meta { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.gantt-chart td { height: 44px; padding: 3px; border-bottom: 1px solid var(--border); background: repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 38px); }
+.gantt-slot .gantt-bar { display: block; min-height: 28px; padding: 5px 8px; border-radius: 7px; background: color-mix(in srgb, var(--event-color) 28%, var(--bg)); border-left: 3px solid var(--event-color); }
+.gantt-slot a { color: var(--text); text-decoration: none; font-size: 12px; font-weight: 500; }
+.gantt-bar a { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gantt-marker { display: block; height: 28px; }
+.gantt-marker a { display: inline-grid; place-items: center; width: 24px; height: 24px; font-size: 0; }
+.gantt-marker a::before { content: ""; width: 12px; height: 12px; transform: rotate(45deg); border-radius: 2px; background: var(--event-color); }
 /* Dashboard: familiar board typography, quiet chart cards, explicit values beside every graphic. */
 #dashboard { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 28px; }
 #dashboard[hidden] { display: none; }
@@ -519,7 +558,7 @@ label.setting { cursor: pointer; }
   .nav .archive-items { display: flex; padding-left: 0; }
   #new-project-toggle { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
-  #table-view { padding: 0 12px 12px; }
+  #table-view, #timeline-view { padding: 0 12px 12px; }
   .view-switch button { min-height: 34px; }
   .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   #settings-nav { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -546,12 +585,15 @@ label.setting { cursor: pointer; }
     <div class="view-switch" id="view-switch" role="group" aria-label="Task view" hidden>
       <button type="button" id="view-board" aria-pressed="true">Board</button>
       <button type="button" id="view-table" aria-pressed="false">Table</button>
+      <button type="button" id="view-calendar" aria-pressed="false">Calendar</button>
+      <button type="button" id="view-gantt" aria-pressed="false">Gantt</button>
     </div>
     <button class="ghost" id="human-only" title="Show only human tasks (h)" aria-label="Show only human tasks" aria-pressed="false" hidden><span class="icon" data-icon="human"></span></button>
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
   <section id="table-view" aria-label="Tasks in table view" hidden></section>
+  <section id="timeline-view" aria-label="Tasks in calendar or Gantt view" hidden></section>
   <section id="dashboard" aria-label="Dashboard" hidden></section>
 </main>
 
@@ -571,6 +613,11 @@ label.setting { cursor: pointer; }
         <option value="none">None</option><option value="low">Low</option><option value="medium">Medium</option>
         <option value="high">High</option><option value="urgent">Urgent</option>
       </select></span>
+      Planned start <span class="deadline-field">
+        <input class="field" id="p-start" type="datetime-local" aria-label="Planned start, local date and time">
+        <button class="ghost" id="p-start-clear" type="button" aria-label="Clear planned start" hidden>Clear</button>
+        <span>Local time</span>
+      </span>
       Deadline <span class="deadline-field">
         <input class="field" id="p-deadline" type="datetime-local" aria-label="Task deadline, local date and time" aria-describedby="p-deadline-hint">
         <button class="ghost" id="p-deadline-clear" type="button" aria-label="Clear task deadline" hidden>Clear</button>

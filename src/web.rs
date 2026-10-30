@@ -378,19 +378,20 @@ struct NewTask {
     #[serde(default)]
     description: String,
     priority: Option<String>,
+    start_at: Option<String>,
     deadline_at: Option<String>,
 }
 
 async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     with_store(home, move |_, s| {
         let project = s.find_project(&t.project)?;
-        s.create_task_with_deadline(
+        s.create_task_with_schedule(
             project.id,
             None,
             &t.title,
             &t.description,
             t.priority.as_deref(),
-            t.deadline_at.as_deref(),
+            store::Schedule { start_at: t.start_at.as_deref(), deadline_at: t.deadline_at.as_deref() },
         )
     })
     .await
@@ -455,6 +456,8 @@ struct Patch {
     human: Option<bool>,
     priority: Option<String>,
     #[serde(default, deserialize_with = "store::nullable_string")]
+    start_at: Option<Option<String>>,
+    #[serde(default, deserialize_with = "store::nullable_string")]
     deadline_at: Option<Option<String>>,
 }
 
@@ -471,6 +474,7 @@ async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Pat
                 tags: p.tags,
                 human: p.human,
                 priority: p.priority,
+                start_at: p.start_at,
                 deadline_at: p.deadline_at,
             },
         )
@@ -733,10 +737,15 @@ mod tests {
     #[test]
     fn deadline_patch_distinguishes_omitted_from_null() {
         let omitted: Patch = serde_json::from_str("{}").unwrap();
-        let cleared: Patch = serde_json::from_str(r#"{"deadline_at":null}"#).unwrap();
-        let set: Patch = serde_json::from_str(r#"{"deadline_at":"2024-02-29T12:30:00Z"}"#).unwrap();
+        let cleared: Patch = serde_json::from_str(r#"{"start_at":null,"deadline_at":null}"#).unwrap();
+        let set: Patch =
+            serde_json::from_str(r#"{"start_at":"2024-02-28T12:30:00Z","deadline_at":"2024-02-29T12:30:00Z"}"#)
+                .unwrap();
+        assert_eq!(omitted.start_at, None);
         assert_eq!(omitted.deadline_at, None);
+        assert_eq!(cleared.start_at, Some(None));
         assert_eq!(cleared.deadline_at, Some(None));
+        assert_eq!(set.start_at, Some(Some("2024-02-28T12:30:00Z".into())));
         assert_eq!(set.deadline_at, Some(Some("2024-02-29T12:30:00Z".into())));
     }
 

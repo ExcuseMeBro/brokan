@@ -40,6 +40,7 @@ struct TaskOut {
     /// Work for a person, which agents leave alone.
     human: bool,
     priority: String,
+    start_at: Option<String>,
     deadline_at: Option<String>,
     /// Paths of the images attached to the task and its comments.
     images: Vec<String>,
@@ -59,6 +60,7 @@ impl TaskOut {
             tags: task.tags,
             human: task.human,
             priority: task.priority,
+            start_at: task.start_at,
             deadline_at: task.deadline_at,
             images,
             status: task.status,
@@ -150,6 +152,9 @@ fn markdown(board: &Board) -> String {
                 if t.priority != "none" {
                     let _ = writeln!(md, "Priority: {}.", t.priority);
                 }
+                if let Some(start) = &t.start_at {
+                    let _ = writeln!(md, "Planned start: {start} (UTC).");
+                }
                 if let Some(deadline) = &t.deadline_at {
                     let _ = writeln!(md, "Deadline: {deadline} (UTC).");
                 }
@@ -194,6 +199,7 @@ mod tests {
                 t.id,
                 crate::store::TaskPatch {
                     priority: Some("high".into()),
+                    start_at: Some(Some("2030-01-01T03:04:05Z".into())),
                     deadline_at: Some(Some("2030-01-02T03:04:05Z".into())),
                     ..Default::default()
                 },
@@ -208,6 +214,7 @@ mod tests {
         assert!(md.contains("### todo\n\n#### api#1 Fix login"), "{md}");
         assert!(md.contains("Steps:\n1. log in"), "{md}");
         assert!(md.contains("Priority: high."), "{md}");
+        assert!(md.contains("Planned start: 2030-01-01T03:04:05Z (UTC)."), "{md}");
         assert!(md.contains("Deadline: 2030-01-02T03:04:05Z (UTC)."), "{md}");
         assert!(md.contains("- **claude-code**, ") && md.contains("Found it\n  in auth.rs"), "{md}");
         assert!(md.contains("### done\n\n#### api#2 Old work"), "{md}");
@@ -218,6 +225,7 @@ mod tests {
         assert_eq!(json["projects"][0]["slug"], "api");
         assert_eq!(json["projects"][0]["tasks"][0]["key"], "api#1");
         assert_eq!(json["projects"][0]["tasks"][0]["priority"], "high");
+        assert_eq!(json["projects"][0]["tasks"][0]["start_at"], "2030-01-01T03:04:05Z");
         assert_eq!(json["projects"][0]["tasks"][0]["deadline_at"], "2030-01-02T03:04:05Z");
         assert!(json["projects"][0]["tasks"][1]["deadline_at"].is_null());
         assert_eq!(json["projects"][0]["tasks"][0]["comments"][0]["author"], "claude-code");

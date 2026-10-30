@@ -28,7 +28,9 @@ const state = {
   dragging: null,        // id of the card being dragged
   dropped: false,        // the current drag ended in a drop
   layout: "",            // key of the rendered column layout
-  view: localStorageGet("brokan.view") === "table" ? "table" : "board",
+  view: ["board", "table", "calendar", "gantt"].includes(localStorageGet("brokan.view"))
+    ? localStorageGet("brokan.view") : "board",
+  timelineMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   tableSort: { key: "status", direction: "asc" },
   allDone: false,        // show every card in the done column
   menu: null,            // slug of the project whose "⋯" menu is open, or "settings"
@@ -357,7 +359,7 @@ async function loadBoard() {
   try {
     // The server leaves out older done tasks unless asked: the board does not show
     // them, and the done column only grows. Search needs them all.
-    const done = state.allDone || state.view === "table" ? "&done=all" : "";
+    const done = state.allDone || state.view !== "board" ? "&done=all" : "";
     const board = await api("GET", "/board?project=" + encodeURIComponent(state.project) + done);
     if (request !== boardRequest) return;
     state.board = board;
@@ -401,19 +403,22 @@ function render() {
   renderHeader();
   renderColumns();
   renderTable();
+  renderTimeline();
   renderDashboard();
 }
 
 function setView(view) {
-  if ((view !== "board" && view !== "table") || view === state.view) return;
+  if (!["board", "table", "calendar", "gantt"].includes(view) || view === state.view) return;
   state.view = view;
   try { localStorage.setItem("brokan.view", view); } catch {}
-  // The board normally limits the done column; the table lists every matching task.
+  // The board normally limits the done column; other views need every matching task.
   loadBoard();
 }
 
 $("#view-board").addEventListener("click", () => setView("board"));
 $("#view-table").addEventListener("click", () => setView("table"));
+$("#view-calendar").addEventListener("click", () => setView("calendar"));
+$("#view-gantt").addEventListener("click", () => setView("gantt"));
 
 function showDashboard() {
   if (state.task) closeTask();
@@ -748,6 +753,8 @@ function renderHeader() {
   $("#view-switch").hidden = false;
   $("#view-board").setAttribute("aria-pressed", String(state.view === "board"));
   $("#view-table").setAttribute("aria-pressed", String(state.view === "table"));
+  $("#view-calendar").setAttribute("aria-pressed", String(state.view === "calendar"));
+  $("#view-gantt").setAttribute("aria-pressed", String(state.view === "gantt"));
   $("#new-task").hidden = !active.length || Boolean(p?.archived);
   $("#human-only").hidden = !projects.length;
   $("#human-only").setAttribute("aria-pressed", String(isHumanOnly()));
@@ -779,7 +786,7 @@ async function deleteProject(p) {
 function renderColumns() {
   const columns = $("#columns");
   $("#dashboard").hidden = !state.dashboard;
-  if (state.dashboard || state.view === "table") { columns.style.display = "none"; return; }
+  if (state.dashboard || state.view !== "board") { columns.style.display = "none"; return; }
   const { statuses, projects, tasks } = state.board;
   if (!projects.length || (state.project === "all" && projects.every((p) => p.archived))) {
     state.layout = "";
@@ -922,6 +929,112 @@ function renderTable() {
   nextScroll.scrollTop = scrollTop;
   nextScroll.scrollLeft = scrollLeft;
   if (focusedSort) root.querySelector(`th button[data-sort="${focusedSort}"]`)?.focus({ preventScroll: true });
+  if (focusedTask) root.querySelector(`a[data-task-id="${focusedTask}"]`)?.focus({ preventScroll: true });
+}
+
+// Display calendar dates using the user's zone, but compare day ordinals instead of
+// elapsed 24-hour intervals: a DST switch must not move a task into another day.
+function localDayNumber(iso) {
+  const date = new Date(iso);
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000;
+}
+
+function monthSchedule(tasks, month) {
+  const first = localDayNumber(new Date(month.getFullYear(), month.getMonth(), 1));
+  const last = localDayNumber(new Date(month.getFullYear(), month.getMonth() + 1, 1));
+  const days = last - first;
+  const events = Array.from({ length: days }, () => []);
+  const rows = [];
+  for (const task of tasks) {
+    const start = task.start_at ? localDayNumber(task.start_at) : null;
+    const due = task.deadline_at ? localDayNumber(task.deadline_at) : null;
+    if (start != null && start >= first && start < last) events[start - first].push({ task, kind: start === due ? "Start · Due" : "Start" });
+    if (due != null && due >= first && due < last && due !== start) events[due - first].push({ task, kind: "Due" });
+    const from = start ?? due, to = due ?? start;
+    if (from != null && to != null && from < last && to >= first) {
+      rows.push({ task, start: Math.max(0, from - first), end: Math.min(days - 1, to - first),
+        milestone: start == null || due == null });
+    }
+  }
+  for (const day of events) day.sort((a, b) => (a.kind.startsWith("Due") ? 0 : 1) - (b.kind.startsWith("Due") ? 0 : 1)
+    || a.task.title.localeCompare(b.task.title));
+  rows.sort((a, b) => a.start - b.start || a.end - b.end || a.task.title.localeCompare(b.task.title));
+  return { first, days, events, rows };
+}
+
+function renderTimeline() {
+  const root = $("#timeline-view");
+  root.hidden = state.dashboard || !["calendar", "gantt"].includes(state.view);
+  if (root.hidden || !state.board) return;
+  const month = state.timelineMonth;
+  const year = month.getFullYear(), index = month.getMonth();
+  const visible = state.board.tasks.filter((t) => !isHumanOnly() || t.human);
+  const { days, events, rows } = monthSchedule(visible, month);
+  const focused = document.activeElement?.closest("#timeline-view button[data-shift]")?.dataset.shift;
+  const focusedTask = document.activeElement?.closest("#timeline-view a[data-task-id]")?.dataset.taskId;
+  const previousScroll = root.querySelector(".timeline-scroll");
+  const left = previousScroll?.scrollLeft || 0, top = previousScroll?.scrollTop || 0;
+  const move = (n) => {
+    state.timelineMonth = new Date(year, index + n, 1);
+    renderTimeline();
+    root.querySelector(`button[data-shift="${n}"]`)?.focus({ preventScroll: true });
+  };
+  const heading = el("div", { class: "timeline-heading" },
+    el("div", {}, el("h2", {}, month.toLocaleDateString([], { month: "long", year: "numeric" })),
+      el("p", {}, state.view === "gantt" ? "Planned start to deadline · local dates" : "Planned starts and deadlines · local dates")),
+    el("div", { class: "timeline-controls", role: "group", "aria-label": "Navigate months" },
+      el("button", { class: "btn", type: "button", "data-shift": "-1", "aria-label": "Previous month", onclick: () => move(-1) }, "‹"),
+      el("button", { class: "btn", type: "button", "data-shift": "today", onclick: () => {
+        const today = new Date(); state.timelineMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        renderTimeline(); root.querySelector('button[data-shift="today"]')?.focus({ preventScroll: true });
+      } }, "Today"),
+      el("button", { class: "btn", type: "button", "data-shift": "1", "aria-label": "Next month", onclick: () => move(1) }, "›")));
+  const open = (task, kind) => el("a", { href: `#${task.project}/${task.id}`, "data-task-id": task.id,
+    onclick: (e) => { e.preventDefault(); openTask(task.id).then(() => {
+      if (state.task === task.id) $("#p-title").focus({ preventScroll: true });
+    }); }, "aria-label": `${kind}: ${task.title}, ${task.project}` }, task.title);
+  let content;
+  if (state.view === "calendar") {
+    const offset = (new Date(year, index, 1).getDay() + 6) % 7;
+    const cells = Array.from({ length: Math.ceil((offset + days) / 7) * 7 }, (_, i) => {
+      const day = i - offset + 1;
+      if (day < 1 || day > days) return el("div", { class: "calendar-cell outside", "aria-hidden": "true" });
+      const date = new Date(year, index, day);
+      const dateLabel = date.toLocaleDateString([], { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+      return el("section", { class: "calendar-cell" + (localDayNumber(date) === localDayNumber(new Date()) ? " today" : ""),
+        "aria-label": dateLabel },
+        el("h3", {}, el("span", {}, String(day))),
+        el("ul", { class: "calendar-events" }, ...events[day - 1].map(({ task, kind }) =>
+          el("li", { style: `--event-color:${projectColor(task.project)}` },
+            el("span", { class: "event-kind" }, kind), open(task, `${kind} on ${dateLabel}`)))));
+    });
+    content = el("div", { class: "timeline-scroll" },
+      events.every((day) => !day.length) ? el("p", { class: "timeline-empty" }, "No starts or deadlines this month. Add dates to a task to plan it here.") : null,
+      el("div", { class: "calendar-grid", role: "group", "aria-label": "Calendar for " + month.toLocaleDateString([], { month: "long", year: "numeric" }) },
+        ...["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => el("div", { class: "calendar-weekday" }, d)), ...cells));
+  } else {
+    const today = localDayNumber(new Date());
+    const header = el("tr", {}, el("th", { scope: "col", class: "gantt-task" }, "Task"),
+      ...Array.from({ length: days }, (_, n) => el("th", { scope: "col", class: today === localDayNumber(new Date(year, index, n + 1)) ? "today" : null,
+        title: new Date(year, index, n + 1).toLocaleDateString([], { dateStyle: "full" }) }, String(n + 1))));
+    const body = rows.map(({ task, start, end, milestone }) => el("tr", {},
+      el("th", { scope: "row", class: "gantt-task" }, el("span", { class: "gantt-title" }, task.title),
+        el("span", { class: "gantt-meta" }, `${task.project} · ${task.status}`)),
+      ...(start ? [el("td", { colspan: start })] : []),
+      el("td", { colspan: end - start + 1, class: "gantt-slot", style: `--event-color:${projectColor(task.project)}` },
+        el("span", { class: milestone ? "gantt-marker" : "gantt-bar" },
+          open(task, `${milestone ? "Milestone" : "Planned"} ${task.start_at ? new Date(task.start_at).toLocaleString() : ""}${task.deadline_at ? " to " + new Date(task.deadline_at).toLocaleString() : ""}`))),
+      ...(end < days - 1 ? [el("td", { colspan: days - end - 1 })] : [])));
+    content = rows.length ? el("div", { class: "timeline-scroll" },
+      el("table", { class: "gantt-chart", style: `width:${220 + days * 38}px`, "aria-label": "Gantt schedule for " + month.toLocaleDateString([], { month: "long", year: "numeric" }) },
+        el("colgroup", {}, el("col", { class: "gantt-label-col" }), ...Array.from({ length: days }, () => el("col", {}))),
+        el("thead", {}, header), el("tbody", {}, ...body)))
+      : el("p", { class: "timeline-empty" }, "No scheduled tasks in this month. Add a planned start or deadline to a task.");
+  }
+  root.replaceChildren(heading, content);
+  const scroll = root.querySelector(".timeline-scroll");
+  if (scroll) { scroll.scrollLeft = left; scroll.scrollTop = top; }
+  if (focused) root.querySelector(`button[data-shift="${focused}"]`)?.focus({ preventScroll: true });
   if (focusedTask) root.querySelector(`a[data-task-id="${focusedTask}"]`)?.focus({ preventScroll: true });
 }
 
@@ -1192,6 +1305,8 @@ async function refreshTask() {
   if (!statuses.includes(task.status)) status.append(el("option", { value: task.status }, task.status));
   status.value = task.status;
   if (document.activeElement !== $("#p-priority")) $("#p-priority").value = task.priority || "none";
+  if (document.activeElement !== $("#p-start")) $("#p-start").value = task.start_at ? localDeadline(task.start_at) : "";
+  $("#p-start-clear").hidden = !task.start_at;
   if (document.activeElement !== $("#p-deadline")) $("#p-deadline").value = task.deadline_at ? localDeadline(task.deadline_at) : "";
   $("#p-deadline-clear").hidden = !task.deadline_at;
   updateDeadlineHint(task);
@@ -1394,25 +1509,30 @@ $("#p-desc-view").addEventListener("focus", editDesc);
 
 $("#p-status").addEventListener("change", (e) => patchTask({ status: e.target.value }));
 $("#p-priority").addEventListener("change", (e) => patchTask({ priority: e.target.value }));
-$("#p-deadline").addEventListener("change", async (e) => {
-  const field = e.target;
-  if (!field.value) {
-    // A half-edited picker is not a clear operation; use the explicit Clear button.
-    field.value = panelTask?.deadline_at ? localDeadline(panelTask.deadline_at) : "";
-    return;
-  }
-  const date = new Date(field.value);
-  if (!Number.isFinite(date.getTime()) || localDeadline(date.toISOString()) !== field.value.slice(0, 16)) {
-    toast("Choose a valid local date and time");
-    field.value = panelTask?.deadline_at ? localDeadline(panelTask.deadline_at) : "";
-    return;
-  }
-  const saved = await patchTask({ deadline_at: date.toISOString().replace(/\.\d{3}Z$/, "Z") });
-  if (!saved && panelTask) field.value = panelTask.deadline_at ? localDeadline(panelTask.deadline_at) : "";
-});
-$("#p-deadline-clear").addEventListener("click", async () => {
-  if (await patchTask({ deadline_at: null })) $("#p-deadline").focus();
-});
+function bindSchedulePicker(id, name) {
+  const field = $(id);
+  const original = () => panelTask?.[name] ? localDeadline(panelTask[name]) : "";
+  field.addEventListener("change", async () => {
+    if (!field.value) {
+      // A half-edited picker is not a clear operation; use the explicit Clear button.
+      field.value = original();
+      return;
+    }
+    const date = new Date(field.value);
+    if (!Number.isFinite(date.getTime()) || localDeadline(date.toISOString()) !== field.value.slice(0, 16)) {
+      toast("Choose a valid local date and time");
+      field.value = original();
+      return;
+    }
+    const saved = await patchTask({ [name]: date.toISOString().replace(/\.\d{3}Z$/, "Z") });
+    if (!saved) field.value = original();
+  });
+  $(id + "-clear").addEventListener("click", async () => {
+    if (await patchTask({ [name]: null })) field.focus();
+  });
+}
+bindSchedulePicker("#p-start", "start_at");
+bindSchedulePicker("#p-deadline", "deadline_at");
 $("#p-human").addEventListener("change", (e) => patchTask({ human: e.target.checked }));
 
 // ---------- images ----------

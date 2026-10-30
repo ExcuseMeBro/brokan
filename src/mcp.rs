@@ -187,6 +187,8 @@ struct CreateTaskArgs {
     human: Option<bool>,
     /// none, low, medium, high or urgent.
     priority: Option<String>,
+    /// Optional planned start, UTC YYYY-MM-DDTHH:MM:SSZ.
+    start_at: Option<String>,
     /// Optional UTC deadline, YYYY-MM-DDTHH:MM:SSZ.
     deadline_at: Option<String>,
 }
@@ -207,6 +209,9 @@ struct UpdateTaskArgs {
     human: Option<bool>,
     /// none, low, medium, high or urgent.
     priority: Option<String>,
+    /// UTC YYYY-MM-DDTHH:MM:SSZ; null clears, omit to keep current start.
+    #[serde(default, deserialize_with = "store::nullable_string")]
+    start_at: Option<Option<String>>,
     /// UTC YYYY-MM-DDTHH:MM:SSZ; null clears, omit to keep current deadline.
     #[serde(default, deserialize_with = "store::nullable_string")]
     deadline_at: Option<Option<String>>,
@@ -241,8 +246,8 @@ impl Brokan {
             // `required` already says they're optional.
             if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
                 for (field, prop) in props {
-                    // Unlike other optional fields, an explicit null clears a task's deadline.
-                    if name == "update_task" && field == "deadline_at" {
+                    // Unlike other optional fields, an explicit null clears a scheduled date.
+                    if name == "update_task" && (field == "start_at" || field == "deadline_at") {
                         continue;
                     }
                     if let Some(kind) = prop.get_mut("type")
@@ -386,13 +391,13 @@ impl Brokan {
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let description = args.description.as_deref().unwrap_or("");
                 let priority = args.priority.map(|p| p.trim().to_ascii_lowercase());
-                let mut t = store.create_task_with_deadline(
+                let mut t = store.create_task_with_schedule(
                     project.id,
                     status.as_deref(),
                     &args.title,
                     description,
                     priority.as_deref(),
-                    args.deadline_at.as_deref(),
+                    store::Schedule { start_at: args.start_at.as_deref(), deadline_at: args.deadline_at.as_deref() },
                 )?;
                 if args.tags.is_some() || args.human.is_some() {
                     t = store
@@ -419,6 +424,7 @@ impl Brokan {
                         project_id: None,
                         human: args.human,
                         priority: args.priority.map(|p| p.trim().to_ascii_lowercase()),
+                        start_at: args.start_at,
                         deadline_at: args.deadline_at,
                     },
                 )?;
@@ -500,6 +506,9 @@ fn task_line(out: &mut String, t: &Task) {
     if t.priority != "none" {
         let _ = write!(out, " [priority: {}]", t.priority);
     }
+    if let Some(start) = &t.start_at {
+        let _ = write!(out, " [start: {start}]");
+    }
     if let Some(deadline) = &t.deadline_at {
         let _ = write!(out, " [deadline: {deadline}]");
     }
@@ -532,6 +541,9 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     let mut out = format!("{}#{} {}", t.project, t.id, t.title);
     write_tags(&mut out, t);
     let _ = write!(out, "\nstatus: {}, priority: {}", t.status, t.priority);
+    if let Some(start) = &t.start_at {
+        let _ = write!(out, ", start: {start}");
+    }
     if let Some(deadline) = &t.deadline_at {
         let _ = write!(out, ", deadline: {deadline}");
     }

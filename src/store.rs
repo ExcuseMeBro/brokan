@@ -76,6 +76,9 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));",
     // 11: an optional UTC deadline; existing tasks remain unscheduled.
     "ALTER TABLE tasks ADD COLUMN deadline_at TEXT;",
+    // 12: optional planned start; a deadline without a start is a milestone.
+    "ALTER TABLE tasks ADD COLUMN start_at TEXT
+        CHECK (start_at IS NULL OR deadline_at IS NULL OR start_at <= deadline_at);",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -161,7 +164,8 @@ pub struct Task {
     /// Work for a person: agents leave it alone, and `next_task` never picks it.
     pub human: bool,
     pub priority: String,
-    /// UTC instant, YYYY-MM-DDTHH:MM:SSZ; None means no deadline.
+    /// Optional planned start and end, stored as UTC instants (YYYY-MM-DDTHH:MM:SSZ).
+    pub start_at: Option<String>,
     pub deadline_at: Option<String>,
     pub status: String,
     pub position: f64,
@@ -259,6 +263,13 @@ pub struct Dashboard {
     pub deadlines: Vec<DashboardDeadline>,
 }
 
+/// Optional UTC bounds on a new task; a single date is a milestone.
+#[derive(Default)]
+pub struct Schedule<'a> {
+    pub start_at: Option<&'a str>,
+    pub deadline_at: Option<&'a str>,
+}
+
 /// Fields of a task to change; `None` leaves a field as it is.
 #[derive(Debug, Default)]
 pub struct TaskPatch {
@@ -271,7 +282,8 @@ pub struct TaskPatch {
     pub tags: Option<String>,
     pub human: Option<bool>,
     pub priority: Option<String>,
-    /// None leaves the deadline unchanged; Some(None) clears it.
+    /// None leaves a date unchanged; Some(None) clears it.
+    pub start_at: Option<Option<String>>,
     pub deadline_at: Option<Option<String>>,
 }
 
@@ -296,9 +308,9 @@ fn check_priority(priority: &str) -> Result<&str> {
 }
 
 /// Accept only canonical UTC instants. Validating before a transaction avoids partial task writes.
-fn check_deadline(deadline: &str) -> Result<&str> {
-    let b = deadline.as_bytes();
-    let invalid = || Error::Invalid("deadline_at must be a valid UTC date/time (YYYY-MM-DDTHH:MM:SSZ)".into());
+fn check_schedule_time<'a>(value: &'a str, field: &str) -> Result<&'a str> {
+    let b = value.as_bytes();
+    let invalid = || Error::Invalid(format!("{field} must be a valid UTC date/time (YYYY-MM-DDTHH:MM:SSZ)"));
     if b.len() != 20
         || b[4] != b'-'
         || b[7] != b'-'
@@ -329,7 +341,14 @@ fn check_deadline(deadline: &str) -> Result<&str> {
     if year == 0 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
         return Err(invalid());
     }
-    Ok(deadline)
+    Ok(value)
+}
+
+fn check_schedule_range(start: Option<&str>, deadline: Option<&str>) -> Result<()> {
+    if start.zip(deadline).is_some_and(|(start, end)| start > end) {
+        return Err(Error::Invalid("start_at must not be later than deadline_at".into()));
+    }
+    Ok(())
 }
 
 /// An optional column before todo, for tasks that agents leave alone.
@@ -663,7 +682,7 @@ impl Store {
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
-            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human, t.priority, t.deadline_at
+            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human, t.priority, t.deadline_at, t.start_at
         FROM tasks t JOIN projects p ON p.id = t.project_id";
 
     fn task_row(r: &Row) -> rusqlite::Result<Task> {
@@ -676,6 +695,7 @@ impl Store {
             human: r.get(10)?,
             priority: r.get(11)?,
             deadline_at: r.get(12)?,
+            start_at: r.get(13)?,
             status: r.get(4)?,
             position: r.get(5)?,
             created_at: r.get(6)?,
@@ -812,30 +832,32 @@ impl Store {
         description: &str,
         priority: Option<&str>,
     ) -> Result<Task> {
-        self.create_task_with_deadline(project_id, status, title, description, priority, None)
+        self.create_task_with_schedule(project_id, status, title, description, priority, Schedule::default())
     }
 
-    /// Create a task with an optional UTC deadline, validating it before any write.
-    pub fn create_task_with_deadline(
+    /// Create a task with optional planned start and deadline, validating before any write.
+    pub fn create_task_with_schedule(
         &self,
         project_id: i64,
         status: Option<&str>,
         title: &str,
         description: &str,
         priority: Option<&str>,
-        deadline_at: Option<&str>,
+        schedule: Schedule<'_>,
     ) -> Result<Task> {
         let title = clean_title(title)?;
         let status = status.unwrap_or(STATUSES[0]);
         self.check_status(status)?;
         let priority = check_priority(priority.unwrap_or(PRIORITIES[0]))?;
-        let deadline_at = deadline_at.map(check_deadline).transpose()?;
+        let start_at = schedule.start_at.map(|s| check_schedule_time(s, "start_at")).transpose()?;
+        let deadline_at = schedule.deadline_at.map(|s| check_schedule_time(s, "deadline_at")).transpose()?;
+        check_schedule_range(start_at, deadline_at)?;
         self.ensure_active_project(project_id)?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
-                "INSERT INTO tasks (project_id, title, description, status, position, priority, deadline_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![project_id, title, description.trim(), status, position, priority, deadline_at],
+                "INSERT INTO tasks (project_id, title, description, status, position, priority, start_at, deadline_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![project_id, title, description.trim(), status, position, priority, start_at, deadline_at],
             )?;
             Ok(c.last_insert_rowid())
         })?;
@@ -865,11 +887,18 @@ impl Store {
         if let Some(p) = &patch.priority {
             check_priority(p)?;
         }
+        if let Some(Some(start)) = &patch.start_at {
+            check_schedule_time(start, "start_at")?;
+        }
         if let Some(Some(deadline)) = &patch.deadline_at {
-            check_deadline(deadline)?;
+            check_schedule_time(deadline, "deadline_at")?;
         }
         self.write(|c| {
             let current = self.get_task(id)?;
+            check_schedule_range(
+                patch.start_at.as_ref().map_or(current.start_at.as_deref(), |value| value.as_deref()),
+                patch.deadline_at.as_ref().map_or(current.deadline_at.as_deref(), |value| value.as_deref()),
+            )?;
             if let Some(title) = title {
                 c.execute(
                     &format!("UPDATE tasks SET title = ?1, updated_at = {NOW} WHERE id = ?2"),
@@ -894,12 +923,15 @@ impl Store {
                     params![priority, id],
                 )?;
             }
-            if let Some(deadline_at) = &patch.deadline_at {
+            if patch.start_at.is_some() || patch.deadline_at.is_some() {
+                let start = patch.start_at.as_ref().map_or(current.start_at.as_deref(), |v| v.as_deref());
+                let deadline = patch.deadline_at.as_ref().map_or(current.deadline_at.as_deref(), |v| v.as_deref());
                 c.execute(
                     &format!(
-                        "UPDATE tasks SET deadline_at = ?1, updated_at = {NOW} WHERE id = ?2 AND deadline_at IS NOT ?1"
+                        "UPDATE tasks SET start_at = ?1, deadline_at = ?2, updated_at = {NOW} \
+                              WHERE id = ?3 AND (start_at IS NOT ?1 OR deadline_at IS NOT ?2)"
                     ),
-                    params![deadline_at, id],
+                    params![start, deadline, id],
                 )?;
             }
             if let Some(t) = &patch.tags {
@@ -1661,12 +1693,32 @@ mod tests {
                 .is_err(),
                 "{bad:?}"
             );
-            assert!(s.create_task_with_deadline(1, None, "New", "", None, Some(bad)).is_err(), "{bad:?}");
+            assert!(
+                s.create_task_with_schedule(
+                    1,
+                    None,
+                    "New",
+                    "",
+                    None,
+                    Schedule { deadline_at: Some(bad), ..Default::default() }
+                )
+                .is_err(),
+                "{bad:?}"
+            );
             assert_eq!(s.get_task(1).unwrap().title, "Existing");
             assert_eq!(s.list_tasks(Some(1), None).unwrap().len(), 1);
         }
         let date = "2024-02-29T12:30:00Z";
-        let t = s.create_task_with_deadline(1, None, "Scheduled", "", None, Some(date)).unwrap();
+        let t = s
+            .create_task_with_schedule(
+                1,
+                None,
+                "Scheduled",
+                "",
+                None,
+                Schedule { deadline_at: Some(date), ..Default::default() },
+            )
+            .unwrap();
         assert_eq!(t.deadline_at.as_deref(), Some(date));
         let changed = s
             .update_task(
@@ -1689,6 +1741,103 @@ mod tests {
             None
         );
         assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().deadline_at, None);
+    }
+
+    #[test]
+    fn planned_start_migrates_validates_range_and_preserves_old_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..11] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', '11'), ('compatible', '10');
+                 INSERT INTO projects (slug, name) VALUES ('api', 'API');
+                 INSERT INTO tasks (project_id, title, status, position, deadline_at)
+                 VALUES (1, 'Existing', 'todo', 1, '2024-04-30T10:00:00Z');",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.get_task(1).unwrap().start_at, None);
+        assert_eq!(s.get_task(1).unwrap().deadline_at.as_deref(), Some("2024-04-30T10:00:00Z"));
+        for invalid in ["", "2025-02-29T12:00:00Z", "2024-04-31T12:00:00Z", "2024-04-01T02:00:00+00:00"] {
+            assert!(
+                s.update_task(
+                    1,
+                    TaskPatch {
+                        title: Some("Wrong".into()),
+                        start_at: Some(Some(invalid.into())),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(s.get_task(1).unwrap().title, "Existing");
+        }
+        assert!(
+            s.create_task_with_schedule(
+                1,
+                None,
+                "Bad",
+                "",
+                None,
+                Schedule { start_at: Some("2024-05-01T00:00:00Z"), deadline_at: Some("2024-04-30T10:00:00Z") }
+            )
+            .is_err()
+        );
+        assert!(
+            s.update_task(
+                1,
+                TaskPatch {
+                    status: Some("doing".into()),
+                    start_at: Some(Some("2024-05-01T00:00:00Z".into())),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(s.get_task(1).unwrap().status, "todo");
+        let updated = s
+            .update_task(1, TaskPatch { start_at: Some(Some("2024-02-29T12:00:00Z".into())), ..Default::default() })
+            .unwrap();
+        assert_eq!(updated.start_at.as_deref(), Some("2024-02-29T12:00:00Z"));
+        assert!(
+            s.update_task(
+                1,
+                TaskPatch {
+                    title: Some("Wrong".into()),
+                    deadline_at: Some(Some("2024-01-01T00:00:00Z".into())),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(s.get_task(1).unwrap().title, "Existing");
+        let changed = s
+            .update_task(
+                1,
+                TaskPatch {
+                    start_at: Some(Some("2025-01-01T00:00:00Z".into())),
+                    deadline_at: Some(Some("2025-02-01T00:00:00Z".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.deadline_at.as_deref(), Some("2025-02-01T00:00:00Z"));
+        assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().start_at, changed.start_at);
+        assert_eq!(
+            s.update_task(1, TaskPatch { deadline_at: Some(None), ..Default::default() }).unwrap().start_at,
+            changed.start_at
+        );
+        assert_eq!(s.update_task(1, TaskPatch { start_at: Some(None), ..Default::default() }).unwrap().start_at, None);
+        assert_eq!(s.list_tasks(Some(1), None).unwrap().len(), 1);
     }
 
     #[test]
