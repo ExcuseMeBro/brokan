@@ -59,6 +59,7 @@ When a new version is out, the sidebar offers it: one click installs it and rest
 ```sh
 claude mcp add brokan --scope user -- brokan mcp   # Claude Code
 codex mcp add brokan -- brokan mcp                 # Codex
+pi mcp add brokan -- brokan mcp                    # Pi
 ```
 
 Other MCP clients: run `brokan mcp` (apps like Raycast need the full path, from `which brokan`), or use the running board at `http://localhost:1317/mcp`.
