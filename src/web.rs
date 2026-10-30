@@ -235,7 +235,7 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
 type Shared = State<Arc<Home>>;
 
 async fn git_overview(State(home): Shared) -> Response {
-    let result = tokio::task::spawn_blocking(move || crate::git_overview::scan(home.config.git_root.as_deref())).await;
+    let result = tokio::task::spawn_blocking(move || crate::git_overview::scan(home.git_root.as_deref())).await;
     match result {
         Ok(Ok(data)) => Json(data).into_response(),
         Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),

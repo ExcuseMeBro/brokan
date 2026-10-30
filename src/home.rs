@@ -28,9 +28,6 @@ listen = "127.0.0.1"
 # that cannot start `brokan mcp` themselves.
 mcp_http = true
 
-# Optional: directory whose immediate child Git repos appear in Git overview.
-# This is a LOCAL machine path, not the board's Sync repository URL.
-# git_root = "/Users/you/Projects"
 "#;
 
 const GITIGNORE: &str = "\
@@ -61,19 +58,11 @@ pub struct Config {
     #[serde(rename = "statuses")]
     _statuses: Option<toml::Value>,
     pub mcp_http: bool,
-    /// Opt-in server-side filesystem boundary for the read-only Git overview.
-    pub git_root: Option<PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            port: DEFAULT_PORT,
-            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            _statuses: None,
-            mcp_http: true,
-            git_root: None,
-        }
+        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true }
     }
 }
 
@@ -82,6 +71,14 @@ impl Default for Config {
 pub struct Home {
     pub dir: PathBuf,
     pub config: Config,
+    /// Machine-local, outside the Sync repository's tracked config.toml.
+    pub git_root: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitOverviewConfig {
+    git_root: PathBuf,
 }
 
 impl Home {
@@ -99,6 +96,13 @@ impl Home {
 
     /// Opens the data folder, creating it and its files on first use.
     pub fn open(dir: PathBuf) -> Result<Self> {
+        let private = dirs::home_dir()
+            .context("cannot find your home folder for local Git overview settings")?
+            .join(".config/brokan/git-overview.toml");
+        Self::open_with_local_config(dir, &private)
+    }
+
+    fn open_with_local_config(dir: PathBuf, private: &Path) -> Result<Self> {
         fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
         let dir = dir.canonicalize().unwrap_or(dir);
         write_if_missing(&dir.join("config.toml"), CONFIG_TEMPLATE)?;
@@ -108,7 +112,18 @@ impl Home {
         let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let config: Config = toml::from_str(&text).with_context(|| format!("{} is not valid", path.display()))?;
 
-        let home = Self { dir, config };
+        // Sync stages the entire board data folder, including config.toml. Never
+        // read a machine-local repo path from there or accidentally publish it.
+        let git_root = match fs::read_to_string(private) {
+            Ok(text) => Some(
+                toml::from_str::<GitOverviewConfig>(&text)
+                    .with_context(|| format!("{} is not valid", private.display()))?
+                    .git_root,
+            ),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", private.display())),
+        };
+        let home = Self { dir, config, git_root };
         home.store()?.migrate()?;
         Ok(home)
     }
@@ -233,13 +248,23 @@ mod tests {
     }
 
     #[test]
-    fn git_root_is_opt_in_and_loaded_from_local_config() {
+    fn git_root_is_opt_in_and_loaded_only_from_private_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = Home::open(tmp.path().join("default")).unwrap();
-        assert!(home.config.git_root.is_none());
-        fs::write(tmp.path().join("default/config.toml"), "git_root = \"/tmp/projects\"\n").unwrap();
-        let home = Home::open(tmp.path().join("default")).unwrap();
-        assert_eq!(home.config.git_root.as_deref(), Some(Path::new("/tmp/projects")));
+        let data = tmp.path().join("synced-board");
+        let private = tmp.path().join("private/git-overview.toml");
+        let home = Home::open_with_local_config(data.clone(), &private).unwrap();
+        assert!(home.git_root.is_none());
+        assert!(!fs::read_to_string(data.join("config.toml")).unwrap().contains("git_root"));
+        fs::create_dir(private.parent().unwrap()).unwrap();
+        fs::write(&private, "git_root = \"/tmp/projects\"\n").unwrap();
+        let home = Home::open_with_local_config(data.clone(), &private).unwrap();
+        assert_eq!(home.git_root.as_deref(), Some(Path::new("/tmp/projects")));
+        assert!(!fs::read_to_string(data.join("config.toml")).unwrap().contains("git_root"));
+        fs::write(&private, "git_root = [\"not a path\"]\n").unwrap();
+        assert!(Home::open_with_local_config(data.clone(), &private).is_err());
+        fs::write(&private, "git_root = \"/tmp/projects\"\n").unwrap();
+        fs::write(data.join("config.toml"), "git_root = \"/tmp/unsafe-sync-path\"\n").unwrap();
+        assert!(Home::open_with_local_config(data, &private).is_err());
     }
 
     #[test]

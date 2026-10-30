@@ -551,7 +551,7 @@ function renderGitOverview() {
   if (!data) { root.replaceChildren(el("p", {}, "Loading local repositories…")); return; }
   if (!data.root) {
     root.replaceChildren(el("div", { class: "git-empty" }, el("h2", {}, "Choose a folder on this machine"),
-      el("p", {}, "Set git_root to the absolute path of your projects directory in ~/brokan/config.toml, then restart Brokan. Only direct child repositories are scanned; Sync is a separate setting."),
+      el("p", {}, "Create ~/.config/brokan/git-overview.toml with git_root set to the absolute path of your projects directory, then restart Brokan. This private file stays outside the synced board. Only direct child repositories are scanned."),
       el("code", {}, 'git_root = "/Users/you/Projects"')));
     return;
   }
