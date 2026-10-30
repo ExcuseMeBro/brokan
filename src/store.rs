@@ -261,6 +261,9 @@ pub struct Dashboard {
     pub tasks: i64,
     /// Recent overdue and soonest upcoming unfinished tasks in active projects.
     pub deadlines: Vec<DashboardDeadline>,
+    /// Local MCP tool aggregates, filled by the web handler (not stored in the synced board).
+    pub mcp: Option<crate::mcp_metrics::Summary>,
+    pub mcp_error: Option<&'static str>,
 }
 
 /// Optional UTC bounds on a new task; a single date is a milestone.
@@ -1215,7 +1218,17 @@ impl Store {
             })?;
             deadlines.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
-        Ok(Dashboard { statuses, projects, days, total_seconds, running_seconds, tasks, deadlines })
+        Ok(Dashboard {
+            statuses,
+            projects,
+            days,
+            total_seconds,
+            running_seconds,
+            tasks,
+            deadlines,
+            mcp: None,
+            mcp_error: None,
+        })
     }
 
     // Comments

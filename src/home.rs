@@ -73,6 +73,8 @@ pub struct Home {
     pub config: Config,
     /// Machine-local, outside the Sync repository's tracked config.toml.
     pub git_root: Option<PathBuf>,
+    /// Private, machine-local aggregates; never inside the synced board folder.
+    pub mcp_metrics_path: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -123,7 +125,15 @@ impl Home {
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", private.display())),
         };
-        let home = Self { dir, config, git_root };
+        // Stable per-board identity without persisting the private folder path in Sync.
+        let mut id = 0xcbf29ce484222325_u64;
+        for byte in dir.to_string_lossy().as_bytes() {
+            id = (id ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
+        let mcp_metrics_path = dirs::home_dir()
+            .context("cannot find your home folder for local MCP metrics")?
+            .join(format!(".local/state/brokan/mcp-metrics-{id:016x}.sqlite"));
+        let home = Self { dir, config, git_root, mcp_metrics_path };
         home.store()?.migrate()?;
         Ok(home)
     }
@@ -245,6 +255,9 @@ mod tests {
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());
+        assert!(!home.mcp_metrics_path.starts_with(&dir));
+        assert_eq!(home.mcp_metrics_path, Home::open(dir.clone()).unwrap().mcp_metrics_path);
+        assert_ne!(home.mcp_metrics_path, Home::open(tmp.path().join("other")).unwrap().mcp_metrics_path);
     }
 
     #[test]

@@ -343,7 +343,15 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
 }
 
 async fn dashboard(State(home): Shared) -> Response {
-    with_store(home, |_, s| s.dashboard()).await
+    with_store(home, |home, s| {
+        let mut dashboard = s.dashboard()?;
+        match crate::mcp_metrics::snapshot(&home.mcp_metrics_path) {
+            Ok(summary) => dashboard.mcp = Some(summary),
+            Err(_) => dashboard.mcp_error = Some("MCP metrics are temporarily unavailable."),
+        }
+        Ok(dashboard)
+    })
+    .await
 }
 
 #[derive(Deserialize)]

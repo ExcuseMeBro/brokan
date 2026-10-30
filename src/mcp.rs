@@ -4,7 +4,8 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
+use std::time::Instant;
 
 use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -18,6 +19,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
+use crate::mcp_metrics;
 use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
 
 /// The most done tasks list_tasks shows, newest first: an old board has thousands.
@@ -269,9 +271,19 @@ impl Brokan {
     /// outcome into text; errors go back to the agent as tool errors it can read.
     async fn run(&self, f: impl FnOnce(&Ctx, &Store) -> store::Result<String> + Send + 'static) -> CallToolResult {
         let ctx = self.ctx.clone();
+        let start = Instant::now();
         let outcome = tokio::task::spawn_blocking(move || {
-            let store = ctx.home.store().map_err(|e| e.to_string())?;
-            f(&ctx, &store).map_err(|e| e.to_string())
+            let result = (|| {
+                let store = ctx.home.store().map_err(|e| e.to_string())?;
+                f(&ctx, &store).map_err(|e| e.to_string())
+            })();
+            // Both stdio and HTTP tools share this path. Telemetry errors never
+            // change a tool's result and no arguments, outputs or names are saved.
+            if let Err(error) = mcp_metrics::record(&ctx.home.mcp_metrics_path, start.elapsed()) {
+                static WARN: Once = Once::new();
+                WARN.call_once(|| eprintln!("brokan: cannot record MCP metrics: {error}"));
+            }
+            result
         })
         .await
         .unwrap_or_else(|e| Err(format!("internal error: {e}")));
@@ -577,4 +589,23 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     }
     out.truncate(out.trim_end().len());
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tool_runner_records_success_and_failure_without_changing_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut home = Home::open(temp.path().join("board")).unwrap();
+        home.mcp_metrics_path = temp.path().join("private/metrics.sqlite");
+        let path = home.mcp_metrics_path.clone();
+        let server = Brokan { ctx: Arc::new(Ctx { home, cwd: None, repos: Vec::new() }), tool_router: Brokan::tools() };
+        let success = server.run(|_, _| Ok("done".into())).await;
+        let failure = server.run(|_, _| Err(Error::NotFound("missing".into()))).await;
+        assert_eq!(success.is_error, Some(false));
+        assert_eq!(failure.is_error, Some(true));
+        assert_eq!(mcp_metrics::snapshot(&path).unwrap().total_calls, 2);
+    }
 }

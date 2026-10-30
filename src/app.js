@@ -22,6 +22,8 @@ const state = {
   project: "all",        // slug or "all"
   dashboard: false,      // #~dashboard is reserved (not a valid project slug)
   dashboardData: null,
+  dashboardGitData: null,
+  dashboardGitError: null,
   gitOverview: false,   // #~git is reserved; Git is never part of the task board
   gitData: null,
   gitError: null,
@@ -435,6 +437,25 @@ function showDashboard() {
   updateHash();
   if (state.board) render();
   loadDashboard();
+  loadDashboardGit();
+}
+
+let dashboardGitRequest = 0;
+async function loadDashboardGit() {
+  if (!state.dashboard) return;
+  const request = ++dashboardGitRequest;
+  state.dashboardGitError = null;
+  state.dashboardGitData = null;
+  renderDashboard();
+  try {
+    const data = await api("GET", "/git-overview");
+    if (request !== dashboardGitRequest || !state.dashboard) return;
+    state.dashboardGitData = data;
+  } catch (error) {
+    if (request !== dashboardGitRequest || !state.dashboard) return;
+    state.dashboardGitError = error.message;
+  }
+  renderDashboard();
 }
 
 let dashboardRequest = 0;
@@ -629,7 +650,7 @@ function svgNode(tag, attrs = {}) {
 
 // SVG paths, rather than a chart dependency: works with the existing CSP and
 // remains readable as a labelled list when charts are not visible.
-function ringChart(rows, donut, label, total) {
+function ringChart(rows, center, label, total) {
   const svg = svgNode("svg", { class: "chart-svg", viewBox: "0 0 160 160", role: "img", "aria-label": label });
   let start = -Math.PI / 2;
   for (const row of rows) {
@@ -645,14 +666,57 @@ function ringChart(rows, donut, label, total) {
       start = end;
     }
   }
-  if (donut) {
+  if (center !== null) {
     svg.append(svgNode("circle", { cx: 80, cy: 80, r: 43, fill: "var(--col)" }));
     const text = svgNode("text", { x: 80, y: 86, "text-anchor": "middle", fill: "var(--text)",
       "font-size": 17, "font-weight": 600 });
-    text.textContent = duration(total);
+    text.textContent = center;
     svg.append(text);
   }
   return svg;
+}
+
+function mcpDuration(micros) {
+  if (micros == null) return "—";
+  if (micros < 1000) return `${Math.round(micros)} µs`;
+  if (micros >= 1000000) return `${(micros / 1000000).toFixed(2)} s`;
+  return `${(micros / 1000).toFixed(micros < 10000 ? 2 : 1)} ms`;
+}
+
+function dashboardGit() {
+  const data = state.dashboardGitData;
+  if (state.dashboardGitError) return el("p", { class: "chart-empty", role: "alert" },
+    `Git overview unavailable: ${state.dashboardGitError}`,
+    el("button", { type: "button", class: "btn", onclick: loadDashboardGit }, "Retry"));
+  if (!data) return el("p", { class: "chart-empty" }, "Loading local repositories…");
+  if (!data.root) return el("p", { class: "chart-empty" }, "No local Git folder configured. ",
+    el("a", { href: "#~git", onclick: (event) => { event.preventDefault(); showGitOverview(); } }, "Set up Git overview"));
+  const repos = data.repos.map((repo) => ({ repo,
+    attention: repo.branches.filter((b) => b.dirty || b.unpushed || b.unmerged || b.status_error).length,
+  }));
+  const attention = repos.reduce((sum, item) => sum + item.attention, 0);
+  const stashes = repos.reduce((sum, item) => sum + item.repo.stash_count, 0);
+  const branches = repos.reduce((sum, item) => sum + item.repo.branches.length, 0);
+  const prominent = repos.filter((item) => item.attention || item.repo.stash_count || item.repo.warning)
+    .sort((a, b) => b.attention - a.attention || b.repo.stash_count - a.repo.stash_count)
+    .slice(0, 6);
+  return el("div", { class: "dashboard-git" },
+    el("p", { class: "dashboard-git-summary" }, `${data.repos.length} repos · ${branches} branches · ${attention} need attention · ${stashes} stashes`),
+    data.warnings.length ? el("p", { class: "git-warning", role: "status" }, data.warnings.join(" · ")) : null,
+    prominent.length ? el("ul", { class: "dashboard-git-list" }, ...prominent.map(({ repo, attention: count }) =>
+      el("li", {}, el("a", { href: "#~git", onclick: (event) => {
+        event.preventDefault(); state.gitRepo = repo.name; state.gitFilter = "all"; showGitOverview();
+      } }, el("strong", {}, repo.name), el("span", {},
+        `${count} flagged${repo.stash_count ? ` · ${repo.stash_count} stashed` : ""}${repo.warning ? " · scan warning" : ""}`)),
+      el("ul", { class: "dashboard-git-branches" }, ...repo.branches
+        .filter((b) => b.dirty || b.unpushed || b.unmerged || b.status_error).slice(0, 3).map((b) =>
+          el("li", {}, el("span", {}, b.name), el("small", {},
+            [b.dirty && "uncommitted", b.unpushed && "unpushed", b.unmerged && "unmerged", b.status_error && "status unavailable"]
+              .filter(Boolean).join(" · "))))))))
+      : el("p", { class: "chart-note" }, data.repos.length ? "No flagged branches in scanned repositories." : "No Git repositories found in the selected folder."),
+    el("a", { class: "dashboard-git-link", href: "#~git", onclick: (event) => {
+      event.preventDefault(); state.gitRepo = "all"; state.gitFilter = "all"; showGitOverview();
+    } }, "See all branches →"));
 }
 
 function renderDashboard() {
@@ -676,17 +740,21 @@ function renderDashboard() {
   const legend = (rows, format) => el("ul", { class: "chart-legend" }, ...rows.map((row) =>
     el("li", {}, el("span", { class: "swatch", style: `background:${row.color}` }),
       el("span", { class: "name" }, row.name), el("span", { class: "value" }, format(row.value)))));
-  const circular = (rows, donut, value, format, empty) => value
+  const circular = (rows, center, value, format, empty) => value
     ? el("div", { class: "chart-content" },
-      ringChart(rows, donut, rows.map((r) => `${r.name}: ${format(r.value)}`).join(", "), value), legend(rows, format))
+      ringChart(rows, center, rows.map((r) => `${r.name}: ${format(r.value)}`).join(", "), value), legend(rows, format))
     : el("p", { class: "chart-empty" }, empty);
+  const dayBars = (days, field, format, label) => {
+    const max = Math.max(1, ...days.map((d) => d[field]));
+    return el("div", { class: "bar-chart", role: "img", "aria-label": label + ": " + days.map((d) =>
+      `${d.day}: ${format(d[field])}`).join(", ") }, ...days.map((d) =>
+      el("div", { class: "bar-day" }, el("span", { class: "amount" }, format(d[field])),
+        el("span", { class: "track" }, el("span", { class: "fill", style: `height:${d[field] / max * 100}%` })),
+        el("span", { class: "day", title: d.day }, d.day.slice(5)))));
+  };
   const days = data.days || [];
-  const max = Math.max(1, ...days.map((d) => d.seconds));
-  const bars = el("div", { class: "bar-chart", role: "img", "aria-label": "Time by day: " + days.map((d) =>
-    `${d.day}: ${duration(d.seconds)}`).join(", ") }, ...days.map((d) =>
-    el("div", { class: "bar-day" }, el("span", { class: "amount" }, d.seconds ? duration(d.seconds) : "0"),
-      el("span", { class: "track" }, el("span", { class: "fill", style: `height:${d.seconds / max * 100}%` })),
-      el("span", { class: "day", title: d.day }, d.day.slice(5)))));
+  const mcp = data.mcp;
+  const mcpDays = mcp?.days || [];
   const open = data.tasks - (data.statuses.find((s) => s.status === "done")?.count || 0);
   const now = new Date();
   const deadlines = (data.deadlines || []).filter((d) => deadlineDaysLeft(d.deadline_at, now) <= 7);
@@ -704,23 +772,38 @@ function renderDashboard() {
     }))
     : el("p", { class: "chart-empty" }, "No deadlines due in the next 7 days.");
   root.replaceChildren(
-    el("p", { class: "dashboard-intro" }, "A clear view of work and time across every project."),
+    el("p", { class: "dashboard-intro" }, "Work, local branches and agent activity at a glance."),
     el("div", { class: "dashboard-stats" },
       stat("Tracked time", duration(data.total_seconds), data.running_seconds ? `${duration(data.running_seconds)} running now` : "All time"),
       stat("Tasks", String(data.tasks), `${open} open`),
       stat("Projects", String(data.projects.length), `${projectRows.length} with tracked time`)),
+    chart("LOCAL GIT", "Repositories & branches", dashboardGit(),
+      "Read-only snapshot of direct child repositories. Flags: uncommitted, unpushed, unmerged or unavailable; stashes are per repository.", true),
     chart("NEXT UP", "Deadlines · next 7 days", deadlineList,
       "Local calendar days. Shows up to 12 nearest upcoming and 5 recently overdue tasks; completed and archived work is excluded.", true),
     el("div", { class: "dashboard-charts" },
       chart("01 / ACTIVITY", "Time logged · last 7 days",
-        days.some((d) => d.seconds > 0) ? bars : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),
+        days.some((d) => d.seconds > 0) ? dayBars(days, "seconds", duration, "Time by day") : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),
         "Entries are grouped by start date in UTC. Running time is included.", true),
       chart("02 / WORK", "Tasks by status",
-        circular(statusRows, false, data.tasks, (v) => `${v} task${v === 1 ? "" : "s"}`, "No tasks yet. Create one to see its status."),
+        circular(statusRows, String(data.tasks), data.tasks, (v) => `${v} task${v === 1 ? "" : "s"}`, "No tasks yet. Create one to see its status."),
         "All tasks, including older completed work."),
       chart("03 / TIME", "Time by project",
-        circular(projectRows, true, data.total_seconds, duration, "No tracked time yet. Start a task timer or log minutes."),
-        "All-time logged and currently running time.")));
+        circular(projectRows, duration(data.total_seconds), data.total_seconds, duration, "No tracked time yet. Start a task timer or log minutes."),
+        "All-time logged and currently running time."),
+      chart("04 / MCP", "Tool calls · last 7 days",
+        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
+          : mcpDays.some((d) => d.calls > 0) ? dayBars(mcpDays, "calls", (n) => String(n), "MCP calls by UTC day")
+          : el("p", { class: "chart-empty" }, "No measured MCP tool calls yet. Metrics start when this version handles a call."),
+        "Completed MCP tool calls on this machine, grouped by UTC day. No historical calls are inferred.", true),
+      chart("05 / LATENCY", "MCP tool duration",
+        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
+          : mcp?.total_calls ? el("dl", { class: "mcp-latencies" },
+            ...[["Fastest", mcp.fastest_us], ["Average", mcp.average_us], ["Slowest", mcp.slowest_us]]
+              .flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, mcpDuration(value))]))
+            : el("p", { class: "chart-empty" }, "Waiting for the first measured MCP tool call."),
+        `${mcp?.total_calls || 0} measured calls, all time. Includes processing time, not metrics writes.`)));
+
 }
 
 // ---------- project menu ----------

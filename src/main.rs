@@ -3,6 +3,7 @@ mod export;
 mod git_overview;
 mod home;
 mod mcp;
+mod mcp_metrics;
 mod service;
 mod store;
 mod sync;

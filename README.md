@@ -54,6 +54,10 @@ Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Age
 
 When a new version is out, the sidebar offers it: one click installs it and restarts the board.
 
+## Dashboard
+
+Dashboard includes a local Git repository summary (with a link to the full Git overview), a tasks-by-status donut, time charts, MCP tool calls per UTC day, and fastest/average/slowest MCP tool durations. MCP counts and timings start when this version handles a tool call; older calls cannot be reconstructed. Only daily aggregate counts and durations are stored in a private machine-local SQLite file under `~/.local/state/brokan/`, **outside the synced board folder**. Tool names, arguments, prompts and results are never stored in that file. Statistics cover completed tool calls over both stdio and HTTP and are local to this board on this machine, not synchronized across devices. The daily bar chart shows the most recent seven UTC days; timing summaries use all measured calls.
+
 ## Git overview
 
 The **Git overview** sidebar menu shows local branches across repositories in one folder, with uncommitted files, repo-level stashes, unpushed/unmerged commits, recent commit subjects, worktree paths and TODO/FIXME/HACK lines added since the local `dev`/`main`/`master` branch. Filter by repository and status; expand a branch to load its recent commits and TODO lines on demand (large directories can take time to scan). Refresh when you need a new snapshot. The view never pushes, merges, deletes branches or creates pull requests.
