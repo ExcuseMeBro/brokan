@@ -84,7 +84,6 @@ const ICONS = {
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v12h14V8M10 12h4"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   human: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/>',
-  github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.1-1.3-.3-2.5-1-3.5.3-1.2.3-2.4 0-3.5 0 0-1 0-3 1.5a12 12 0 0 0-8 0C6 2 5 2 5 2c-.3 1.2-.3 2.4 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.4.5-.7 1-.8 1.7-.2.6-.3 1.2-.2 1.8v4"/><path d="M9 18c-4.5 2-5-2-7-2"/>',
   sync: '<path d="M12 13v8"/><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="m8 17 4-4 4 4"/>',
   collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
@@ -621,23 +620,6 @@ function toggleProjectMenu(p, button) {
                    } },
       icon(name, projectColor(p.slug)))));
   drawIcons();
-  // Linked repos, each with an unlink button, and a field to link another.
-  const repos = el("div", { class: "repos" });
-  const drawRepos = (list, focus) => {
-    const input = el("input", { class: "field", placeholder: "Link a repo: owner/repo", "aria-label": "Link a GitHub repo",
-                                autocomplete: "off", spellcheck: "false" });
-    input.addEventListener("keydown", async (e) => {
-      if (e.key !== "Enter" || !input.value.trim()) return;
-      const q = await changeRepo(p.slug, "POST", input.value);
-      if (q) drawRepos(q.repos, true);
-    });
-    repos.replaceChildren(...list.map((r) => el("div", { class: "repo" }, el("span", { class: "name" }, r),
-      el("button", { class: "unlink", title: `Unlink ${r}`, "aria-label": `Unlink ${r}`,
-                     onclick: async () => { const q = await changeRepo(p.slug, "DELETE", r); if (q) drawRepos(q.repos); } },
-        icon("close")))), input);
-    if (focus) input.focus();
-  };
-  drawRepos(p.repos);
   const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), "Rename");
   const archive = el("button", { onclick: () => archiveProject(p, !p.archived) }, icon("archive"),
     p.archived ? "Restore project" : "Archive project");
@@ -645,7 +627,7 @@ function toggleProjectMenu(p, button) {
     icon("trash"), "Delete project");
   const menu = el("div", { id: "project-settings-menu", class: "menu project-menu", role: "group", "aria-label": `Project settings for ${p.name}`, tabindex: "-1" },
     el("div", { class: "label" }, "Color"), swatches,
-    el("div", { class: "label" }, "Icon"), icons, el("div", { class: "label" }, "Repos"), repos,
+    el("div", { class: "label" }, "Icon"), icons,
     el("div", { class: "sep" }), rename, archive, remove);
   document.body.append(menu);
   menu.addEventListener("keydown", (e) => {
@@ -693,15 +675,6 @@ function startRename(p) {
   renderNav();
   input.focus();
   input.select();
-}
-
-// Links (POST) or unlinks (DELETE) a repo; returns the project, or null after showing the error.
-async function changeRepo(slug, method, repo) {
-  try {
-    const p = await api(method, `/projects/${encodeURIComponent(slug)}/repos`, { repo });
-    loadBoard();
-    return p;
-  } catch (err) { toast(err.message); return null; }
 }
 
 async function pickColor(slug, color) {
@@ -779,7 +752,7 @@ function renderHeader() {
   $("#human-only").hidden = !projects.length;
   $("#human-only").setAttribute("aria-pressed", String(isHumanOnly()));
   if (!projects.length) { header.replaceChildren(); return; }
-  // Plain words for what each piece is: how much is open, and the repos on GitHub.
+  // Plain words for how much work is open in the selected project.
   const open = (n) => `${n} open task${n === 1 ? "" : "s"}`;
   if (!p) {
     const count = active.reduce((n, project) => n + project.open, 0);
@@ -790,8 +763,6 @@ function renderHeader() {
   header.replaceChildren(
     el("h1", { class: "project-heading" }, projectGlyph(p.slug), p.name),
     el("span", { class: "sub" }, p.archived ? `Archived · ${open(p.open)}` : open(p.open)),
-    ...p.repos.map((r) => el("a", { class: "repo-link", href: `https://github.com/${r}`, target: "_blank", rel: "noopener",
-                                    title: `Open ${r} on GitHub` }, icon("github"), r)),
   );
 }
 
@@ -817,7 +788,7 @@ function renderColumns() {
       el("h1", {}, projects.length ? "No active projects" : "Welcome to Brokan"),
       el("p", {}, projects.length
         ? "Your projects are in Archived. Restore one there, or create a new project."
-        : "Create your first project in the sidebar. Link it to a GitHub repo and agents working in that repo will find it on their own."),
+        : "Create your first project in the sidebar. You can choose it by name when working with an agent."),
       el("button", { class: "btn primary", onclick: showNewProject }, "New project")));
     return;
   }
@@ -1136,7 +1107,7 @@ $("#new-project").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   try {
-    const p = await api("POST", "/projects", { slug: f.get("slug"), name: f.get("name"), repo: f.get("repo") || null });
+    const p = await api("POST", "/projects", { slug: f.get("slug"), name: f.get("name") });
     hideNewProject();
     setProject(p.slug);
   } catch (err) { toast(err.message); }

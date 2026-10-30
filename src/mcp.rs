@@ -24,7 +24,7 @@ use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
 const DONE_LISTED: usize = 20;
 
 const INSTRUCTIONS: &str = "The user's kanban board, on this machine, for all their projects. Tasks look like \
-api#12. Without `project`, Brokan uses the project linked to this folder's GitHub repo. Keep it current unasked: \
+api#12. Pass `project` for multi-project boards; existing GitHub repo associations still work. Keep it current unasked: \
 doing when you start a task, comments on what you did, review when you finish or get stuck. Leave done and \
 human tasks to the user.";
 
@@ -97,19 +97,10 @@ impl Ctx {
             return Err(Error::NotFound(msg));
         };
         let cwd = cwd.display();
-        let msg = match (self.repos.first(), known.is_empty()) {
-            (Some(repo), false) => format!(
-                "No project is linked to {repo} (the git remote of {cwd}). Pass `project` (one of: {known}), \
-                 link this repo to one with link_repo, or create a project for it with create_project and repo \"{repo}\"."
-            ),
-            (Some(repo), true) => format!(
-                "No project is linked to {repo} (the git remote of {cwd}), and there are no projects yet. \
-                 Create one with create_project and repo \"{repo}\"."
-            ),
-            (None, false) => {
-                format!("Cannot tell the project: {cwd} has no git remote. Pass `project` (one of: {known}).")
-            }
-            (None, true) => "There are no projects yet. Create one with create_project.".to_string(),
+        let msg = if known.is_empty() {
+            "There are no projects yet. Create one with create_project.".to_string()
+        } else {
+            format!("Cannot tell the project from {cwd}. Pass `project` (one of: {known}).")
         };
         Err(Error::NotFound(msg))
     }
@@ -159,12 +150,11 @@ impl TaskKey {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct CreateProjectArgs {
     /// Short lowercase id, like api.
     slug: String,
     name: Option<String>,
-    /// GitHub owner/repo.
-    repo: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -234,14 +224,6 @@ struct AddCommentArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
-struct LinkRepoArgs {
-    /// Slug.
-    project: String,
-    /// GitHub owner/repo.
-    repo: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
 struct NextTaskArgs {
     /// Slug, or "all".
     project: Option<String>,
@@ -294,30 +276,23 @@ impl Brokan {
         }
     }
 
-    #[tool(description = "List active and archived projects with their repos and open task counts.")]
+    #[tool(description = "List active and archived projects with their open task counts.")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         Ok(self
-            .run(|ctx, store| {
+            .run(|_, store| {
                 let projects = store.list_projects()?;
                 if projects.is_empty() {
                     return Ok("No projects yet. Create one with create_project.".into());
                 }
-                let here = projects.iter().find(|p| p.repos.iter().any(|r| ctx.repos.contains(r)));
                 let mut out = String::new();
                 for p in &projects {
                     out.push_str(&p.slug);
                     if p.name != p.slug {
                         let _ = write!(out, " \"{}\"", p.name);
                     }
-                    if !p.repos.is_empty() {
-                        let _ = write!(out, " ({})", p.repos.join(", "));
-                    }
                     let _ = write!(out, ": {} open of {}", p.open, p.total);
                     if p.archived {
                         out.push_str(" [archived]");
-                    }
-                    if here.is_some_and(|h| h.id == p.id) {
-                        out.push_str(" <- current repo");
                     }
                     out.push('\n');
                 }
@@ -334,19 +309,8 @@ impl Brokan {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
-                let p = store.create_project(&args.slug, args.name.as_deref().unwrap_or(""), args.repo.as_deref())?;
-                let repo = p.repos.first().map(|r| format!(", linked to {r}")).unwrap_or_default();
-                Ok(format!("Created project {} ({}){repo}.", p.slug, p.name))
-            })
-            .await)
-    }
-
-    #[tool(description = "Link another GitHub repo to a project.")]
-    async fn link_repo(&self, Parameters(args): Parameters<LinkRepoArgs>) -> Result<CallToolResult, ErrorData> {
-        Ok(self
-            .run(move |_, store| {
-                let p = store.link_repo(&args.project, &args.repo)?;
-                Ok(format!("Project {} is linked to {}.", p.slug, p.repos.join(", ")))
+                let p = store.create_project(&args.slug, args.name.as_deref().unwrap_or(""), None)?;
+                Ok(format!("Created project {} ({}).", p.slug, p.name))
             })
             .await)
     }

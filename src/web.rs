@@ -130,7 +130,6 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
-        .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
         .route("/api/tasks/{id}/time", get(task_time).post(log_time))
@@ -331,15 +330,15 @@ async fn search(State(home): Shared, Query(q): Query<SearchQuery>) -> Response {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NewProject {
     slug: String,
     #[serde(default)]
     name: String,
-    repo: Option<String>,
 }
 
 async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Response {
-    with_store(home, move |_, s| s.create_project(&p.slug, &p.name, p.repo.as_deref())).await
+    with_store(home, move |_, s| s.create_project(&p.slug, &p.name, None)).await
 }
 
 #[derive(Deserialize)]
@@ -362,19 +361,6 @@ async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): 
         }
     })
     .await
-}
-
-#[derive(Deserialize)]
-struct RepoLink {
-    repo: String,
-}
-
-async fn link_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Json<RepoLink>) -> Response {
-    with_store(home, move |_, s| s.link_repo(&slug, &r.repo)).await
-}
-
-async fn unlink_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Json<RepoLink>) -> Response {
-    with_store(home, move |_, s| s.unlink_repo(&slug, &r.repo)).await
 }
 
 async fn delete_project(State(home): Shared, Path(slug): Path<String>) -> Response {
@@ -736,6 +722,13 @@ pub(crate) fn open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_project_never_accepts_repo() {
+        let project: NewProject = serde_json::from_str(r#"{"slug":"api","name":"API"}"#).unwrap();
+        assert_eq!(project.slug, "api");
+        assert!(serde_json::from_str::<NewProject>(r#"{"slug":"api","repo":"me/api"}"#).is_err());
+    }
 
     #[test]
     fn deadline_patch_distinguishes_omitted_from_null() {

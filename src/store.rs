@@ -570,7 +570,8 @@ impl Store {
         self.find_project(&slug)
     }
 
-    /// Links another repo to a project. Each repo belongs to one project.
+    /// Historical repo links remain readable; this helper is retained for compatibility tests only.
+    #[cfg(test)]
     pub fn link_repo(&self, slug: &str, repo: &str) -> Result<Project> {
         let project = self.find_project(slug)?;
         let repo = clean_repo(repo)?;
@@ -590,6 +591,7 @@ impl Store {
         self.find_project(&project.slug)
     }
 
+    #[cfg(test)]
     pub fn unlink_repo(&self, slug: &str, repo: &str) -> Result<Project> {
         let project = self.find_project(slug)?;
         let repo = repo_from_url(repo).unwrap_or_else(|| repo.trim().to_ascii_lowercase());

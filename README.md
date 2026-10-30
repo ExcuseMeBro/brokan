@@ -62,14 +62,14 @@ codex mcp add brokan -- brokan mcp                 # Codex
 
 Other MCP clients: run `brokan mcp` (apps like Raycast need the full path, from `which brokan`), or use the running board at `http://localhost:1317/mcp`.
 
-Then ask: *"take the next task from brokan and do it."* The agent moves the card to `doing` and comments as it works. It finds the right project from the git remote of the repo it works in; link more repos to a project from its ⋯ menu.
+Then ask: *"take the next task from project api in brokan and do it."* The agent moves the card to `doing` and comments as it works. Specify a project on multi-project boards; existing repo associations from older boards still resolve, but new projects do not ask for a repo.
 
 ## Your board on every machine
 
 A laptop, a desktop, a Raspberry Pi: they all share one board through a private git repo you own.
 
 1. [Create an empty private repo](https://github.com/new?name=brokan-data&visibility=private) on GitHub, or anywhere git can push.
-2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. Brokan makes `~/brokan` a git repo and pushes the board.
+2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. This is the only repo URL entered in Brokan; it syncs the whole board, not individual projects. Brokan makes `~/brokan` a git repo and pushes the board.
 3. On each other machine, do the same with the same URL: Brokan offers to use the board that's already there.
 
 From then on, choose Sync, or run `brokan sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Brokan asks which one to keep. To move to another repo, change it in Settings, under Sync.

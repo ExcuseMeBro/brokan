@@ -108,13 +108,6 @@ aside {
 .menu .swatch:hover, .menu .swatch:focus-visible { transform: scale(1.15); }
 .menu .swatch .icon svg { width: 13px; height: 13px; stroke-width: 3; }
 .menu .sep { height: 1px; background: var(--border); margin: 0 4px 6px; }
-.menu .repos { display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 10px; }
-.menu .repo { display: flex; align-items: center; gap: 6px; padding: 2px 0 2px 4px; }
-.menu .repo .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.menu .repo .unlink { width: auto; padding: 4px; color: var(--faint); }
-.menu .repo .unlink:hover { color: var(--danger); background: var(--danger-bg); }
-.menu .repo .unlink .icon svg { width: 14px; height: 14px; }
-.menu .repos input { margin-top: 4px; padding: 6px 10px; border-radius: 10px; font-size: 13px; }
 .menu button.danger:hover, .menu button.danger:focus-visible { background: var(--danger-bg); }
 .update { margin-top: 8px; background: var(--hover); }
 .update:hover, .update:focus-visible { background: var(--active); }
@@ -150,12 +143,6 @@ header .info { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
 header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
 header h1.project-heading { display: inline-flex; align-items: center; gap: 8px; }
 header .sub { color: var(--muted); }
-header .repo-link {
-  display: inline-flex; align-items: center; gap: 6px; align-self: center; padding: 3px 10px 3px 8px;
-  border-radius: 99px; background: var(--hover); color: var(--muted); font-size: 12.5px; text-decoration: none;
-}
-header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
-header .repo-link .icon svg { width: 14px; height: 14px; }
 #new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
 #new-task[hidden], #human-only[hidden] { display: none; }
 #new-task .icon svg { width: 16px; height: 16px; }
@@ -670,7 +657,6 @@ label.setting { cursor: pointer; }
     <p>The slug starts each task's key, like api#12.</p>
     <input class="field" name="slug" placeholder="Slug, like api" aria-label="Slug" required autocomplete="off" spellcheck="false" pattern="[a-zA-Z0-9][a-zA-Z0-9\-]{0,31}" title="Letters, digits and -, up to 32">
     <input class="field" name="name" placeholder="Name (optional)" aria-label="Name" autocomplete="off">
-    <input class="field" name="repo" placeholder="GitHub owner/repo (optional)" aria-label="GitHub repo" autocomplete="off" spellcheck="false">
     <div class="row">
       <button class="btn" type="button" id="new-project-cancel">Cancel</button>
       <button class="btn primary" type="submit">Create</button>
