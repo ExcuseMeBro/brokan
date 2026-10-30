@@ -62,6 +62,7 @@ function el(tag, attrs = {}, ...children) {
 // Line icons (from Lucide, ISC licence), drawn in the text colour.
 const ICONS = {
   newProject: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   board: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   code: '<path d="m8 17-5-5 5-5m8 0 5 5-5 5"/>',
@@ -107,22 +108,29 @@ let toastTimer;
 // Copies a task's key, like api#12, to paste to an agent. The clipboard API needs a
 // secure page; a board opened from another device over plain HTTP falls back.
 async function copyKey(text) {
+  let copied = false;
   try {
     await navigator.clipboard.writeText(text);
+    copied = true;
   } catch {
+    const focused = document.activeElement;
     const area = el("textarea", { style: "position:fixed;opacity:0" });
     area.value = text;
     document.body.append(area);
-    area.select();
-    document.execCommand("copy");
-    area.remove();
+    try { area.select(); copied = document.execCommand("copy"); }
+    catch { /* Clipboard permission can be denied on both paths. */ }
+    finally {
+      area.remove();
+      if (focused?.isConnected) focused.focus({ preventScroll: true });
+    }
   }
-  toast(`Copied ${text}`);
+  toast(copied ? `Copied ${text}` : `Could not copy ${text}`);
+  return copied;
 }
 
 function toast(message) {
   document.querySelector(".toast")?.remove();
-  const t = el("div", { class: "toast" }, message);
+  const t = el("div", { class: "toast", role: "status" }, message);
   document.body.append(t);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 3500);
@@ -1160,6 +1168,7 @@ async function openTask(id) {
   await refreshTask();
   if (state.task !== id) return;
   panel.classList.add("shown");
+  panel.inert = false;
   panel.setAttribute("aria-hidden", "false");
 }
 
@@ -1177,6 +1186,7 @@ function closeTask() {
   $("#p-timer").disabled = true;
   updateHash();
   panel.classList.remove("shown");
+  panel.inert = true;
   panel.setAttribute("aria-hidden", "true");
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
 }
@@ -1196,8 +1206,9 @@ async function refreshTask() {
   const { task, comments, images } = data;
   panelTask = task;
   refreshTime();
-  $("#p-key").textContent = key(task);
-  $("#p-key").title = `Copy ${key(task)}`;
+  $("#p-key-text").textContent = key(task);
+  $("#p-key").title = `Copy task ID ${key(task)}`;
+  $("#p-key").setAttribute("aria-label", `Copy task ID ${key(task)}`);
   // Never overwrite what is being typed or picked.
   if (!$("#p-project").contains(document.activeElement)) renderProjectPick(task);
   for (const [field, value] of [[$("#p-title"), task.title], [$("#p-desc"), task.description], [$("#p-tags"), task.tags.join(", ")]]) {
