@@ -27,6 +27,10 @@ listen = "127.0.0.1"
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
 # that cannot start `brokan mcp` themselves.
 mcp_http = true
+
+# Optional: directory whose immediate child Git repos appear in Git overview.
+# This is a LOCAL machine path, not the board's Sync repository URL.
+# git_root = "/Users/you/Projects"
 "#;
 
 const GITIGNORE: &str = "\
@@ -57,11 +61,19 @@ pub struct Config {
     #[serde(rename = "statuses")]
     _statuses: Option<toml::Value>,
     pub mcp_http: bool,
+    /// Opt-in server-side filesystem boundary for the read-only Git overview.
+    pub git_root: Option<PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true }
+        Self {
+            port: DEFAULT_PORT,
+            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            _statuses: None,
+            mcp_http: true,
+            git_root: None,
+        }
     }
 }
 
@@ -218,6 +230,16 @@ mod tests {
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());
+    }
+
+    #[test]
+    fn git_root_is_opt_in_and_loaded_from_local_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().join("default")).unwrap();
+        assert!(home.config.git_root.is_none());
+        fs::write(tmp.path().join("default/config.toml"), "git_root = \"/tmp/projects\"\n").unwrap();
+        let home = Home::open(tmp.path().join("default")).unwrap();
+        assert_eq!(home.config.git_root.as_deref(), Some(Path::new("/tmp/projects")));
     }
 
     #[test]

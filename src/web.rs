@@ -127,6 +127,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
         .route("/api/dashboard", get(dashboard))
+        .route("/api/git-overview", get(git_overview))
         .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
@@ -232,6 +233,15 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
 }
 
 type Shared = State<Arc<Home>>;
+
+async fn git_overview(State(home): Shared) -> Response {
+    let result = tokio::task::spawn_blocking(move || crate::git_overview::scan(home.config.git_root.as_deref())).await;
+    match result {
+        Ok(Ok(data)) => Json(data).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
 
 /// Runs `f` with a fresh connection on a blocking thread and answers with JSON.
 async fn with_store<T: Serialize + Send + 'static>(

@@ -22,6 +22,11 @@ const state = {
   project: "all",        // slug or "all"
   dashboard: false,      // #~dashboard is reserved (not a valid project slug)
   dashboardData: null,
+  gitOverview: false,   // #~git is reserved; Git is never part of the task board
+  gitData: null,
+  gitError: null,
+  gitFilter: "all",
+  gitRepo: "all",
   board: null,           // last /api/board reply
   changes: null,         // change counter seen last
   task: null,            // open task id
@@ -92,6 +97,7 @@ const ICONS = {
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
   chart: '<path d="M3 3v18h18M7 16v-5M12 16V7M17 16v-9"/>',
+  branch: '<circle cx="6" cy="3" r="2"/><circle cx="6" cy="21" r="2"/><circle cx="18" cy="6" r="2"/><path d="M6 5v14M18 8a6 6 0 0 1-6 6H6"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
@@ -378,7 +384,7 @@ async function loadBoard() {
 
 // The address is #project or #project/task-id, so a task can be linked to.
 function updateHash() {
-  const hash = state.dashboard ? "#~dashboard" : "#" + state.project + (state.task ? "/" + state.task : "");
+  const hash = state.gitOverview ? "#~git" : state.dashboard ? "#~dashboard" : "#" + state.project + (state.task ? "/" + state.task : "");
   if (location.hash !== hash) history.replaceState(null, "", hash);
 }
 
@@ -390,6 +396,7 @@ function readHash() {
 }
 
 function setProject(slug) {
+  state.gitOverview = false;
   state.dashboard = false;
   state.project = slug;
   try { localStorage.setItem("brokan.project", slug); } catch {}
@@ -405,6 +412,7 @@ function render() {
   renderTable();
   renderTimeline();
   renderDashboard();
+  renderGitOverview();
 }
 
 function setView(view) {
@@ -422,6 +430,7 @@ $("#view-gantt").addEventListener("click", () => setView("gantt"));
 
 function showDashboard() {
   if (state.task) closeTask();
+  state.gitOverview = false;
   state.dashboard = true;
   updateHash();
   if (state.board) render();
@@ -440,6 +449,32 @@ async function loadDashboard() {
   } catch (err) { if (state.dashboard) toast(err.message); }
 }
 
+function showGitOverview() {
+  if (state.task) closeTask();
+  state.dashboard = false;
+  state.gitOverview = true;
+  updateHash();
+  if (state.board) render();
+  loadGitOverview();
+}
+
+let gitRequest = 0;
+async function loadGitOverview() {
+  if (!state.gitOverview) return;
+  const request = ++gitRequest;
+  state.gitError = null;
+  try {
+    const data = await api("GET", "/git-overview");
+    if (request !== gitRequest || !state.gitOverview) return;
+    state.gitData = data;
+    renderGitOverview();
+  } catch (error) {
+    if (request !== gitRequest || !state.gitOverview) return;
+    state.gitError = error.message;
+    renderGitOverview();
+  }
+}
+
 function renderNav() {
   // Redrawing would take the field away from someone renaming a project.
   if (renaming && document.contains(renaming.input)) return;
@@ -448,7 +483,7 @@ function renderNav() {
   const archived = projects.filter((p) => p.archived);
   const open = active.reduce((n, p) => n + p.open, 0);
   const link = (slug, name, count, glyph) =>
-    el("a", { href: "#" + slug, class: !state.dashboard && state.project === slug ? "active" : null,
+    el("a", { href: "#" + slug, class: !state.dashboard && !state.gitOverview && state.project === slug ? "active" : null,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph,
       el("span", { class: "name" }, name),
@@ -464,6 +499,9 @@ function renderNav() {
   const dashboard = el("a", { href: "#~dashboard", class: state.dashboard ? "active" : null,
     onclick: (e) => { e.preventDefault(); showDashboard(); } },
     icon("chart"), el("span", { class: "name" }, "Dashboard"));
+  const gitLink = el("a", { href: "#~git", class: state.gitOverview ? "active" : null,
+    onclick: (e) => { e.preventDefault(); showGitOverview(); } },
+    icon("branch"), el("span", { class: "name" }, "Git overview"));
   const archivedOpen = localStorageGet("brokan.archivedOpen") !== "0";
   const archivedGroup = archived.length ? el("div", { class: "archive-group" },
     el("button", { type: "button", class: "archive-toggle", "aria-expanded": String(archivedOpen),
@@ -476,11 +514,89 @@ function renderNav() {
     el("div", { id: "archived-projects", class: "archive-items", hidden: !archivedOpen }, ...archived.map(item))) : null;
   $("#nav").replaceChildren(
     dashboard,
+    gitLink,
     link("all", "All projects", open, icon("board")),
     ...(active.length ? [el("div", { class: "label" }, "Projects")] : []),
     ...active.map(item),
     ...(archivedGroup ? [archivedGroup] : []),
   );
+}
+
+// ---------- read-only local Git overview ----------
+
+function gitFlags(branch, repo) {
+  const flags = [];
+  if (branch.dirty) flags.push("Uncommitted");
+  if (repo.stash_count) flags.push("Stash in repo");
+  if (branch.unpushed) flags.push("Unpushed");
+  if (branch.unmerged) flags.push("Unmerged");
+  if (branch.upstream_unknown) flags.push(branch.upstream ? "Tracking unavailable" : "No upstream");
+  if (!branch.worktree) flags.push("Not checked out");
+  if (!repo.base) flags.push("No base");
+  if (branch.status_error) flags.push("Status unavailable");
+  if (!flags.length) flags.push("Clean");
+  return flags;
+}
+
+function renderGitOverview() {
+  const root = $("#git-overview");
+  root.hidden = !state.gitOverview;
+  if (!state.gitOverview) return;
+  const data = state.gitData;
+  if (state.gitError) {
+    root.replaceChildren(el("p", { role: "alert", class: "git-warning" }, state.gitError),
+      el("button", { type: "button", class: "btn", onclick: loadGitOverview }, "Retry"));
+    return;
+  }
+  if (!data) { root.replaceChildren(el("p", {}, "Loading local repositories…")); return; }
+  if (!data.root) {
+    root.replaceChildren(el("div", { class: "git-empty" }, el("h2", {}, "Choose a folder on this machine"),
+      el("p", {}, "Set git_root to the absolute path of your projects directory in ~/brokan/config.toml, then restart Brokan. Only direct child repositories are scanned; Sync is a separate setting."),
+      el("code", {}, 'git_root = "/Users/you/Projects"')));
+    return;
+  }
+  const repos = data.repos;
+  const repoSelect = el("select", { class: "field", "aria-label": "Filter Git repositories",
+    onchange: (e) => { state.gitRepo = e.target.value; renderGitOverview(); } },
+  el("option", { value: "all" }, "All repositories"),
+    ...repos.map((repo) => el("option", { value: repo.name }, repo.name)));
+  repoSelect.value = state.gitRepo;
+  const statusSelect = el("select", { class: "field", "aria-label": "Filter branch status",
+    onchange: (e) => { state.gitFilter = e.target.value; renderGitOverview(); } },
+    ...["all", "Uncommitted", "Stash in repo", "Unpushed", "Unmerged", "Clean"].map((s) =>
+      el("option", { value: s }, s === "all" ? "All statuses" : s)));
+  statusSelect.value = state.gitFilter;
+  const visible = repos.filter((r) => state.gitRepo === "all" || r.name === state.gitRepo).flatMap((repo) =>
+    repo.branches.filter((branch) => state.gitFilter === "all" || gitFlags(branch, repo).includes(state.gitFilter))
+      .map((branch) => ({ repo, branch })));
+  root.replaceChildren(
+    el("div", { class: "git-controls" }, el("p", {}, `${repos.length} repos · ${visible.length} branches`,
+      el("small", {}, `Folder: ${data.root}`)), repoSelect, statusSelect,
+      el("button", { class: "btn", type: "button", onclick: loadGitOverview }, "Refresh")),
+    ...data.warnings.map((w) => el("p", { class: "git-warning", role: "status" }, w)),
+    ...repos.filter((r) => r.warning).map((r) => el("p", { class: "git-warning", role: "status" }, `${r.name}: ${r.warning}`)),
+    ...repos.filter((r) => (state.gitRepo === "all" || state.gitRepo === r.name) && r.worktrees?.length)
+      .map((r) => el("details", { class: "git-worktrees" },
+        el("summary", {}, `${r.name} · ${r.worktrees.length} local worktrees`),
+        el("ul", {}, ...r.worktrees.map((w) => el("li", {}, w))))),
+    visible.length ? el("div", { class: "git-list" }, ...visible.map(({ repo, branch }) => {
+      const flags = gitFlags(branch, repo);
+      return el("details", { class: "git-branch" },
+        el("summary", {}, icon("branch"), el("strong", {}, branch.name),
+          el("span", { class: "git-repo" }, repo.name),
+          el("span", { class: "git-badges" }, ...flags.map((f) => el("span", { class: "git-badge" }, f)))),
+        el("div", { class: "git-detail" },
+          el("p", {}, "Worktree: ", branch.worktree || "Not checked out in the selected folder"),
+          el("p", {}, "Upstream: ", branch.upstream || "Not configured"),
+          el("p", {}, "Base: ", repo.base || "No dev/main/master branch"),
+          branch.status_error ? el("p", { class: "git-warning" }, branch.status_error) : null,
+          el("p", {}, `Stashes in repository: ${repo.stash_count}`),
+          el("h3", {}, "Recent commits"),
+          branch.commits.length ? el("ul", {}, ...branch.commits.map((c) => el("li", {}, c))) : el("p", {}, "No commits"),
+          el("h3", {}, "New TODO / FIXME / HACK lines since base"),
+          branch.todos.length ? el("ul", {}, ...branch.todos.map((t) =>
+            el("li", {}, el("code", {}, `${t.file}:${t.line}`), " ", t.text))) : el("p", {}, "None found (large diffs may be skipped).")));
+    })) : el("p", { class: "git-empty" }, repos.length ? "No branches match these filters." : "No Git repositories found directly inside this folder."));
 }
 
 // ---------- dashboard ----------
@@ -739,6 +855,13 @@ function currentProject() {
 }
 
 function renderHeader() {
+  if (state.gitOverview) {
+    $("#new-task").hidden = true;
+    $("#human-only").hidden = true;
+    $("#view-switch").hidden = true;
+    $("#header").replaceChildren(el("h1", {}, "Git overview"), el("span", { class: "sub" }, "Local branches · read-only"));
+    return;
+  }
   if (state.dashboard) {
     $("#new-task").hidden = true;
     $("#human-only").hidden = true;
@@ -786,7 +909,7 @@ async function deleteProject(p) {
 function renderColumns() {
   const columns = $("#columns");
   $("#dashboard").hidden = !state.dashboard;
-  if (state.dashboard || state.view !== "board") { columns.style.display = "none"; return; }
+  if (state.gitOverview || state.dashboard || state.view !== "board") { columns.style.display = "none"; return; }
   const { statuses, projects, tasks } = state.board;
   if (!projects.length || (state.project === "all" && projects.every((p) => p.archived))) {
     state.layout = "";
@@ -870,7 +993,7 @@ function sortTableTasks(tasks, sort, statuses, projects) {
 
 function renderTable() {
   const root = $("#table-view");
-  root.hidden = state.dashboard || state.view !== "table";
+  root.hidden = state.gitOverview || state.dashboard || state.view !== "table";
   if (root.hidden || !state.board) return;
   const { projects, tasks, statuses } = state.board;
   if (!projects.length || (state.project === "all" && projects.every((p) => p.archived))) {
@@ -964,7 +1087,7 @@ function monthSchedule(tasks, month) {
 
 function renderTimeline() {
   const root = $("#timeline-view");
-  root.hidden = state.dashboard || !["calendar", "gantt"].includes(state.view);
+  root.hidden = state.gitOverview || state.dashboard || !["calendar", "gantt"].includes(state.view);
   if (root.hidden || !state.board) return;
   const month = state.timelineMonth;
   const year = month.getFullYear(), index = month.getMonth();
@@ -1735,8 +1858,9 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("hashchange", () => {
   const { slug, task } = readHash();
-  if (slug === "~dashboard") { if (!state.dashboard) showDashboard(); return; }
-  if (state.dashboard || (slug || "all") !== state.project) setProject(slug || "all");
+  if (slug === "~dashboard") { if (!state.dashboard || state.gitOverview) showDashboard(); return; }
+  if (slug === "~git") { if (!state.gitOverview) showGitOverview(); return; }
+  if (state.gitOverview || state.dashboard || (slug || "all") !== state.project) setProject(slug || "all");
   if (task && task !== state.task) openTask(task);
   else if (!task && state.task) closeTask();
 });
@@ -1991,7 +2115,9 @@ setInterval(() => {
 {
   const { slug, task } = readHash();
   state.dashboard = slug === "~dashboard";
-  state.project = state.dashboard ? "all" : slug || localStorageGet("brokan.project") || "all";
-  loadBoard().then(() => { if (task && !state.dashboard) openTask(task); });
+  state.gitOverview = slug === "~git";
+  state.project = state.dashboard || state.gitOverview ? "all" : slug || localStorageGet("brokan.project") || "all";
+  loadBoard().then(() => { if (task && !state.dashboard && !state.gitOverview) openTask(task); });
   if (state.dashboard) loadDashboard();
+  if (state.gitOverview) loadGitOverview();
 }

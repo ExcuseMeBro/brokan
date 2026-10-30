@@ -54,6 +54,12 @@ Paste or drop an image into a task or a comment to attach it, as in ChatGPT. Age
 
 When a new version is out, the sidebar offers it: one click installs it and restarts the board.
 
+## Git overview
+
+The **Git overview** sidebar menu shows local branches across repositories in one folder, with uncommitted files, repo-level stashes, unpushed/unmerged commits, recent commit subjects, worktree paths and TODO/FIXME/HACK lines added since the local `dev`/`main`/`master` branch. Filter by repository and status; refresh when you need a new snapshot. The view never pushes, merges, deletes branches or creates pull requests.
+
+To opt in, set `git_root` in your **local machine's** `~/brokan/config.toml` to the absolute folder containing your Git repositories (for example `git_root = "/Users/you/Projects"`), then restart Brokan when safe. This is a local filesystem setting, **not** the Settings → Sync repository URL. Only direct child Git repositories are scanned; no folder is scanned by default. Repository data is visible to anyone who can reach your Brokan board, so keep it on localhost if it is private. Branches without an upstream display “No upstream” rather than assuming they were pushed; worktrees outside the selected folder are not inspected. Very large diffs may omit TODOs.
+
 ## Connect your agents
 
 ```sh

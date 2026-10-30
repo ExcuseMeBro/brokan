@@ -1,5 +1,6 @@
 mod background;
 mod export;
+mod git_overview;
 mod home;
 mod mcp;
 mod service;
