@@ -1,4 +1,4 @@
-//! `kanzo`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
+//! `brokan`: the board page, the small JSON API behind it, and MCP over HTTP at `/mcp`.
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -38,8 +38,8 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let listener = match tokio::net::TcpListener::bind(SocketAddr::new(listen, port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            if is_kanzo(port).await {
-                println!("Kanzo is already running at {url}");
+            if is_brokan(listen, port).await {
+                println!("Brokan is already running at {url}");
                 if open {
                     open_browser(&url);
                 }
@@ -50,7 +50,7 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
         Err(e) => return Err(e).context(format!("cannot listen on {listen} port {port}")),
     };
     let guard = Guard::new(port, !listen.is_loopback());
-    println!("Kanzo board at {url}, data in {}", home.dir.display());
+    println!("Brokan board at {url}, data in {}", home.dir.display());
     if guard.lan {
         if let Some(name) = guard.names.iter().find(|n| n.ends_with(".local")) {
             println!("On your network: http://{name}:{port} (or this machine's IP address)");
@@ -123,15 +123,20 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/images/{file}", get(image_file))
-        .route("/api/ping", get(|| async { "kanzo" }))
+        .route("/api/ping", get(|| async { "brokan" }))
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
+        .route("/api/dashboard", get(dashboard))
+        .route("/api/git-overview", get(git_overview))
+        .route("/api/git-overview/details", get(git_overview_details))
         .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
-        .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", get(get_task).patch(update_task).delete(delete_task))
+        .route("/api/tasks/{id}/time", get(task_time).post(log_time))
+        .route("/api/tasks/{id}/time/{entry}", delete(delete_time))
+        .route("/api/tasks/{id}/timer", post(start_timer).delete(stop_timer))
         .route("/api/tasks/{id}/move", post(move_task))
         .route("/api/tasks/{id}/comments", post(add_comment))
         .route("/api/comments/{id}", delete(delete_comment))
@@ -218,7 +223,7 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
     let mut res = if ok {
         next.run(req).await
     } else {
-        (StatusCode::FORBIDDEN, "kanzo does not answer requests from other sites").into_response()
+        (StatusCode::FORBIDDEN, "brokan does not answer requests from other sites").into_response()
     };
     let headers = res.headers_mut();
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
@@ -229,6 +234,32 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
 }
 
 type Shared = State<Arc<Home>>;
+
+async fn git_overview(State(home): Shared) -> Response {
+    let result = tokio::task::spawn_blocking(move || crate::git_overview::scan(home.git_root.as_deref())).await;
+    match result {
+        Ok(Ok(data)) => Json(data).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitDetailQuery {
+    repo: String,
+    branch: String,
+}
+
+async fn git_overview_details(State(home): Shared, Query(q): Query<GitDetailQuery>) -> Response {
+    let result =
+        tokio::task::spawn_blocking(move || crate::git_overview::details(home.git_root.as_deref(), &q.repo, &q.branch))
+            .await;
+    match result {
+        Ok(Ok(data)) => Json(data).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
 
 /// Runs `f` with a fresh connection on a blocking thread and answers with JSON.
 async fn with_store<T: Serialize + Send + 'static>(
@@ -255,7 +286,7 @@ async fn with_store<T: Serialize + Send + 'static>(
 }
 
 /// What the page compares to see if anything changed: the change counter, plus
-/// the database file's identity so a board pulled by `kanzo sync` always reloads.
+/// the database file's identity so a board pulled by `brokan sync` always reloads.
 fn change_token(home: &Home, s: &Store) -> store::Result<String> {
     Ok(format!("{}-{}", s.changes()?, home.db_identity()))
 }
@@ -311,6 +342,18 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
     .await
 }
 
+async fn dashboard(State(home): Shared) -> Response {
+    with_store(home, |home, s| {
+        let mut dashboard = s.dashboard()?;
+        match crate::mcp_metrics::snapshot(&home.mcp_metrics_path) {
+            Ok(summary) => dashboard.mcp = Some(summary),
+            Err(_) => dashboard.mcp_error = Some("MCP metrics are temporarily unavailable."),
+        }
+        Ok(dashboard)
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 struct SearchQuery {
     #[serde(default)]
@@ -323,48 +366,37 @@ async fn search(State(home): Shared, Query(q): Query<SearchQuery>) -> Response {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NewProject {
     slug: String,
     #[serde(default)]
     name: String,
-    repo: Option<String>,
 }
 
 async fn create_project(State(home): Shared, Json(p): Json<NewProject>) -> Response {
-    with_store(home, move |_, s| s.create_project(&p.slug, &p.name, p.repo.as_deref())).await
+    with_store(home, move |_, s| s.create_project(&p.slug, &p.name, None)).await
 }
 
 #[derive(Deserialize)]
 struct ProjectPatch {
     name: Option<String>,
     color: Option<String>,
+    icon: Option<String>,
+    archived: Option<bool>,
 }
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
     with_store(home, move |_, s| {
-        let mut project = None;
-        if let Some(name) = &p.name {
-            project = Some(s.rename_project(&slug, name)?);
+        if let Some(archived) = p.archived {
+            if p.name.is_some() || p.color.is_some() || p.icon.is_some() {
+                return Err(Error::Invalid("archive separately from project appearance changes".into()));
+            }
+            s.set_project_archived(&slug, archived)
+        } else {
+            s.update_project(&slug, p.name.as_deref(), p.color.as_deref(), p.icon.as_deref())
         }
-        if let Some(color) = &p.color {
-            project = Some(s.set_project_color(&slug, color)?);
-        }
-        project.map_or_else(|| s.find_project(&slug), Ok)
     })
     .await
-}
-
-#[derive(Deserialize)]
-struct RepoLink {
-    repo: String,
-}
-
-async fn link_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Json<RepoLink>) -> Response {
-    with_store(home, move |_, s| s.link_repo(&slug, &r.repo)).await
-}
-
-async fn unlink_repo(State(home): Shared, Path(slug): Path<String>, Json(r): Json<RepoLink>) -> Response {
-    with_store(home, move |_, s| s.unlink_repo(&slug, &r.repo)).await
 }
 
 async fn delete_project(State(home): Shared, Path(slug): Path<String>) -> Response {
@@ -381,17 +413,27 @@ struct NewTask {
     title: String,
     #[serde(default)]
     description: String,
+    priority: Option<String>,
+    start_at: Option<String>,
+    deadline_at: Option<String>,
 }
 
 async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
     with_store(home, move |_, s| {
         let project = s.find_project(&t.project)?;
-        s.create_task_in(project.id, None, &t.title, &t.description)
+        s.create_task_with_schedule(
+            project.id,
+            None,
+            &t.title,
+            &t.description,
+            t.priority.as_deref(),
+            store::Schedule { start_at: t.start_at.as_deref(), deadline_at: t.deadline_at.as_deref() },
+        )
     })
     .await
 }
 
-/// Board settings, kept in kanzo.db so they sync with the board.
+/// Board settings, kept in brokan.db so they sync with the board.
 #[derive(Deserialize)]
 struct Settings {
     backlog: bool,
@@ -415,6 +457,31 @@ async fn get_task(State(home): Shared, Path(id): Path<i64>) -> Response {
     .await
 }
 
+async fn task_time(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.time_report(id)).await
+}
+
+#[derive(Deserialize)]
+struct Minutes {
+    minutes: i64,
+}
+
+async fn log_time(State(home): Shared, Path(id): Path<i64>, Json(body): Json<Minutes>) -> Response {
+    with_store(home, move |_, s| s.log_time(id, body.minutes)).await
+}
+
+async fn start_timer(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.start_timer(id)).await
+}
+
+async fn stop_timer(State(home): Shared, Path(id): Path<i64>) -> Response {
+    with_store(home, move |_, s| s.stop_timer(id)).await
+}
+
+async fn delete_time(State(home): Shared, Path((id, entry)): Path<(i64, i64)>) -> Response {
+    with_store(home, move |_, s| s.delete_time(id, entry)).await
+}
+
 #[derive(Deserialize)]
 struct Patch {
     title: Option<String>,
@@ -423,6 +490,11 @@ struct Patch {
     project: Option<String>,
     tags: Option<String>,
     human: Option<bool>,
+    priority: Option<String>,
+    #[serde(default, deserialize_with = "store::nullable_string")]
+    start_at: Option<Option<String>>,
+    #[serde(default, deserialize_with = "store::nullable_string")]
+    deadline_at: Option<Option<String>>,
 }
 
 async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Patch>) -> Response {
@@ -437,6 +509,9 @@ async fn update_task(State(home): Shared, Path(id): Path<i64>, Json(p): Json<Pat
                 project_id,
                 tags: p.tags,
                 human: p.human,
+                priority: p.priority,
+                start_at: p.start_at,
+                deadline_at: p.deadline_at,
             },
         )
     })
@@ -582,7 +657,7 @@ struct SyncRequest {
     keep: Option<String>,
 }
 
-/// The board's sync button: the same as `kanzo sync`, without git ever prompting. When
+/// The board's sync button: the same as `brokan sync`, without git ever prompting. When
 /// both sides changed, answers 409 with `diverged`, and the board asks which side to keep.
 async fn sync_now(State(home): Shared, Json(r): Json<SyncRequest>) -> Response {
     let keep = match r.keep.as_deref() {
@@ -644,7 +719,7 @@ async fn update_now() -> Response {
                 // Let the answer reach the board first.
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 let e = update::restart(&exe);
-                eprintln!("kanzo: updated, but cannot restart: {e}");
+                eprintln!("brokan: updated, but cannot restart: {e}");
             });
             Json(json!({ "restarting": true })).into_response()
         }
@@ -653,19 +728,24 @@ async fn update_now() -> Response {
     }
 }
 
-/// True when the program on `port` answers like a Kanzo board.
-async fn is_kanzo(port: u16) -> bool {
+/// True when the program on `port` answers like a Brokan board.
+pub(crate) async fn is_brokan(listen: IpAddr, port: u16) -> bool {
+    let address = match listen {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        _ => listen,
+    };
     let probe = async {
-        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let mut conn = tokio::net::TcpStream::connect(SocketAddr::new(address, port)).await.ok()?;
         conn.write_all(b"GET /api/ping HTTP/1.0\r\nHost: localhost\r\n\r\n").await.ok()?;
         let mut reply = String::new();
         conn.read_to_string(&mut reply).await.ok()?;
-        Some(reply.ends_with("kanzo"))
+        Some(reply.ends_with("brokan"))
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), probe).await.ok().flatten().unwrap_or(false)
 }
 
-fn open_browser(url: &str) {
+pub(crate) fn open_browser(url: &str) {
     if cfg!(target_os = "macos") {
         if std::process::Command::new("open").arg(url).spawn().is_err() {
             eprintln!("Open {url} in your browser.");
@@ -684,20 +764,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_project_never_accepts_repo() {
+        let project: NewProject = serde_json::from_str(r#"{"slug":"api","name":"API"}"#).unwrap();
+        assert_eq!(project.slug, "api");
+        assert!(serde_json::from_str::<NewProject>(r#"{"slug":"api","repo":"me/api"}"#).is_err());
+    }
+
+    #[test]
+    fn deadline_patch_distinguishes_omitted_from_null() {
+        let omitted: Patch = serde_json::from_str("{}").unwrap();
+        let cleared: Patch = serde_json::from_str(r#"{"start_at":null,"deadline_at":null}"#).unwrap();
+        let set: Patch =
+            serde_json::from_str(r#"{"start_at":"2024-02-28T12:30:00Z","deadline_at":"2024-02-29T12:30:00Z"}"#)
+                .unwrap();
+        assert_eq!(omitted.start_at, None);
+        assert_eq!(omitted.deadline_at, None);
+        assert_eq!(cleared.start_at, Some(None));
+        assert_eq!(cleared.deadline_at, Some(None));
+        assert_eq!(set.start_at, Some(Some("2024-02-28T12:30:00Z".into())));
+        assert_eq!(set.deadline_at, Some(Some("2024-02-29T12:30:00Z".into())));
+    }
+
+    #[test]
     fn hosts() {
-        let local = Guard { port: 4242, lan: false, names: vec![] };
-        for ok in ["localhost", "localhost:4242", "127.0.0.1:4242", "[::1]:4242", "LOCALHOST:4242"] {
+        let local = Guard { port: 1317, lan: false, names: vec![] };
+        for ok in ["localhost", "localhost:1317", "127.0.0.1:1317", "[::1]:1317", "LOCALHOST:1317"] {
             assert!(local.allows(ok), "{ok}");
         }
-        for bad in ["evil.com", "evil.com:4242", "localhost:80", "192.168.1.5:4242", "", "pi.local:4242"] {
+        for bad in ["evil.com", "evil.com:1317", "localhost:80", "192.168.1.5:1317", "", "pi.local:1317"] {
             assert!(!local.allows(bad), "{bad}");
         }
 
-        let lan = Guard { port: 4242, lan: true, names: vec!["pi".into(), "pi.local".into()] };
-        for ok in ["localhost:4242", "192.168.1.5:4242", "[fe80::1]:4242", "pi.local:4242", "pi:4242", "PI.LOCAL."] {
+        let lan = Guard { port: 1317, lan: true, names: vec!["pi".into(), "pi.local".into()] };
+        for ok in ["localhost:1317", "192.168.1.5:1317", "[fe80::1]:1317", "pi.local:1317", "pi:1317", "PI.LOCAL."] {
             assert!(lan.allows(ok), "{ok}");
         }
-        for bad in ["evil.com:4242", "pi.evil.com:4242", "192.168.1.5:80"] {
+        for bad in ["evil.com:1317", "pi.evil.com:1317", "192.168.1.5:80"] {
             assert!(!lan.allows(bad), "{bad}");
         }
     }

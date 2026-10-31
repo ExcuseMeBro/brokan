@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kanzo</title>
+<title>Brokan</title>
 <link rel="icon" href="/logo.png">
 <style>
 :root {
@@ -46,7 +46,7 @@ aside {
   display: flex; flex-direction: column; min-height: 0; padding: 12px 8px;
 }
 .brand { font-weight: 600; font-size: 17px; padding: 4px 10px 16px; letter-spacing: -.01em; display: flex; align-items: center; gap: 10px; }
-.brand img { width: 28px; height: 28px; margin: -4px 0; }
+.brand img { width: 66px; height: auto; flex: none; }
 .brand .ghost { width: auto; margin: -6px 0 -6px auto; padding: 6px; color: var(--muted); }
 .brand .ghost:hover, .brand .ghost:focus-visible { color: var(--text); }
 .brand .ghost + .ghost { margin-left: 0; }
@@ -62,6 +62,15 @@ aside {
 .nav a .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .nav a .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .nav .label { color: var(--faint); padding: 18px 10px 6px; }
+.nav .archive-group { margin-top: 10px; }
+.nav .archive-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: 10px; background: none; color: var(--muted); text-align: left; cursor: pointer; }
+.nav .archive-toggle:hover, .nav .archive-toggle:focus-visible { background: var(--hover); color: var(--text); }
+.nav .archive-toggle .name { flex: 1; }
+.nav .archive-toggle .count { font-size: 12px; font-variant-numeric: tabular-nums; }
+.nav .archive-items { padding-left: 10px; }
+.nav .archive-items .item { opacity: .8; }
+.nav .archive-items .item.active, .nav .archive-items .item:focus-within { opacity: 1; }
 /* A project row: its "more" button takes the count's place on hover, like most sidebars. */
 .nav .item { position: relative; }
 .nav .more {
@@ -84,6 +93,11 @@ aside {
   background: none; text-align: left;
 }
 .menu button:hover, .menu button:focus-visible { background: var(--hover); }
+.menu.project-menu { min-width: 230px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.menu .project-icons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px 8px 10px; }
+.menu .project-icon { justify-content: center; width: 100%; height: 38px; padding: 8px; color: var(--text); }
+.menu .project-icon.selected { background: var(--active); box-shadow: inset 0 0 0 1px var(--border); }
+.menu .project-icon:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
 .menu button.danger { color: var(--danger); }
 .menu .label { color: var(--faint); font-size: 12px; padding: 4px 10px 0; }
 .menu .swatches { display: flex; gap: 6px; padding: 8px 10px 10px; }
@@ -94,13 +108,6 @@ aside {
 .menu .swatch:hover, .menu .swatch:focus-visible { transform: scale(1.15); }
 .menu .swatch .icon svg { width: 13px; height: 13px; stroke-width: 3; }
 .menu .sep { height: 1px; background: var(--border); margin: 0 4px 6px; }
-.menu .repos { display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 10px; }
-.menu .repo { display: flex; align-items: center; gap: 6px; padding: 2px 0 2px 4px; }
-.menu .repo .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.menu .repo .unlink { width: auto; padding: 4px; color: var(--faint); }
-.menu .repo .unlink:hover { color: var(--danger); background: var(--danger-bg); }
-.menu .repo .unlink .icon svg { width: 14px; height: 14px; }
-.menu .repos input { margin-top: 4px; padding: 6px 10px; border-radius: 10px; font-size: 13px; }
 .menu button.danger:hover, .menu button.danger:focus-visible { background: var(--danger-bg); }
 .update { margin-top: 8px; background: var(--hover); }
 .update:hover, .update:focus-visible { background: var(--active); }
@@ -134,15 +141,18 @@ header {
 }
 header .info { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; flex: 1; min-width: 0; }
 header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
+header h1.project-heading { display: inline-flex; align-items: center; gap: 8px; }
 header .sub { color: var(--muted); }
-header .repo-link {
-  display: inline-flex; align-items: center; gap: 6px; align-self: center; padding: 3px 10px 3px 8px;
-  border-radius: 99px; background: var(--hover); color: var(--muted); font-size: 12.5px; text-decoration: none;
-}
-header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
-header .repo-link .icon svg { width: 14px; height: 14px; }
 #new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
+#new-task[hidden], #human-only[hidden] { display: none; }
 #new-task .icon svg { width: 16px; height: 16px; }
+/* All task views share the project and filters; the choice is local to this browser. */
+.view-switch { display: flex; gap: 2px; background: var(--field); border-radius: 10px; padding: 3px; }
+.view-switch[hidden] { display: none; }
+.view-switch button { border: 0; border-radius: 8px; padding: 5px 10px; background: none; color: var(--muted); }
+.view-switch button:hover { background: var(--hover); color: var(--text); }
+.view-switch button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+.view-switch button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 /* Show only human tasks: a small icon, coloured while the filter is on. */
 #human-only { width: auto; padding: 6px; color: var(--muted); }
 #human-only:hover, #human-only:focus-visible { color: var(--text); }
@@ -196,6 +206,17 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .card .human-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
 .card .human-mark .icon svg { width: 15px; height: 15px; }
+.card .priority { display: inline-flex; margin-top: 6px; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+.card .priority.low { color: var(--muted); background: var(--hover); }
+.card .priority.medium { color: #725400; background: #fff4d6; }
+.card .priority.high { color: #a33c0e; background: #fff0e5; }
+.card .priority.urgent { color: var(--danger); background: var(--danger-bg); }
+.card .deadline-badge { display: block; width: fit-content; max-width: 100%; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.card .deadline-badge.overdue, #p-deadline-hint.overdue { color: var(--danger); font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .card .priority.medium { color: #f5ce69; background: #3b2f11; }
+  .card .priority.high { color: #ffad7a; background: #42251b; }
+}
 /* An on/off switch, for the Human field. */
 .human-field { display: flex; align-items: center; gap: 10px; }
 .props .human-field .hint { color: var(--faint); font-size: 12px; }
@@ -224,6 +245,171 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 }
 .empty h1 { color: var(--text); font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
 
+/* Dense table companion to the kanban board; the first column stays in view on narrow screens. */
+#table-view { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 24px 24px; }
+#table-view[hidden] { display: none; }
+#table-view .empty { align-self: center; }
+#table-view .empty h2 { color: var(--text); font-size: 22px; font-weight: 600; }
+.table-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
+.task-table { width: 100%; min-width: 860px; border-spacing: 0; text-align: left; }
+.task-table th, .task-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.task-table thead th { position: sticky; top: 0; z-index: 2; background: var(--col); color: var(--muted); font-size: 12px; font-weight: 500; }
+.task-table tbody th { font-weight: 500; }
+.task-table th:first-child { position: sticky; left: 0; z-index: 1; background: var(--bg); min-width: 230px; max-width: 320px; }
+.task-table thead th:first-child { z-index: 3; background: var(--col); }
+.task-table tbody tr:hover td, .task-table tbody tr:hover th:first-child { background: var(--card-hover); }
+.task-table tbody tr.selected td, .task-table tbody tr.selected th:first-child { background: var(--active); }
+.task-table tbody tr:last-child th, .task-table tbody tr:last-child td { border-bottom: 0; }
+.task-table thead button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; margin: -3px -6px;
+  background: none; border: 0; border-radius: 6px; color: inherit; white-space: nowrap; }
+.task-table thead button:hover { color: var(--text); background: var(--hover); }
+.task-table thead button:focus-visible, .task-table a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.task-table .sort-arrow { color: var(--link); font-size: 14px; }
+.task-table tbody th a { display: block; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.task-table tbody th a:hover { text-decoration: underline; }
+.task-table .task-key { display: block; margin-top: 2px; color: var(--muted); font-weight: 400; }
+.task-table td { white-space: nowrap; color: var(--muted); }
+.task-table td:nth-child(2), .task-table td:nth-child(3) { color: var(--text); }
+.task-table td .icon, .task-table td .status-icon { vertical-align: middle; margin-right: 7px; }
+.task-table td.overdue { color: var(--danger); font-weight: 600; }
+.task-table td time { font-variant-numeric: tabular-nums; }
+/* Calendar and Gantt share one local-month navigator and the board's task/project colors. */
+#timeline-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 0 24px 24px; }
+#timeline-view[hidden] { display: none; }
+.timeline-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.timeline-heading h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.timeline-heading p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+.timeline-controls { display: inline-flex; gap: 6px; }
+.timeline-controls .btn { min-height: 34px; padding: 5px 12px; border-radius: 8px; }
+#timeline-view button:focus-visible, #timeline-view a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.timeline-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
+.timeline-empty { color: var(--muted); padding: 24px; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(130px, 1fr)); min-width: 910px; }
+.calendar-weekday { position: sticky; top: 0; z-index: 1; padding: 9px 12px; background: var(--col); color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
+.calendar-cell { min-height: 132px; min-width: 0; padding: 8px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.calendar-cell:nth-child(7n) { border-right: 0; }
+.calendar-cell.outside { background: var(--field); }
+.calendar-cell h3 { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.calendar-cell.today h3 span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--accent-text); background: var(--accent); }
+.calendar-events { list-style: none; padding: 0; margin: 0; display: grid; align-content: start; gap: 4px; max-height: 160px; overflow: auto; }
+.calendar-events li { padding: 4px 6px; border-left: 3px solid var(--event-color); border-radius: 3px 7px 7px 3px; background: var(--col); font-size: 12px; }
+.calendar-events .event-kind { display: block; font-size: 11px; color: var(--muted); }
+.calendar-events a { display: block; overflow-wrap: anywhere; color: var(--text); text-decoration: none; }
+.calendar-events a:hover { text-decoration: underline; }
+.gantt-chart { border-spacing: 0; table-layout: fixed; text-align: left; }
+.gantt-label-col { width: 220px; }
+.gantt-chart col:not(.gantt-label-col) { width: 38px; }
+.gantt-chart thead th { position: sticky; top: 0; z-index: 2; height: 34px; border-bottom: 1px solid var(--border); background: var(--col); color: var(--muted); font-size: 11px; font-weight: 500; text-align: center; }
+.gantt-chart thead th.today { color: var(--link); font-weight: 700; }
+.gantt-chart .gantt-task { position: sticky; left: 0; z-index: 1; text-align: left; padding: 8px 10px; background: var(--bg); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.gantt-chart thead .gantt-task { z-index: 3; background: var(--col); }
+.gantt-title { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+.gantt-meta { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.gantt-chart td { height: 44px; padding: 3px; border-bottom: 1px solid var(--border); background: repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 38px); }
+.gantt-slot .gantt-bar { display: block; min-height: 28px; padding: 5px 8px; border-radius: 7px; background: color-mix(in srgb, var(--event-color) 28%, var(--bg)); border-left: 3px solid var(--event-color); }
+.gantt-slot a { color: var(--text); text-decoration: none; font-size: 12px; font-weight: 500; }
+.gantt-bar a { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gantt-marker { display: block; height: 28px; }
+.gantt-marker a { display: inline-grid; place-items: center; width: 24px; height: 24px; font-size: 0; }
+.gantt-marker a::before { content: ""; width: 12px; height: 12px; transform: rotate(45deg); border-radius: 2px; background: var(--event-color); }
+/* Dashboard: familiar board typography, quiet chart cards, explicit values beside every graphic. */
+#dashboard { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 28px; }
+#dashboard[hidden] { display: none; }
+.dashboard-intro { color: var(--muted); margin: 0 0 18px; }
+.dashboard-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.dashboard-stat, .chart-card { border: 1px solid var(--border); background: var(--col); border-radius: 18px; padding: 18px 20px; min-width: 0; }
+.dashboard-stat .label, .chart-card .eyebrow { color: var(--muted); font-size: 12px; font-weight: 500; }
+.dashboard-stat strong { display: block; font-size: 26px; line-height: 1.25; letter-spacing: -.03em; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.dashboard-stat small { display: block; color: var(--muted); margin-top: 3px; }
+.dashboard-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.chart-card h2 { margin: 3px 0 18px; font-size: 16px; letter-spacing: -.01em; }
+.chart-card.wide { grid-column: 1 / -1; }
+.chart-card .chart-note { color: var(--faint); font-size: 12px; margin: 14px 0 0; }
+.dashboard-stats + .chart-card { margin-bottom: 12px; }
+.dashboard-deadlines { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--border); }
+.dashboard-deadline { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 12px 4px; border-bottom: 1px solid var(--border); color: var(--text); text-decoration: none; border-radius: 4px; }
+.dashboard-deadline:hover { background: var(--hover); }
+.deadline-info, .deadline-date { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.deadline-info strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.deadline-project, .deadline-date time { font-size: 12px; color: var(--muted); }
+.deadline-date { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+.deadline-count { color: var(--text); font-weight: 600; }
+.deadline-count.overdue { color: var(--danger); }
+.chart-empty { color: var(--muted); padding: 30px 0; }
+.bar-chart { display: flex; align-items: end; gap: 10px; height: 170px; padding: 4px 0 0; }
+.bar-day { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: end; gap: 7px; min-width: 0; height: 100%; }
+.bar-day .amount { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-day .track { width: min(100%, 42px); flex: 1; border-radius: 7px 7px 3px 3px; display: flex; align-items: end; background: var(--hover); overflow: hidden; }
+.bar-day .fill { width: 100%; min-height: 0; background: var(--link); border-radius: inherit; }
+.bar-day .day { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chart-content { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.chart-svg { width: 154px; height: 154px; flex: none; }
+.chart-legend { list-style: none; padding: 0; margin: 0; min-width: 140px; flex: 1; }
+.chart-legend li { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+.chart-legend .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chart-legend .value { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chart-legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.dashboard-git-summary { margin: 0 0 12px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.dashboard-git-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+.dashboard-git-list li a { display: flex; justify-content: space-between; gap: 12px; padding: 10px 4px;
+  border-bottom: 1px solid var(--border); color: var(--text); text-decoration: none; border-radius: 4px; }
+.dashboard-git-list li a:hover { background: var(--hover); }
+.dashboard-git-list strong { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.dashboard-git-list span { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.dashboard-git-branches { list-style: none; margin: 0; padding: 4px 4px 10px 16px; font-size: 12px; }
+.dashboard-git-branches:empty { display: none; }
+.dashboard-git-branches li { display: flex; gap: 12px; justify-content: space-between; padding: 3px 0; }
+.dashboard-git-branches span { overflow-wrap: anywhere; min-width: 0; }
+.dashboard-git-branches small { color: var(--muted); text-align: right; }
+.dashboard-git-link { display: inline-block; margin-top: 14px; font-size: 13px; color: var(--link); }
+.mcp-latencies { display: grid; grid-template-columns: 1fr auto; gap: 10px 20px; margin: 0; font-variant-numeric: tabular-nums; }
+.mcp-latencies dt { color: var(--muted); }
+.mcp-latencies dd { margin: 0; font-size: 17px; font-weight: 600; }
+#dashboard:focus-visible, #dashboard button:focus-visible, #dashboard a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+@media (max-width: 740px) {
+  #dashboard { padding: 4px 12px 24px; }
+  .dashboard-stats { grid-template-columns: 1fr; }
+  .dashboard-charts { grid-template-columns: 1fr; }
+  .chart-card.wide { grid-column: auto; }
+  .dashboard-deadline { grid-template-columns: 1fr; }
+  .deadline-date { text-align: left; }
+  .dashboard-git-list li a { flex-direction: column; gap: 4px; }
+  .dashboard-git-list span { text-align: left; }
+  .dashboard-git-branches li { flex-direction: column; gap: 1px; }
+  .dashboard-git-branches small { text-align: left; }
+}
+
+/* Git overview: dense, scan-friendly rows; status is always text, not just color. */
+#git-overview { flex: 1; min-height: 0; overflow: auto; padding: 4px 24px 24px; }
+#git-overview:focus-visible, #git-overview button:focus-visible, #git-overview select:focus-visible,
+.git-branch summary:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.git-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 0 18px; }
+.git-controls p { margin: 0 auto 0 0; font-weight: 600; }
+.git-controls small { display: block; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+.git-controls select { width: auto; max-width: 100%; }
+.git-worktrees { background: var(--col); border-radius: 12px; margin-bottom: 12px; padding: 10px 14px; }
+.git-worktrees summary { cursor: pointer; font-weight: 600; }
+.git-worktrees summary:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.git-worktrees ul { padding-left: 20px; margin: 8px 0 0; overflow-wrap: anywhere; }
+.git-list { display: grid; gap: 6px; }
+.git-branch { background: var(--col); border-radius: 12px; }
+.git-branch summary { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; flex-wrap: wrap; }
+.git-branch summary:hover { background: var(--hover); border-radius: 12px; }
+.git-branch summary strong { font-weight: 600; overflow-wrap: anywhere; }
+.git-repo { color: var(--muted); font-size: 12px; }
+.git-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-left: auto; }
+.git-badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--active); }
+.git-detail { padding: 0 16px 16px 44px; overflow-wrap: anywhere; }
+.git-detail p { margin: 4px 0; color: var(--muted); }
+.git-detail h3 { font-size: 13px; margin: 16px 0 4px; }
+.git-detail ul { margin: 4px 0; padding-left: 20px; }
+.git-detail li { padding: 2px 0; }
+.git-detail code, .git-empty code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.git-empty { padding: 24px; background: var(--col); border-radius: 14px; }
+.git-empty h2 { margin: 0 0 8px; font-size: 17px; }
+.git-warning { color: var(--danger); }
+
 /* Task panel */
 .panel {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(500px, 100vw); background: var(--panel);
@@ -234,6 +420,12 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .panel.shown { transform: none; }
 .panel .top { display: flex; align-items: center; gap: 8px; padding: 14px 16px 6px 20px; }
 .panel .top .key { color: var(--muted); }
+#p-key { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 48%;
+  padding: 5px 7px; margin: -5px -7px; border: 0; border-radius: 6px; background: none; text-align: left; }
+#p-key:hover { background: var(--hover); }
+#p-key:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+#p-key-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#p-key .icon svg { width: 15px; height: 15px; }
 .panel .top .spacer { flex: 1; }
 .panel .top .ghost { width: auto; padding: 6px; color: var(--muted); }
 .panel .top .ghost:hover { color: var(--text); }
@@ -258,6 +450,11 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
 .props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
 .props span { color: var(--text); }
+.props .deadline-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deadline-field input { min-width: 0; max-width: 100%; padding: 4px 8px; }
+.deadline-field button { font-size: 12px; padding: 4px 6px; }
+.deadline-field input:focus-visible, .deadline-field button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+#p-deadline-hint { color: var(--faint); font-size: 11px; }
 .section h3 {
   font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600;
   display: flex; align-items: center; gap: 8px;
@@ -276,6 +473,19 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .comment .remove .icon svg { width: 14px; height: 14px; }
 @media (hover: none) { .comment .remove { visibility: visible; } }
 .comment .who b { color: var(--text); font-weight: 600; }
+.time-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.time-controls .time-form { display: flex; gap: 8px; align-items: center; }
+.time-controls input { width: 88px; }
+.time-controls button:focus-visible, .time-controls input:focus-visible, .time-entry button:focus-visible {
+  outline: 2px solid var(--link); outline-offset: 2px;
+}
+.time-summary { margin: 8px 0; font-variant-numeric: tabular-nums; }
+.time-running { color: var(--link); font-size: 12px; }
+.time-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 190px; overflow-y: auto; }
+.time-entry { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.time-entry time { flex: 1; min-width: 0; color: var(--muted); }
+.time-entry button { background: none; border: 0; color: var(--muted); padding: 3px 6px; border-radius: 6px; }
+.time-entry button:hover { color: var(--danger); background: var(--danger-bg); }
 /* Attached images: thumbnails that open the full image, with an × to remove. */
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
 .thumbs:empty { display: none; }
@@ -364,6 +574,11 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .settings-pane .row a:hover { color: var(--text); }
 .settings-pane .row .btn { margin-left: auto; }
 .settings-pane .btn:disabled { opacity: .6; cursor: default; }
+.about-brand { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 12px 0 20px; }
+.about-brand img { display: block; width: 180px; max-width: 100%; height: auto; }
+.about-brand a { color: var(--link); font-weight: 600; text-underline-offset: 3px; }
+.about-brand a:hover { color: var(--text); }
+.about-brand a:focus-visible { outline: 2px solid var(--link); outline-offset: 4px; border-radius: 2px; }
 .setting { display: flex; align-items: center; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .setting .text span { color: var(--muted); font-size: 13px; }
@@ -393,8 +608,16 @@ label.setting { cursor: pointer; }
   .nav { flex-direction: row; overflow-x: auto; }
   .nav a { width: auto; }
   .nav .label { display: none; }
+  .nav .archive-group { display: flex; align-items: center; margin-top: 0; flex: none; }
+  .nav .archive-toggle { white-space: nowrap; }
+  .nav .archive-items { display: flex; padding-left: 0; }
   #new-project-toggle { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
+  #table-view, #timeline-view, #git-overview { padding: 0 12px 12px; }
+  .git-controls { align-items: stretch; }
+  .git-controls p { width: 100%; }
+  .git-badges { margin-left: 0; width: 100%; }
+  .view-switch button { min-height: 34px; }
   .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   #settings-nav { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
   header { padding: 12px; }
@@ -405,7 +628,7 @@ label.setting { cursor: pointer; }
 <aside>
   <div class="brand">
     <img src="/logo.png" alt="">
-    Kanzo
+    Brokan
     <button class="ghost" id="search-open" title="Search (/ or ⌘K)" aria-label="Search tasks"><span class="icon" data-icon="search"></span></button>
   </div>
   <button class="ghost" id="new-project-toggle"><span class="icon" data-icon="newProject"></span>New project</button>
@@ -417,15 +640,25 @@ label.setting { cursor: pointer; }
 <main>
   <header>
     <div class="info" id="header"></div>
+    <div class="view-switch" id="view-switch" role="group" aria-label="Task view" hidden>
+      <button type="button" id="view-board" aria-pressed="true">Board</button>
+      <button type="button" id="view-table" aria-pressed="false">Table</button>
+      <button type="button" id="view-calendar" aria-pressed="false">Calendar</button>
+      <button type="button" id="view-gantt" aria-pressed="false">Gantt</button>
+    </div>
     <button class="ghost" id="human-only" title="Show only human tasks (h)" aria-label="Show only human tasks" aria-pressed="false" hidden><span class="icon" data-icon="human"></span></button>
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
+  <section id="table-view" aria-label="Tasks in table view" hidden></section>
+  <section id="timeline-view" aria-label="Tasks in calendar or Gantt view" hidden></section>
+  <section id="dashboard" aria-label="Dashboard" hidden></section>
+  <section id="git-overview" aria-label="Local Git overview" hidden></section>
 </main>
 
-<div class="panel" id="panel" aria-hidden="true">
+<div class="panel" id="panel" aria-hidden="true" inert>
   <div class="top">
-    <span class="key mono" id="p-key"></span>
+    <button class="key mono" id="p-key" type="button" aria-label="Copy task ID" title="Copy task ID"><span id="p-key-text"></span><span class="icon" data-icon="copy"></span></button>
     <span id="p-project"></span>
     <span class="spacer"></span>
     <button class="ghost danger" id="p-delete" title="Delete task" aria-label="Delete task"><span class="icon" data-icon="trash"></span></button>
@@ -435,11 +668,38 @@ label.setting { cursor: pointer; }
     <textarea class="inline title-input" id="p-title" rows="1" spellcheck="false" placeholder="Task title"></textarea>
     <div class="props">
       Status <span><select class="field" id="p-status"></select></span>
+      Priority <span><select class="field" id="p-priority" aria-label="Task priority">
+        <option value="none">None</option><option value="low">Low</option><option value="medium">Medium</option>
+        <option value="high">High</option><option value="urgent">Urgent</option>
+      </select></span>
+      Planned start <span class="deadline-field">
+        <input class="field" id="p-start" type="datetime-local" aria-label="Planned start, local date and time">
+        <button class="ghost" id="p-start-clear" type="button" aria-label="Clear planned start" hidden>Clear</button>
+        <span>Local time</span>
+      </span>
+      Deadline <span class="deadline-field">
+        <input class="field" id="p-deadline" type="datetime-local" aria-label="Task deadline, local date and time" aria-describedby="p-deadline-hint">
+        <button class="ghost" id="p-deadline-clear" type="button" aria-label="Clear task deadline" hidden>Clear</button>
+        <span id="p-deadline-hint">Local time</span>
+      </span>
       Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span>
       Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>
       Created <span id="p-created"></span>
       Updated <span id="p-updated"></span>
     </div>
+    <section class="section" aria-label="Time tracking">
+      <h3>Time spent</h3>
+      <div class="time-controls">
+        <button class="btn" id="p-timer" type="button">Start timer</button>
+        <form class="time-form" id="p-time-form">
+          <input class="field" id="p-minutes" type="number" min="1" max="1440" step="1" required placeholder="Minutes" aria-label="Minutes to log">
+          <button class="btn" type="submit">Log time</button>
+        </form>
+      </div>
+      <div class="time-summary" id="p-time-total" aria-live="polite">0m tracked</div>
+      <div class="time-running" id="p-time-running" hidden></div>
+      <ul class="time-list" id="p-time-list" aria-label="Time entries"></ul>
+    </section>
     <div class="section">
       <h3>Description</h3>
       <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>
@@ -480,15 +740,19 @@ label.setting { cursor: pointer; }
       <form class="settings-pane" data-section="sync" id="sync-form">
         <h3>Sync</h3>
         <p>Keep this board the same on all your machines through a private git repo you own. Use the same repo on each machine.</p>
-        <input class="field" id="sync-url" placeholder="https://github.com/you/kanzo-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
+        <input class="field" id="sync-url" placeholder="https://github.com/you/brokan-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
         <p class="error" id="sync-error" hidden></p>
         <div class="row">
-          <a id="sync-create" href="https://github.com/new?name=kanzo-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>
+          <a id="sync-create" href="https://github.com/new?name=brokan-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>
           <button class="btn primary" type="submit" id="sync-save">Save and sync</button>
         </div>
       </form>
       <section class="settings-pane" data-section="about">
         <h3>About</h3>
+        <div class="about-brand">
+          <img src="/logo.png" alt="bro logo" width="180" height="81">
+          <a href="https://brodev.uz" target="_blank" rel="noopener noreferrer">brodev.uz <span aria-hidden="true">↗</span></a>
+        </div>
         <div class="setting">
           <span class="text">Version<span id="settings-version"></span></span>
           <button class="btn" id="settings-update">Check for updates</button>
@@ -503,7 +767,6 @@ label.setting { cursor: pointer; }
     <p>The slug starts each task's key, like api#12.</p>
     <input class="field" name="slug" placeholder="Slug, like api" aria-label="Slug" required autocomplete="off" spellcheck="false" pattern="[a-zA-Z0-9][a-zA-Z0-9\-]{0,31}" title="Letters, digits and -, up to 32">
     <input class="field" name="name" placeholder="Name (optional)" aria-label="Name" autocomplete="off">
-    <input class="field" name="repo" placeholder="GitHub owner/repo (optional)" aria-label="GitHub repo" autocomplete="off" spellcheck="false">
     <div class="row">
       <button class="btn" type="button" id="new-project-cancel">Cancel</button>
       <button class="btn primary" type="submit">Create</button>
@@ -517,7 +780,7 @@ label.setting { cursor: pointer; }
   </div>
 </div>
 
-<div class="offline" id="offline" hidden>Board not reachable — is kanzo running?</div>
+<div class="offline" id="offline" hidden>Board not reachable — is brokan running?</div>
 
 <script src="/app.js"></script>
 </body>

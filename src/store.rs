@@ -1,4 +1,4 @@
-//! All reads and writes of `kanzo.db`. Plain SQL, one short-lived connection per operation.
+//! All reads and writes of `brokan.db`. Plain SQL, one short-lived connection per operation.
 //!
 //! The database uses a rollback journal (`journal_mode = TRUNCATE`), not WAL. With a
 //! connection per operation, WAL would set up and tear down its `-wal` and `-shm` files
@@ -10,13 +10,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
-/// The oldest schema version whose Kanzo can still use a database at the latest one.
-/// Adding a table or a column with a default leaves older versions working, so a board
-/// synced from a newer Kanzo still opens in an older one. Raise it to the new version
-/// only for a migration that older code can't live with, like a renamed column.
-const COMPATIBLE_FROM: usize = 4;
+/// The oldest schema version whose Brokan can still use a database at the latest one.
+/// Adding a table or a column with a default generally leaves older versions working.
+/// Archived projects must be hidden from agents, though; v9 and older do not filter them.
+/// Refuse those clients rather than allowing them to claim archived tasks from synced boards.
+const COMPATIBLE_FROM: usize = 10;
 
 /// Schema migrations, applied in order. Index + 1 is the `schema_version` they lead to.
 const MIGRATIONS: &[&str] = &[
@@ -49,10 +49,54 @@ const MIGRATIONS: &[&str] = &[
      CREATE TRIGGER images_delete AFTER DELETE ON images BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
     // 6: tasks for a person, which agents leave alone.
     "ALTER TABLE tasks ADD COLUMN human INTEGER NOT NULL DEFAULT 0;",
+    // 7: optional priority; a default keeps existing boards and older Brokan compatible.
+    "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'
+        CHECK (priority IN ('none', 'low', 'medium', 'high', 'urgent'));",
+    // 8: optional project icon; older boards and older Brokan still show a folder.
+    "ALTER TABLE projects ADD COLUMN icon TEXT
+        CHECK (icon IS NULL OR icon IN
+            ('folder', 'code', 'terminal', 'globe', 'database', 'server',
+             'rocket', 'book', 'briefcase', 'bug', 'palette', 'zap'));",
+    // 9: time entries are additive, so existing boards and older clients keep working.
+    // Only one timer can run at a time across the board.
+    "CREATE TABLE time_entries (
+         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+         task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+         started_at INTEGER NOT NULL,
+         ended_at   INTEGER,
+         seconds    INTEGER NOT NULL DEFAULT 0 CHECK (seconds >= 0),
+         CHECK ((ended_at IS NULL AND seconds = 0) OR (ended_at IS NOT NULL AND seconds > 0))
+     );
+     CREATE INDEX time_entries_by_task ON time_entries(task_id, started_at);
+     CREATE UNIQUE INDEX time_entries_one_running ON time_entries((1)) WHERE ended_at IS NULL;
+     CREATE TRIGGER time_entries_insert AFTER INSERT ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER time_entries_update AFTER UPDATE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER time_entries_delete AFTER DELETE ON time_entries BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;",
+    // 10: archive projects without deleting their tasks, repos or time entries.
+    "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));",
+    // 11: an optional UTC deadline; existing tasks remain unscheduled.
+    "ALTER TABLE tasks ADD COLUMN deadline_at TEXT;",
+    // 12: optional planned start; a deadline without a start is a milestone.
+    "ALTER TABLE tasks ADD COLUMN start_at TEXT
+        CHECK (start_at IS NULL OR deadline_at IS NULL OR start_at <= deadline_at);",
 ];
 
-/// The colours a project can be given; the board maps each name to a shade.
+/// The colours and icons a project can be given; the board maps each name to a shade or SVG.
 const PROJECT_COLORS: &[&str] = &["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
+const PROJECT_ICONS: &[&str] = &[
+    "folder",
+    "code",
+    "terminal",
+    "globe",
+    "database",
+    "server",
+    "rocket",
+    "book",
+    "briefcase",
+    "bug",
+    "palette",
+    "zap",
+];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -60,7 +104,7 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 pub enum Error {
     NotFound(String),
     Invalid(String),
-    /// Another process holds the data folder for longer than we wait, like a long `kanzo sync`.
+    /// Another process holds the data folder for longer than we wait, like a long `brokan sync`.
     Busy(String),
     Db(rusqlite::Error),
 }
@@ -100,6 +144,9 @@ pub struct Project {
     pub repos: Vec<String>,
     /// One of `PROJECT_COLORS`, or `None` when never picked.
     pub color: Option<String>,
+    /// One of `PROJECT_ICONS`, or `None` for the default folder.
+    pub icon: Option<String>,
+    pub archived: bool,
     pub created_at: String,
     /// Tasks not in the last (done) column.
     pub open: i64,
@@ -116,6 +163,10 @@ pub struct Task {
     pub tags: Vec<String>,
     /// Work for a person: agents leave it alone, and `next_task` never picks it.
     pub human: bool,
+    pub priority: String,
+    /// Optional planned start and end, stored as UTC instants (YYYY-MM-DDTHH:MM:SSZ).
+    pub start_at: Option<String>,
+    pub deadline_at: Option<String>,
     pub status: String,
     pub position: f64,
     pub created_at: String,
@@ -149,6 +200,79 @@ pub struct Image {
     pub file: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeEntry {
+    pub id: i64,
+    pub task_id: i64,
+    /// Unix seconds (UTC). A manual entry has equal start and end times.
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    /// Completed time; zero only while the timer is running.
+    pub seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TimeReport {
+    pub entries: Vec<TimeEntry>,
+    /// Includes the elapsed time of a running timer as of the response.
+    pub total_seconds: i64,
+    pub running_since: Option<i64>,
+    /// Snapshot time, so the client can display the running total between requests.
+    pub as_of: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StatusCount {
+    pub status: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectTime {
+    pub slug: String,
+    pub name: String,
+    pub color: Option<String>,
+    pub seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DayTime {
+    pub day: String,
+    pub seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DashboardDeadline {
+    pub id: i64,
+    pub project: String,
+    pub project_name: String,
+    pub title: String,
+    pub deadline_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Dashboard {
+    pub statuses: Vec<StatusCount>,
+    pub projects: Vec<ProjectTime>,
+    pub days: Vec<DayTime>,
+    /// All-time total, including active timers as of the response.
+    pub total_seconds: i64,
+    pub running_seconds: i64,
+    pub tasks: i64,
+    /// Recent overdue and soonest upcoming unfinished tasks in active projects.
+    pub deadlines: Vec<DashboardDeadline>,
+    /// Local MCP tool aggregates, filled by the web handler (not stored in the synced board).
+    pub mcp: Option<crate::mcp_metrics::Summary>,
+    pub mcp_error: Option<&'static str>,
+}
+
+/// Optional UTC bounds on a new task; a single date is a milestone.
+#[derive(Default)]
+pub struct Schedule<'a> {
+    pub start_at: Option<&'a str>,
+    pub deadline_at: Option<&'a str>,
+}
+
 /// Fields of a task to change; `None` leaves a field as it is.
 #[derive(Debug, Default)]
 pub struct TaskPatch {
@@ -160,11 +284,75 @@ pub struct TaskPatch {
     /// Comma-separated; replaces all the tags, and an empty string clears them.
     pub tags: Option<String>,
     pub human: Option<bool>,
+    pub priority: Option<String>,
+    /// None leaves a date unchanged; Some(None) clears it.
+    pub start_at: Option<Option<String>>,
+    pub deadline_at: Option<Option<String>>,
+}
+
+/// On JSON patches, distinguish an omitted field from an explicit null (clear).
+pub fn nullable_string<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// The board's columns, left to right. New tasks go in todo, agents take theirs from
 /// there and move them to doing, and tasks in done count as done.
 const STATUSES: [&str; 4] = ["todo", "doing", "review", "done"];
+const PRIORITIES: [&str; 5] = ["none", "low", "medium", "high", "urgent"];
+
+fn check_priority(priority: &str) -> Result<&str> {
+    if PRIORITIES.contains(&priority) {
+        Ok(priority)
+    } else {
+        Err(Error::Invalid(format!("unknown priority {priority:?}; use one of: {}", PRIORITIES.join(", "))))
+    }
+}
+
+/// Accept only canonical UTC instants. Validating before a transaction avoids partial task writes.
+fn check_schedule_time<'a>(value: &'a str, field: &str) -> Result<&'a str> {
+    let b = value.as_bytes();
+    let invalid = || Error::Invalid(format!("{field} must be a valid UTC date/time (YYYY-MM-DDTHH:MM:SSZ)"));
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+        || ![0..4, 5..7, 8..10, 11..13, 14..16, 17..19].iter().all(|r| b[r.clone()].iter().all(u8::is_ascii_digit))
+    {
+        return Err(invalid());
+    }
+    let number =
+        |r: std::ops::Range<usize>| -> u32 { b[r].iter().fold(0, |n, digit| n * 10 + u32::from(digit - b'0')) };
+    let year = number(0..4);
+    let month = number(5..7);
+    let day = number(8..10);
+    let hour = number(11..13);
+    let minute = number(14..16);
+    let second = number(17..19);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => 0,
+    };
+    if year == 0 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return Err(invalid());
+    }
+    Ok(value)
+}
+
+fn check_schedule_range(start: Option<&str>, deadline: Option<&str>) -> Result<()> {
+    if start.zip(deadline).is_some_and(|(start, end)| start > end) {
+        return Err(Error::Invalid("start_at must not be later than deadline_at".into()));
+    }
+    Ok(())
+}
 
 /// An optional column before todo, for tasks that agents leave alone.
 pub const BACKLOG: &str = "backlog";
@@ -183,7 +371,7 @@ impl Store {
         // The board and any number of agents share this file; wait instead of failing.
         conn.busy_timeout(Duration::from_secs(5))?;
         // Per connection, not stored in the file. Also turns a WAL database from an
-        // older kanzo back into a rollback-journal one once nothing else has it open.
+        // older brokan back into a rollback-journal one once nothing else has it open.
         // `synchronous` stays at SQLite's default FULL, which keeps the file intact
         // when a board loses power.
         conn.pragma_update_and_check(None, "journal_mode", "TRUNCATE", |_| Ok(()))?;
@@ -240,7 +428,7 @@ impl Store {
     }
 
     /// Brings the schema up to date. Writes nothing when it already is, so starting
-    /// `kanzo mcp` for every agent session costs no disk write.
+    /// `brokan mcp` for every agent session costs no disk write.
     pub fn migrate(&self) -> Result<()> {
         let meta = |c: &Connection, key: &str| -> rusqlite::Result<Option<usize>> {
             Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0))
@@ -257,13 +445,13 @@ impl Store {
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
             let version = meta(c, "schema_version")?.unwrap_or(0);
             if version > latest {
-                // From a newer Kanzo, maybe synced from another machine: use it as it is
+                // From a newer Brokan, maybe synced from another machine: use it as it is
                 // when this version can, without touching its schema.
                 if meta(c, "compatible")?.is_some_and(|oldest| oldest <= latest) {
                     return Ok(());
                 }
                 return Err(Error::Invalid(
-                    "this board was saved by a newer version of Kanzo; update this one with `kanzo update`".into(),
+                    "this board was saved by a newer version of Brokan; update this one with `brokan update`".into(),
                 ));
             }
             for sql in &MIGRATIONS[version..] {
@@ -291,8 +479,8 @@ impl Store {
         Ok(self.conn.query_row(&format!("SELECT {NOW}"), [], |r| r.get(0))?)
     }
 
-    /// Makes `kanzo.db` complete on its own: rolls back a write that a crashed process
-    /// left half done, and folds in a WAL left by an older kanzo.
+    /// Makes `brokan.db` complete on its own: rolls back a write that a crashed process
+    /// left half done, and folds in a WAL left by an older brokan.
     pub fn settle(&self) -> Result<()> {
         self.conn.query_row("SELECT count(*) FROM meta", [], |r| r.get::<_, i64>(0))?;
         Ok(())
@@ -304,7 +492,7 @@ impl Store {
             (SELECT group_concat(repo, ',' ORDER BY r.rowid) FROM project_repos r WHERE r.project_id = p.id),
             p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
-            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id)
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id), p.icon, p.archived
         FROM projects p";
 
     fn project_row(r: &Row) -> rusqlite::Result<Project> {
@@ -317,6 +505,8 @@ impl Store {
             created_at: r.get(5)?,
             open: r.get(6)?,
             total: r.get(7)?,
+            icon: r.get(8)?,
+            archived: r.get(9)?,
         })
     }
 
@@ -402,7 +592,8 @@ impl Store {
         self.find_project(&slug)
     }
 
-    /// Links another repo to a project. Each repo belongs to one project.
+    /// Historical repo links remain readable; this helper is retained for compatibility tests only.
+    #[cfg(test)]
     pub fn link_repo(&self, slug: &str, repo: &str) -> Result<Project> {
         let project = self.find_project(slug)?;
         let repo = clean_repo(repo)?;
@@ -422,6 +613,7 @@ impl Store {
         self.find_project(&project.slug)
     }
 
+    #[cfg(test)]
     pub fn unlink_repo(&self, slug: &str, repo: &str) -> Result<Project> {
         let project = self.find_project(slug)?;
         let repo = repo_from_url(repo).unwrap_or_else(|| repo.trim().to_ascii_lowercase());
@@ -441,23 +633,44 @@ impl Store {
         }
     }
 
-    /// Renames a project. Its slug, and so its task keys like api#12, stay.
-    pub fn rename_project(&self, slug: &str, name: &str) -> Result<Project> {
-        let name = squash(name);
-        if name.is_empty() {
+    /// Changes project appearance and name together, without partial writes on bad input.
+    /// Its slug, and so its task keys like api#12, stay.
+    pub fn update_project(
+        &self,
+        slug: &str,
+        name: Option<&str>,
+        color: Option<&str>,
+        icon: Option<&str>,
+    ) -> Result<Project> {
+        let name = name.map(squash);
+        if name.as_deref() == Some("") {
             return Err(Error::Invalid("project name is empty".into()));
         }
+        if let Some(color) = color.filter(|c| !PROJECT_COLORS.contains(c)) {
+            return Err(Error::Invalid(format!("unknown color {color:?}; use one of: {}", PROJECT_COLORS.join(", "))));
+        }
+        if let Some(icon) = icon.filter(|i| !PROJECT_ICONS.contains(i)) {
+            return Err(Error::Invalid(format!("unknown icon {icon:?}; use one of: {}", PROJECT_ICONS.join(", "))));
+        }
         let project = self.find_project(slug)?;
-        self.conn.execute("UPDATE projects SET name = ?1 WHERE id = ?2", params![name, project.id])?;
+        if name.is_none() && color.is_none() && icon.is_none() {
+            return Ok(project);
+        }
+        self.conn.execute(
+            "UPDATE projects SET name = COALESCE(?1, name), color = COALESCE(?2, color), icon = COALESCE(?3, icon)
+             WHERE id = ?4",
+            params![name, color, icon, project.id],
+        )?;
         self.find_project(&project.slug)
     }
 
-    pub fn set_project_color(&self, slug: &str, color: &str) -> Result<Project> {
-        if !PROJECT_COLORS.contains(&color) {
-            return Err(Error::Invalid(format!("unknown color {color:?}; use one of: {}", PROJECT_COLORS.join(", "))));
-        }
+    /// Archives or restores a project without changing its tasks or linked repos.
+    pub fn set_project_archived(&self, slug: &str, archived: bool) -> Result<Project> {
         let project = self.find_project(slug)?;
-        self.conn.execute("UPDATE projects SET color = ?1 WHERE id = ?2", params![color, project.id])?;
+        self.conn.execute(
+            "UPDATE projects SET archived = ?1 WHERE id = ?2 AND archived <> ?1",
+            params![archived, project.id],
+        )?;
         self.find_project(&project.slug)
     }
 
@@ -472,7 +685,7 @@ impl Store {
     // Tasks
 
     const TASK_SELECT: &str = "SELECT t.id, p.slug, t.title, t.description, t.status, t.position,
-            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human
+            t.created_at, t.updated_at, (SELECT count(*) FROM comments c WHERE c.task_id = t.id), t.tags, t.human, t.priority, t.deadline_at, t.start_at
         FROM tasks t JOIN projects p ON p.id = t.project_id";
 
     fn task_row(r: &Row) -> rusqlite::Result<Task> {
@@ -483,6 +696,9 @@ impl Store {
             description: r.get(3)?,
             tags: r.get::<_, String>(9)?.split(',').filter(|t| !t.is_empty()).map(String::from).collect(),
             human: r.get(10)?,
+            priority: r.get(11)?,
+            deadline_at: r.get(12)?,
+            start_at: r.get(13)?,
             status: r.get(4)?,
             position: r.get(5)?,
             created_at: r.get(6)?,
@@ -509,9 +725,13 @@ impl Store {
         // SQLite reads a negative LIMIT as no limit.
         let limit = keep_done.map_or(-1, |n| n as i64);
         let sql = format!(
-            "{} WHERE (?1 IS NULL OR t.project_id = ?1) AND (?2 IS NULL OR t.status = ?2)
-               AND (t.status <> ?3 OR t.id IN (SELECT id FROM tasks WHERE status = ?3
-                    AND (?1 IS NULL OR project_id = ?1) ORDER BY position DESC LIMIT ?4))
+            "{} WHERE (?1 IS NULL OR t.project_id = ?1) AND (?1 IS NOT NULL OR p.archived = 0)
+               AND (?2 IS NULL OR t.status = ?2)
+               AND (t.status <> ?3 OR t.id IN (SELECT recent.id FROM tasks recent
+                    JOIN projects owner ON owner.id = recent.project_id WHERE recent.status = ?3
+                    AND (?1 IS NULL OR recent.project_id = ?1)
+                    AND (?1 IS NOT NULL OR owner.archived = 0)
+                    ORDER BY recent.position DESC LIMIT ?4))
              ORDER BY t.position",
             Self::TASK_SELECT
         );
@@ -524,7 +744,9 @@ impl Store {
         let hidden = match keep_done {
             Some(keep) if status.is_none_or(|s| s == done) => {
                 let all: i64 = self.conn.query_row(
-                    "SELECT count(*) FROM tasks WHERE status = ?1 AND (?2 IS NULL OR project_id = ?2)",
+                    "SELECT count(*) FROM tasks t JOIN projects p ON p.id = t.project_id
+                     WHERE t.status = ?1 AND (?2 IS NULL OR t.project_id = ?2)
+                       AND (?2 IS NOT NULL OR p.archived = 0)",
                     params![done, project_id],
                     |r| r.get(0),
                 )?;
@@ -540,7 +762,7 @@ impl Store {
     /// gives the most recently changed tasks.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Task>> {
         let words: Vec<String> = query.split_whitespace().take(10).map(|w| w.to_lowercase()).collect();
-        let mut sql = format!("{} WHERE 1", Self::TASK_SELECT);
+        let mut sql = format!("{} WHERE p.archived = 0", Self::TASK_SELECT);
         for i in 0..words.len() {
             sql.push_str(&format!(
                 " AND lower(p.slug || '#' || t.id || ' ' || t.title || ' ' || t.description || ' ' || t.tags) \
@@ -600,38 +822,86 @@ impl Store {
     /// Adds a task at the bottom of todo; a shorthand for tests.
     #[cfg(test)]
     pub fn create_task(&self, project_id: i64, title: &str, description: &str) -> Result<Task> {
-        self.create_task_in(project_id, None, title, description)
+        self.create_task_in(project_id, None, title, description, None)
     }
 
-    /// Adds a task at the bottom of `status`, todo when left out.
+    /// Adds a task at the bottom of `status`, todo when left out (test helper).
+    #[cfg(test)]
     pub fn create_task_in(
         &self,
         project_id: i64,
         status: Option<&str>,
         title: &str,
         description: &str,
+        priority: Option<&str>,
+    ) -> Result<Task> {
+        self.create_task_with_schedule(project_id, status, title, description, priority, Schedule::default())
+    }
+
+    /// Create a task with optional planned start and deadline, validating before any write.
+    pub fn create_task_with_schedule(
+        &self,
+        project_id: i64,
+        status: Option<&str>,
+        title: &str,
+        description: &str,
+        priority: Option<&str>,
+        schedule: Schedule<'_>,
     ) -> Result<Task> {
         let title = clean_title(title)?;
         let status = status.unwrap_or(STATUSES[0]);
         self.check_status(status)?;
+        let priority = check_priority(priority.unwrap_or(PRIORITIES[0]))?;
+        let start_at = schedule.start_at.map(|s| check_schedule_time(s, "start_at")).transpose()?;
+        let deadline_at = schedule.deadline_at.map(|s| check_schedule_time(s, "deadline_at")).transpose()?;
+        check_schedule_range(start_at, deadline_at)?;
+        self.ensure_active_project(project_id)?;
         let id = self.write(|c| {
             let position = Self::end_of_column(c, status, 0)?;
             c.execute(
-                "INSERT INTO tasks (project_id, title, description, status, position) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![project_id, title, description.trim(), status, position],
+                "INSERT INTO tasks (project_id, title, description, status, position, priority, start_at, deadline_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![project_id, title, description.trim(), status, position, priority, start_at, deadline_at],
             )?;
             Ok(c.last_insert_rowid())
         })?;
         self.get_task(id)
     }
 
+    fn ensure_active_project(&self, project_id: i64) -> Result<()> {
+        let archived: Option<bool> = self
+            .conn
+            .query_row("SELECT archived FROM projects WHERE id = ?1", [project_id], |r| r.get(0))
+            .optional()?;
+        match archived {
+            Some(false) => Ok(()),
+            Some(true) => Err(Error::Invalid("restore the archived project before adding or moving tasks".into())),
+            None => Err(Error::NotFound(format!("no project with id {project_id}"))),
+        }
+    }
+
     pub fn update_task(&self, id: i64, patch: TaskPatch) -> Result<Task> {
+        if let Some(project_id) = patch.project_id {
+            self.ensure_active_project(project_id)?;
+        }
         let title = patch.title.as_deref().map(clean_title).transpose()?;
         if let Some(s) = &patch.status {
             self.check_status(s)?;
         }
+        if let Some(p) = &patch.priority {
+            check_priority(p)?;
+        }
+        if let Some(Some(start)) = &patch.start_at {
+            check_schedule_time(start, "start_at")?;
+        }
+        if let Some(Some(deadline)) = &patch.deadline_at {
+            check_schedule_time(deadline, "deadline_at")?;
+        }
         self.write(|c| {
             let current = self.get_task(id)?;
+            check_schedule_range(
+                patch.start_at.as_ref().map_or(current.start_at.as_deref(), |value| value.as_deref()),
+                patch.deadline_at.as_ref().map_or(current.deadline_at.as_deref(), |value| value.as_deref()),
+            )?;
             if let Some(title) = title {
                 c.execute(
                     &format!("UPDATE tasks SET title = ?1, updated_at = {NOW} WHERE id = ?2"),
@@ -648,6 +918,23 @@ impl Store {
                 c.execute(
                     &format!("UPDATE tasks SET human = ?1, updated_at = {NOW} WHERE id = ?2 AND human <> ?1"),
                     params![human, id],
+                )?;
+            }
+            if let Some(priority) = &patch.priority {
+                c.execute(
+                    &format!("UPDATE tasks SET priority = ?1, updated_at = {NOW} WHERE id = ?2 AND priority <> ?1"),
+                    params![priority, id],
+                )?;
+            }
+            if patch.start_at.is_some() || patch.deadline_at.is_some() {
+                let start = patch.start_at.as_ref().map_or(current.start_at.as_deref(), |v| v.as_deref());
+                let deadline = patch.deadline_at.as_ref().map_or(current.deadline_at.as_deref(), |v| v.as_deref());
+                c.execute(
+                    &format!(
+                        "UPDATE tasks SET start_at = ?1, deadline_at = ?2, updated_at = {NOW} \
+                              WHERE id = ?3 AND (start_at IS NOT ?1 OR deadline_at IS NOT ?2)"
+                    ),
+                    params![start, deadline, id],
                 )?;
             }
             if let Some(t) = &patch.tags {
@@ -737,15 +1024,17 @@ impl Store {
         Ok(())
     }
 
-    /// Takes the top task of todo that isn't for a person, and moves it to the bottom
-    /// of doing.
+    /// Takes the highest-priority todo task that isn't for a person, breaking ties by
+    /// board position, and moves it to the bottom of doing.
     pub fn next_task(&self, project_id: Option<i64>) -> Result<Option<Task>> {
         let [from, to, ..] = STATUSES;
         let id = self.write(|c| {
             let id: Option<i64> = c
                 .query_row(
-                    "SELECT id FROM tasks WHERE status = ?1 AND human = 0 AND (?2 IS NULL OR project_id = ?2) \
-                     ORDER BY position LIMIT 1",
+                    "SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id
+                     WHERE t.status = ?1 AND t.human = 0 AND p.archived = 0 AND (?2 IS NULL OR t.project_id = ?2) \
+                     ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                         WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, t.position, t.id LIMIT 1",
                     params![from, project_id],
                     |r| r.get(0),
                 )
@@ -767,6 +1056,179 @@ impl Store {
         let task = self.get_task(id)?;
         self.conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
         Ok(task)
+    }
+
+    // Time tracking. All times are UTC Unix seconds; only completed entries store
+    // seconds. The UI counts an active timer as of each response without writing
+    // the database on every tick.
+
+    fn unix_now(c: &Connection) -> Result<i64> {
+        Ok(c.query_row("SELECT unixepoch()", [], |r| r.get(0))?)
+    }
+
+    pub fn time_report(&self, task_id: i64) -> Result<TimeReport> {
+        self.get_task(task_id)?;
+        let now = Self::unix_now(&self.conn)?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, task_id, started_at, ended_at, seconds FROM time_entries
+             WHERE task_id = ?1 ORDER BY started_at DESC, id DESC",
+        )?;
+        let entries: Vec<TimeEntry> = stmt
+            .query_map([task_id], |r| {
+                Ok(TimeEntry {
+                    id: r.get(0)?,
+                    task_id: r.get(1)?,
+                    started_at: r.get(2)?,
+                    ended_at: r.get(3)?,
+                    seconds: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let total_seconds =
+            entries.iter().map(|e| e.ended_at.map_or_else(|| (now - e.started_at).max(0), |_| e.seconds)).sum();
+        let running_since = entries.iter().find(|e| e.ended_at.is_none()).map(|e| e.started_at);
+        Ok(TimeReport { entries, total_seconds, running_since, as_of: now })
+    }
+
+    pub fn start_timer(&self, task_id: i64) -> Result<TimeReport> {
+        self.write(|c| {
+            self.get_task(task_id)?;
+            let running: Option<i64> =
+                c.query_row("SELECT task_id FROM time_entries WHERE ended_at IS NULL", [], |r| r.get(0)).optional()?;
+            match running {
+                Some(id) if id == task_id => Ok(()), // a repeated start is a no-op
+                Some(id) => Err(Error::Invalid(format!("timer already running for task #{id}; stop it first"))),
+                None => {
+                    c.execute("INSERT INTO time_entries (task_id, started_at) VALUES (?1, unixepoch())", [task_id])?;
+                    Ok(())
+                }
+            }
+        })?;
+        self.time_report(task_id)
+    }
+
+    pub fn stop_timer(&self, task_id: i64) -> Result<TimeReport> {
+        self.write(|c| {
+            self.get_task(task_id)?;
+            let now = Self::unix_now(c)?;
+            c.execute(
+                "UPDATE time_entries SET ended_at = ?1, seconds = max(1, ?1 - started_at)
+                 WHERE task_id = ?2 AND ended_at IS NULL",
+                params![now, task_id],
+            )?;
+            Ok(()) // a repeated stop is a no-op
+        })?;
+        self.time_report(task_id)
+    }
+
+    /// Adds a manual entry in whole minutes (1 minute to 24 hours).
+    pub fn log_time(&self, task_id: i64, minutes: i64) -> Result<TimeReport> {
+        if !(1..=1440).contains(&minutes) {
+            return Err(Error::Invalid("minutes must be between 1 and 1440".into()));
+        }
+        self.write(|c| {
+            self.get_task(task_id)?;
+            c.execute(
+                "INSERT INTO time_entries (task_id, started_at, ended_at, seconds)
+                 VALUES (?1, unixepoch(), unixepoch(), ?2)",
+                params![task_id, minutes * 60],
+            )?;
+            Ok(())
+        })?;
+        self.time_report(task_id)
+    }
+
+    pub fn delete_time(&self, task_id: i64, entry_id: i64) -> Result<TimeReport> {
+        self.write(|c| {
+            self.get_task(task_id)?;
+            let removed = c.execute(
+                "DELETE FROM time_entries WHERE id = ?1 AND task_id = ?2 AND ended_at IS NOT NULL",
+                params![entry_id, task_id],
+            )?;
+            if removed == 0 {
+                return Err(Error::NotFound(format!("no completed time entry #{entry_id} for task #{task_id}")));
+            }
+            Ok(())
+        })?;
+        self.time_report(task_id)
+    }
+
+    /// Counts every task, even older done tasks omitted from the board response.
+    /// The seven UTC days group each entry by when it began; manual entries use
+    /// the day they were logged. Active elapsed time is included at query time.
+    pub fn dashboard(&self) -> Result<Dashboard> {
+        let now = Self::unix_now(&self.conn)?;
+        let seconds = "CASE WHEN e.ended_at IS NULL THEN max(0, ?1 - e.started_at) ELSE e.seconds END";
+        let mut stmt = self.conn.prepare("SELECT status, count(*) FROM tasks GROUP BY status")?;
+        let statuses: Vec<StatusCount> = stmt
+            .query_map([], |r| Ok(StatusCount { status: r.get(0)?, count: r.get(1)? }))?
+            .collect::<rusqlite::Result<_>>()?;
+        let tasks = statuses.iter().map(|s| s.count).sum();
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT p.slug, p.name, p.color, coalesce(sum({seconds}), 0)
+             FROM projects p LEFT JOIN tasks t ON t.project_id = p.id
+             LEFT JOIN time_entries e ON e.task_id = t.id
+             GROUP BY p.id ORDER BY p.slug"
+        ))?;
+        let projects: Vec<ProjectTime> = stmt
+            .query_map([now], |r| {
+                Ok(ProjectTime { slug: r.get(0)?, name: r.get(1)?, color: r.get(2)?, seconds: r.get(3)? })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let total_seconds = projects.iter().map(|p| p.seconds).sum();
+        let running_seconds: i64 = self.conn.query_row(
+            "SELECT coalesce(sum(max(0, ?1 - started_at)), 0) FROM time_entries WHERE ended_at IS NULL",
+            [now],
+            |r| r.get(0),
+        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH RECURSIVE days(day) AS (
+                SELECT date('now', '-6 days') UNION ALL
+                SELECT date(day, '+1 day') FROM days WHERE day < date('now')
+             ) SELECT days.day, coalesce(sum({seconds}), 0) FROM days
+             LEFT JOIN time_entries e ON date(e.started_at, 'unixepoch') = days.day
+             GROUP BY days.day ORDER BY days.day"
+        ))?;
+        let days: Vec<DayTime> = stmt
+            .query_map([now], |r| Ok(DayTime { day: r.get(0)?, seconds: r.get(1)? }))?
+            .collect::<rusqlite::Result<_>>()?;
+        // Bound each side separately so old overdue work never hides upcoming deadlines.
+        // The client filters upcoming tasks to its local seven-day calendar window.
+        let mut deadlines = Vec::new();
+        for (past, limit) in [(true, 5), (false, 12)] {
+            let sql = format!(
+                "SELECT t.id, p.slug, p.name, t.title, t.deadline_at FROM tasks t
+                 JOIN projects p ON p.id = t.project_id
+                 WHERE p.archived = 0 AND t.status <> 'done' AND t.deadline_at IS NOT NULL
+                   AND t.deadline_at {} strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch')
+                 ORDER BY t.deadline_at {}, t.id {} LIMIT {limit}",
+                if past { "<" } else { ">=" },
+                if past { "DESC" } else { "ASC" },
+                if past { "DESC" } else { "ASC" },
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([now], |r| {
+                Ok(DashboardDeadline {
+                    id: r.get(0)?,
+                    project: r.get(1)?,
+                    project_name: r.get(2)?,
+                    title: r.get(3)?,
+                    deadline_at: r.get(4)?,
+                })
+            })?;
+            deadlines.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(Dashboard {
+            statuses,
+            projects,
+            days,
+            total_seconds,
+            running_seconds,
+            tasks,
+            deadlines,
+            mcp: None,
+            mcp_error: None,
+        })
     }
 
     // Comments
@@ -791,7 +1253,7 @@ impl Store {
             return Err(Error::Invalid("comment body is empty".into()));
         }
         if let Some(bad) = images.iter().find(|f| !valid_image_file(f)) {
-            return Err(Error::Invalid(format!("{bad:?} is not an image Kanzo saved")));
+            return Err(Error::Invalid(format!("{bad:?} is not an image Brokan saved")));
         }
         let author = match author.trim() {
             "" => "me",
@@ -836,7 +1298,7 @@ impl Store {
     /// Attaches an image, already saved in `images/`, to a task.
     pub fn add_image(&self, task_id: i64, file: &str) -> Result<Image> {
         if !valid_image_file(file) {
-            return Err(Error::Invalid(format!("{file:?} is not an image Kanzo saved")));
+            return Err(Error::Invalid(format!("{file:?} is not an image Brokan saved")));
         }
         self.get_task(task_id)?;
         self.conn.execute("INSERT INTO images (task_id, file) VALUES (?1, ?2)", params![task_id, file])?;
@@ -903,7 +1365,7 @@ pub enum ImagesOf {
     Project(i64),
 }
 
-/// The name Kanzo gives a saved image: 16 hex digits and its type, like `6fec521a01297ab5.png`.
+/// The name Brokan gives a saved image: 16 hex digits and its type, like `6fec521a01297ab5.png`.
 pub fn valid_image_file(file: &str) -> bool {
     match file.split_once('.') {
         Some((hash, ext)) => {
@@ -1011,7 +1473,7 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
+        let store = Store::open(&dir.path().join("brokan.db"), None).unwrap();
         store.migrate().unwrap();
         (dir, store)
     }
@@ -1048,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_a_board_from_a_newer_kanzo_when_it_can() {
+    fn opens_a_board_from_a_newer_brokan_when_it_can() {
         let (_dir, s) = store();
         let set = |version: usize, compatible: usize| {
             s.conn
@@ -1059,7 +1521,7 @@ mod tests {
                 .unwrap();
         };
         let newer = MIGRATIONS.len() + 1;
-        // A newer Kanzo only added things: this one goes on using the board, untouched.
+        // A newer Brokan only added things: this one goes on using the board, untouched.
         set(newer, MIGRATIONS.len());
         s.migrate().unwrap();
         s.create_project("api", "", None).unwrap();
@@ -1068,7 +1530,7 @@ mod tests {
         assert_eq!(v, newer.to_string());
         // A change this version can't live with: it says how to update.
         set(newer, newer);
-        assert!(s.migrate().unwrap_err().to_string().contains("kanzo update"));
+        assert!(s.migrate().unwrap_err().to_string().contains("brokan update"));
     }
 
     #[test]
@@ -1082,13 +1544,435 @@ mod tests {
         assert!(s.create_project("web", "", Some("me/api")).unwrap_err().to_string().contains("already linked"));
         assert!(s.create_project("bad slug", "", None).is_err());
         let web = s.create_project("web", "", None).unwrap();
-        assert_eq!((web.name.as_str(), web.color.as_deref()), ("web", None));
-        assert_eq!(s.set_project_color("web", "teal").unwrap().color.as_deref(), Some("teal"));
-        assert!(s.set_project_color("web", "#ff0000").is_err());
-        let renamed = s.rename_project("web", "  Web   site ").unwrap();
+        assert_eq!((web.name.as_str(), web.color.as_deref(), web.icon.as_deref()), ("web", None, None));
+        assert_eq!(s.update_project("web", None, Some("teal"), None).unwrap().color.as_deref(), Some("teal"));
+        assert!(s.update_project("web", None, Some("#ff0000"), None).is_err());
+        let renamed = s.update_project("web", Some("  Web   site "), None, None).unwrap();
         assert_eq!((renamed.slug.as_str(), renamed.name.as_str()), ("web", "Web site"));
-        assert!(s.rename_project("web", "  ").is_err());
+        assert!(s.update_project("web", Some("  "), None, None).is_err());
         assert!(s.find_project("nope").unwrap_err().to_string().contains("api, web"));
+    }
+
+    #[test]
+    fn project_icon_migrates_and_updates_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..7] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '7'), ('compatible', '4')")
+                .unwrap();
+            s.conn.execute_batch("INSERT INTO projects (slug, name, color) VALUES ('web', 'Website', 'teal')").unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let old = s.find_project("web").unwrap();
+        assert_eq!((old.color.as_deref(), old.icon.as_deref()), (Some("teal"), None));
+        let changed = s.update_project("web", Some("  New  name "), Some("red"), Some("rocket")).unwrap();
+        assert_eq!(
+            (changed.name.as_str(), changed.color.as_deref(), changed.icon.as_deref()),
+            ("New name", Some("red"), Some("rocket"))
+        );
+        let before = s.changes().unwrap();
+        assert!(s.update_project("web", Some("Wrong"), Some("blue"), Some("<svg>")).is_err());
+        assert!(s.update_project("web", Some("Wrong"), Some("#bad"), Some("book")).is_err());
+        assert_eq!(s.changes().unwrap(), before);
+        let persisted = Store::open(&path, None).unwrap().find_project("web").unwrap();
+        assert_eq!(
+            (persisted.name, persisted.color.as_deref(), persisted.icon.as_deref()),
+            ("New name".into(), Some("red"), Some("rocket"))
+        );
+        assert_eq!(s.update_project("web", None, None, Some("folder")).unwrap().icon.as_deref(), Some("folder"));
+    }
+
+    #[test]
+    fn time_migration_preserves_existing_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..8] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '8'), ('compatible', '4')")
+                .unwrap();
+            s.conn
+                .execute_batch(
+                    "INSERT INTO projects (slug, name) VALUES ('api', 'API');
+                INSERT INTO tasks (project_id, title, status, position) VALUES (1, 'Existing', 'done', 1);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let old = s.get_task(1).unwrap();
+        assert_eq!((old.title.as_str(), old.status.as_str()), ("Existing", "done"));
+        assert!(s.time_report(old.id).unwrap().entries.is_empty());
+        assert_eq!(s.dashboard().unwrap().tasks, 1);
+        s.log_time(old.id, 30).unwrap();
+        assert_eq!(Store::open(&path, None).unwrap().time_report(old.id).unwrap().total_seconds, 1800);
+    }
+
+    #[test]
+    fn dashboard_deadlines_prioritize_soon_and_exclude_done_or_archived() {
+        let (_dir, s) = store();
+        let active = s.create_project("active", "Active", None).unwrap();
+        let archived = s.create_project("archived", "Archived", None).unwrap();
+        let at = |modifier: &str| -> String {
+            s.conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)", [modifier], |r| r.get(0)).unwrap()
+        };
+        let overdue = at("-1 day");
+        let soon = at("+1 day");
+        let later = at("+10 days");
+        let add = |project_id, title: &str, deadline: &str| -> Task {
+            let task = s.create_task(project_id, title, "").unwrap();
+            s.update_task(task.id, TaskPatch { deadline_at: Some(Some(deadline.into())), ..Default::default() })
+                .unwrap()
+        };
+        for i in 0..7 {
+            add(active.id, &format!("Overdue {i}"), &at(&format!("-{} days", i + 2)));
+        }
+        let most_recent = add(active.id, "Recent overdue", &overdue);
+        let first = add(active.id, "Soon first", &soon);
+        let second = add(active.id, "Soon second", &soon);
+        for i in 0..12 {
+            add(active.id, &format!("Later {i}"), &later);
+        }
+        let done = add(active.id, "Completed", &soon);
+        s.update_task(done.id, TaskPatch { status: Some("done".into()), ..Default::default() }).unwrap();
+        add(archived.id, "In archive", &soon);
+        s.set_project_archived("archived", true).unwrap();
+        s.create_task(active.id, "No deadline", "").unwrap();
+
+        let deadlines = s.dashboard().unwrap().deadlines;
+        assert_eq!(deadlines.len(), 17);
+        assert_eq!(deadlines[0].id, most_recent.id);
+        assert_eq!((deadlines[5].id, deadlines[6].id), (first.id, second.id));
+        assert_eq!((deadlines[5].project.as_str(), deadlines[5].project_name.as_str()), ("active", "Active"));
+        assert_eq!(deadlines[5].deadline_at, soon);
+        assert!(!deadlines.iter().any(|d| d.id == done.id || d.project == "archived"));
+        assert_eq!(deadlines.iter().filter(|d| d.title.starts_with("Later")).count(), 10);
+    }
+
+    #[test]
+    fn deadline_migrates_validates_and_clears_without_partial_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..10] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', '10'), ('compatible', '10');
+                 INSERT INTO projects (slug, name) VALUES ('old', 'Old');
+                 INSERT INTO tasks (project_id, title, status, position) VALUES (1, 'Existing', 'todo', 1);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.get_task(1).unwrap().deadline_at, None);
+        for bad in [
+            "",
+            "2025-02-29T12:00:00Z",
+            "2024-04-31T12:00:00Z",
+            "2024-00-01T00:00:00Z",
+            "2024-02-29T24:00:00Z",
+            "2024-02-29T12:60:00Z",
+            "2024-02-29T12:00:00+00:00",
+            "2024-02-29",
+        ] {
+            assert!(
+                s.update_task(
+                    1,
+                    TaskPatch {
+                        title: Some("Changed".into()),
+                        deadline_at: Some(Some(bad.into())),
+                        ..Default::default()
+                    }
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                s.create_task_with_schedule(
+                    1,
+                    None,
+                    "New",
+                    "",
+                    None,
+                    Schedule { deadline_at: Some(bad), ..Default::default() }
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+            assert_eq!(s.get_task(1).unwrap().title, "Existing");
+            assert_eq!(s.list_tasks(Some(1), None).unwrap().len(), 1);
+        }
+        let date = "2024-02-29T12:30:00Z";
+        let t = s
+            .create_task_with_schedule(
+                1,
+                None,
+                "Scheduled",
+                "",
+                None,
+                Schedule { deadline_at: Some(date), ..Default::default() },
+            )
+            .unwrap();
+        assert_eq!(t.deadline_at.as_deref(), Some(date));
+        let changed = s
+            .update_task(
+                1,
+                TaskPatch {
+                    deadline_at: Some(Some("2024-12-31T23:59:59Z".into())),
+                    priority: Some("high".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.deadline_at.as_deref(), Some("2024-12-31T23:59:59Z"));
+        assert_eq!(
+            s.update_task(1, TaskPatch { status: Some("doing".into()), ..Default::default() }).unwrap().deadline_at,
+            changed.deadline_at
+        );
+        assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().deadline_at, changed.deadline_at);
+        assert_eq!(
+            s.update_task(1, TaskPatch { deadline_at: Some(None), ..Default::default() }).unwrap().deadline_at,
+            None
+        );
+        assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().deadline_at, None);
+    }
+
+    #[test]
+    fn planned_start_migrates_validates_range_and_preserves_old_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..11] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', '11'), ('compatible', '10');
+                 INSERT INTO projects (slug, name) VALUES ('api', 'API');
+                 INSERT INTO tasks (project_id, title, status, position, deadline_at)
+                 VALUES (1, 'Existing', 'todo', 1, '2024-04-30T10:00:00Z');",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.get_task(1).unwrap().start_at, None);
+        assert_eq!(s.get_task(1).unwrap().deadline_at.as_deref(), Some("2024-04-30T10:00:00Z"));
+        for invalid in ["", "2025-02-29T12:00:00Z", "2024-04-31T12:00:00Z", "2024-04-01T02:00:00+00:00"] {
+            assert!(
+                s.update_task(
+                    1,
+                    TaskPatch {
+                        title: Some("Wrong".into()),
+                        start_at: Some(Some(invalid.into())),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(s.get_task(1).unwrap().title, "Existing");
+        }
+        assert!(
+            s.create_task_with_schedule(
+                1,
+                None,
+                "Bad",
+                "",
+                None,
+                Schedule { start_at: Some("2024-05-01T00:00:00Z"), deadline_at: Some("2024-04-30T10:00:00Z") }
+            )
+            .is_err()
+        );
+        assert!(
+            s.update_task(
+                1,
+                TaskPatch {
+                    status: Some("doing".into()),
+                    start_at: Some(Some("2024-05-01T00:00:00Z".into())),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(s.get_task(1).unwrap().status, "todo");
+        let updated = s
+            .update_task(1, TaskPatch { start_at: Some(Some("2024-02-29T12:00:00Z".into())), ..Default::default() })
+            .unwrap();
+        assert_eq!(updated.start_at.as_deref(), Some("2024-02-29T12:00:00Z"));
+        assert!(
+            s.update_task(
+                1,
+                TaskPatch {
+                    title: Some("Wrong".into()),
+                    deadline_at: Some(Some("2024-01-01T00:00:00Z".into())),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(s.get_task(1).unwrap().title, "Existing");
+        let changed = s
+            .update_task(
+                1,
+                TaskPatch {
+                    start_at: Some(Some("2025-01-01T00:00:00Z".into())),
+                    deadline_at: Some(Some("2025-02-01T00:00:00Z".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.deadline_at.as_deref(), Some("2025-02-01T00:00:00Z"));
+        assert_eq!(Store::open(&path, None).unwrap().get_task(1).unwrap().start_at, changed.start_at);
+        assert_eq!(
+            s.update_task(1, TaskPatch { deadline_at: Some(None), ..Default::default() }).unwrap().start_at,
+            changed.start_at
+        );
+        assert_eq!(s.update_task(1, TaskPatch { start_at: Some(None), ..Default::default() }).unwrap().start_at, None);
+        assert_eq!(s.list_tasks(Some(1), None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn archive_migrates_and_retains_project_tasks_time_and_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..9] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '9'), ('compatible', '4')")
+                .unwrap();
+            s.conn
+                .execute_batch(
+                    "INSERT INTO projects (slug, name, icon) VALUES ('old', 'Old', 'rocket');
+                     INSERT INTO project_repos (repo, project_id) VALUES ('me/old', 1);
+                     INSERT INTO tasks (project_id, title, status, position, priority) VALUES (1, 'Saved', 'todo', 1, 'urgent');
+                     INSERT INTO time_entries (task_id, started_at, ended_at, seconds) VALUES (1, 1000, 1600, 600);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        assert_eq!(
+            s.conn.query_row("SELECT value FROM meta WHERE key = 'compatible'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "10",
+            "older agents must not select archived tasks after syncing"
+        );
+        assert!(!s.find_project("old").unwrap().archived);
+        let active = s.create_project("active", "Active", None).unwrap();
+        let active_task = s.create_task(active.id, "Active task", "").unwrap();
+        let archived_done = s.create_task(1, "Archived done", "").unwrap();
+        s.move_task(archived_done.id, "done", None).unwrap();
+        let before = s.changes().unwrap();
+        let archived = s.set_project_archived("old", true).unwrap();
+        assert!(archived.archived);
+        assert_eq!(archived.repos, ["me/old"]);
+        assert_eq!(archived.icon.as_deref(), Some("rocket"));
+        assert!(s.changes().unwrap() > before);
+        assert_eq!(titles(&s.list_tasks(None, None).unwrap()), ["Active task"]);
+        assert_eq!(titles(&s.list_tasks(Some(archived.id), None).unwrap()), ["Saved", "Archived done"]);
+        assert_eq!(titles(&s.list_tasks_keeping_done(None, None, Some(1)).unwrap().0), ["Active task"]);
+        assert_eq!(s.list_tasks_keeping_done(None, None, Some(1)).unwrap().1, 0);
+        assert_eq!(s.list_tasks_keeping_done(Some(archived.id), None, Some(1)).unwrap().0.len(), 2);
+        assert!(s.search("Saved", 10).unwrap().is_empty());
+        assert!(s.create_task(archived.id, "Rejected", "").is_err());
+        let patch = TaskPatch { title: Some("Wrong".into()), project_id: Some(archived.id), ..Default::default() };
+        assert!(s.update_task(active_task.id, patch).is_err());
+        assert_eq!(s.get_task(active_task.id).unwrap().title, "Active task");
+        assert!(s.next_task(Some(archived.id)).unwrap().is_none());
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, active_task.id);
+        assert_eq!(s.time_report(1).unwrap().total_seconds, 600);
+        assert_eq!(s.dashboard().unwrap().total_seconds, 600);
+        assert_eq!(s.set_project_archived("old", true).unwrap().total, 2);
+        assert!(Store::open(&path, None).unwrap().find_project("old").unwrap().archived);
+        s.set_project_archived("old", false).unwrap();
+        assert!(s.search("Saved", 10).unwrap().len() == 1);
+        assert_eq!(s.next_task(None).unwrap().unwrap().title, "Saved");
+        assert_eq!(s.create_task(archived.id, "Restored", "").unwrap().project, "old");
+    }
+
+    #[test]
+    fn timer_and_dashboard_account_for_live_and_manual_time() {
+        let (dir, s) = store();
+        let api = s.create_project("api", "API", None).unwrap();
+        let web = s.create_project("web", "Website", None).unwrap();
+        let first = s.create_task(api.id, "First", "").unwrap();
+        let second = s.create_task(web.id, "Second", "").unwrap();
+        s.move_task(second.id, "done", None).unwrap();
+        assert_eq!(s.dashboard().unwrap().tasks, 2);
+        assert!(s.log_time(first.id, 0).is_err());
+        assert!(s.log_time(first.id, 1441).is_err());
+        assert!(s.time_report(first.id).unwrap().entries.is_empty());
+        assert_eq!(s.log_time(first.id, 30).unwrap().total_seconds, 1800);
+        assert_eq!(s.log_time(second.id, 20).unwrap().total_seconds, 1200);
+        let before = s.changes().unwrap();
+        let running = s.start_timer(first.id).unwrap();
+        assert!(running.running_since.is_some());
+        assert_eq!(running.entries.len(), 2);
+        assert_eq!(
+            Store::open(&dir.path().join("brokan.db"), None).unwrap().time_report(first.id).unwrap().running_since,
+            running.running_since,
+            "timer survives reopening the board"
+        );
+        assert!(s.delete_time(first.id, running.entries[0].id).is_err(), "running entries cannot be deleted");
+        s.start_timer(first.id).unwrap();
+        assert_eq!(s.time_report(first.id).unwrap().entries.len(), 2);
+        assert!(s.start_timer(second.id).unwrap_err().to_string().contains("stop it first"));
+        assert_eq!(s.changes().unwrap(), before + 1, "only the first start writes");
+        let current = s.dashboard().unwrap();
+        assert_eq!((current.tasks, current.projects.len(), current.days.len()), (2, 2, 7));
+        assert_eq!(current.total_seconds, 3000 + current.running_seconds);
+        assert_eq!(current.days.iter().map(|d| d.seconds).sum::<i64>(), current.total_seconds);
+        assert_eq!(current.projects.iter().find(|p| p.slug == "api").unwrap().seconds, 1800 + current.running_seconds);
+        let stopped = s.stop_timer(first.id).unwrap();
+        assert!(stopped.running_since.is_none());
+        assert!(stopped.total_seconds >= 1801);
+        assert_eq!(s.stop_timer(first.id).unwrap().total_seconds, stopped.total_seconds);
+        let old = s.time_report(first.id).unwrap().entries.last().unwrap().id;
+        assert!(s.delete_time(second.id, old).is_err(), "wrong task must not delete an entry");
+        assert_eq!(s.delete_time(first.id, old).unwrap().total_seconds, stopped.total_seconds - 1800);
+        assert!(s.delete_time(first.id, old).is_err());
+        let completed = s.time_report(first.id).unwrap().entries[0].id;
+        s.conn
+            .execute(
+                "UPDATE time_entries SET started_at = unixepoch('now', '-9 days'),
+                ended_at = unixepoch('now', '-9 days') WHERE id = ?1",
+                [completed],
+            )
+            .unwrap();
+        let historical = s.dashboard().unwrap();
+        assert!(
+            historical.days.iter().map(|d| d.seconds).sum::<i64>() < historical.total_seconds,
+            "seven-day bars exclude older work but all-time totals include it"
+        );
+        s.delete_task(first.id).unwrap();
+        assert_eq!(s.dashboard().unwrap().total_seconds, 1200);
+        assert!(s.time_report(first.id).is_err());
     }
 
     #[test]
@@ -1163,7 +2047,7 @@ mod tests {
     #[test]
     fn migration_moves_repos_to_their_own_table() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("kanzo.db");
+        let path = dir.path().join("brokan.db");
         {
             // A board at schema version 3, from before projects could have several repos.
             let c = Connection::open(&path).unwrap();
@@ -1284,6 +2168,83 @@ mod tests {
     }
 
     #[test]
+    fn priority_migrates_and_validates_without_partial_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            // Model a board saved at version 6, before the additive priority migration.
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..6] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES
+                ('schema_version', '6'), ('compatible', '4')",
+                )
+                .unwrap();
+            s.conn
+                .execute_batch(
+                    "INSERT INTO projects (slug, name) VALUES ('api', 'api');
+                INSERT INTO tasks (project_id, title, status, position)
+                VALUES ((SELECT id FROM projects WHERE slug = 'api'), 'old', 'todo', 1);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let old = s.list_tasks(None, None).unwrap().pop().unwrap();
+        assert_eq!(old.priority, "none");
+        let before = s.changes().unwrap();
+        assert!(s.create_task_in(s.find_project("api").unwrap().id, None, "bad", "", Some("extreme")).is_err());
+        assert!(
+            s.update_task(
+                old.id,
+                TaskPatch { title: Some("changed".into()), priority: Some("extreme".into()), ..Default::default() }
+            )
+            .is_err()
+        );
+        assert_eq!(s.changes().unwrap(), before);
+        assert_eq!(s.get_task(old.id).unwrap().title, "old");
+        assert_eq!(
+            s.update_task(old.id, TaskPatch { priority: Some("high".into()), ..Default::default() }).unwrap().priority,
+            "high"
+        );
+        assert_eq!(s.search("old", 1).unwrap()[0].priority, "high");
+        assert_eq!(
+            s.update_task(old.id, TaskPatch { priority: Some("none".into()), ..Default::default() }).unwrap().priority,
+            "none"
+        );
+    }
+
+    #[test]
+    fn next_task_prefers_priority_then_board_position() {
+        let (dir, s) = store();
+        let api = s.create_project("api", "", None).unwrap();
+        let web = s.create_project("web", "", None).unwrap();
+        let none = s.create_task(api.id, "none", "").unwrap();
+        let low = s.create_task_in(web.id, None, "low", "", Some("low")).unwrap();
+        let high = s.create_task_in(api.id, None, "high", "", Some("high")).unwrap();
+        let urgent = s.create_task_in(web.id, None, "urgent", "", Some("urgent")).unwrap();
+        let top = s.create_task_in(api.id, None, "top", "", Some("high")).unwrap();
+        s.move_task(top.id, "todo", Some(none.id)).unwrap();
+        assert_eq!(titles(&s.list_tasks(None, Some("todo")).unwrap()), ["top", "none", "low", "high", "urgent"]);
+        let human = s.create_task_in(api.id, None, "human", "", Some("urgent")).unwrap();
+        s.update_task(human.id, TaskPatch { human: Some(true), ..Default::default() }).unwrap();
+        s.set_backlog(true).unwrap();
+        let s = Store::open(&dir.path().join("brokan.db"), None).unwrap();
+        s.create_task_in(api.id, Some("backlog"), "backlog", "", Some("urgent")).unwrap();
+        assert_eq!(s.next_task(Some(api.id)).unwrap().unwrap().id, top.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, urgent.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, high.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, low.id);
+        assert_eq!(s.next_task(None).unwrap().unwrap().id, none.id);
+        assert!(s.next_task(None).unwrap().is_none());
+    }
+
+    #[test]
     fn next_task_takes_top_todo() {
         let (_dir, s) = store();
         let api = s.create_project("api", "", None).unwrap();
@@ -1308,12 +2269,12 @@ mod tests {
         let (dir, s) = store();
         assert_eq!(s.statuses(), STATUSES);
         s.set_backlog(true).unwrap();
-        let s = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
+        let s = Store::open(&dir.path().join("brokan.db"), None).unwrap();
         assert_eq!(s.statuses(), ["backlog", "todo", "doing", "review", "done"]);
         let api = s.create_project("api", "", None).unwrap();
-        let backlog = s.create_task_in(api.id, Some("backlog"), "later", "").unwrap();
+        let backlog = s.create_task_in(api.id, Some("backlog"), "later", "", None).unwrap();
         assert_eq!(backlog.status, "backlog");
-        assert!(s.create_task_in(api.id, Some("nope"), "x", "").is_err());
+        assert!(s.create_task_in(api.id, Some("nope"), "x", "", None).is_err());
         assert_eq!(s.create_task(api.id, "now", "").unwrap().status, "todo");
 
         let t = s.next_task(None).unwrap().unwrap();

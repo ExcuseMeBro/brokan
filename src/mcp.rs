@@ -1,10 +1,11 @@
-//! The board as MCP tools: over stdio for `kanzo mcp`, and over HTTP at `/mcp` of the board.
+//! The board as MCP tools: over stdio for `brokan mcp`, and over HTTP at `/mcp` of the board.
 //! Replies are short plain text to save agents' tokens.
 
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
+use std::time::Instant;
 
 use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -18,26 +19,27 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::home::Home;
+use crate::mcp_metrics;
 use crate::store::{self, Error, Project, Store, Task, TaskPatch, short_time};
 
 /// The most done tasks list_tasks shows, newest first: an old board has thousands.
 const DONE_LISTED: usize = 20;
 
 const INSTRUCTIONS: &str = "The user's kanban board, on this machine, for all their projects. Tasks look like \
-api#12. Without `project`, Kanzo uses the project linked to this folder's GitHub repo. Keep it current unasked: \
+api#12. Pass `project` for multi-project boards; existing GitHub repo associations still work. Keep it current unasked: \
 doing when you start a task, comments on what you did, review when you finish or get stuck. Leave done and \
 human tasks to the user.";
 
 const HTTP_INSTRUCTIONS: &str = "The user's kanban board, on their machine, for all their projects. Tasks look \
-like api#12. Over HTTP Kanzo can't see your folder, so pass `project` (see list_projects). Keep it current \
+like api#12. Over HTTP Brokan can't see your folder, so pass `project` (see list_projects). Keep it current \
 unasked: doing when you start a task, comments on what you did, review when you finish or get stuck. Leave \
 done and human tasks to the user.";
 
-/// `kanzo mcp`: one agent on stdin and stdout, in the folder it started us in.
+/// `brokan mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let repos = git_repos(&cwd);
-    let server = Kanzo { ctx: Arc::new(Ctx { home, cwd: Some(cwd), repos }), tool_router: Kanzo::tools() };
+    let server = Brokan { ctx: Arc::new(Ctx { home, cwd: Some(cwd), repos }), tool_router: Brokan::tools() };
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -46,13 +48,13 @@ pub async fn serve(home: Home) -> Result<()> {
 /// MCP over HTTP, mounted at `/mcp` by the board. The board's own Host and Origin
 /// checks (`web::protect`) guard it, including when it listens on the network, so
 /// rmcp's localhost-only list is turned off here.
-pub fn http_service(home: Home, shutdown: CancellationToken) -> StreamableHttpService<Kanzo, LocalSessionManager> {
+pub fn http_service(home: Home, shutdown: CancellationToken) -> StreamableHttpService<Brokan, LocalSessionManager> {
     let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new() });
     let config = StreamableHttpServerConfig::default().disable_allowed_hosts().with_cancellation_token(shutdown);
     // rmcp makes a server per session, and for some requests; the tool list is built once.
-    let tool_router = Kanzo::tools();
+    let tool_router = Brokan::tools();
     StreamableHttpService::new(
-        move || Ok(Kanzo { ctx: ctx.clone(), tool_router: tool_router.clone() }),
+        move || Ok(Brokan { ctx: ctx.clone(), tool_router: tool_router.clone() }),
         Default::default(),
         config,
     )
@@ -72,35 +74,35 @@ impl Ctx {
         if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
             return store.find_project(name);
         }
+        let mut archived_match = None;
         for repo in &self.repos {
             if let Some(p) = store.project_by_repo(repo)? {
-                return Ok(p);
+                if !p.archived {
+                    return Ok(p);
+                }
+                archived_match.get_or_insert((repo, p.slug));
             }
         }
-        let known: Vec<String> = store.list_projects()?.into_iter().map(|p| p.slug).collect();
+        if let Some((repo, slug)) = archived_match {
+            return Err(Error::NotFound(format!(
+                "Repo {repo} is linked to archived project {slug}; restore it or pass an active project explicitly."
+            )));
+        }
+        let known: Vec<String> = store.list_projects()?.into_iter().filter(|p| !p.archived).map(|p| p.slug).collect();
         let known = known.join(", ");
         let Some(cwd) = &self.cwd else {
             let msg = if known.is_empty() {
                 "There are no projects yet. Create one with create_project.".to_string()
             } else {
-                format!("Pass `project` (one of: {known}); over HTTP Kanzo cannot see which folder you work in.")
+                format!("Pass `project` (one of: {known}); over HTTP Brokan cannot see which folder you work in.")
             };
             return Err(Error::NotFound(msg));
         };
         let cwd = cwd.display();
-        let msg = match (self.repos.first(), known.is_empty()) {
-            (Some(repo), false) => format!(
-                "No project is linked to {repo} (the git remote of {cwd}). Pass `project` (one of: {known}), \
-                 link this repo to one with link_repo, or create a project for it with create_project and repo \"{repo}\"."
-            ),
-            (Some(repo), true) => format!(
-                "No project is linked to {repo} (the git remote of {cwd}), and there are no projects yet. \
-                 Create one with create_project and repo \"{repo}\"."
-            ),
-            (None, false) => {
-                format!("Cannot tell the project: {cwd} has no git remote. Pass `project` (one of: {known}).")
-            }
-            (None, true) => "There are no projects yet. Create one with create_project.".to_string(),
+        let msg = if known.is_empty() {
+            "There are no projects yet. Create one with create_project.".to_string()
+        } else {
+            format!("Cannot tell the project from {cwd}. Pass `project` (one of: {known}).")
         };
         Err(Error::NotFound(msg))
     }
@@ -126,7 +128,7 @@ fn git_repos(dir: &std::path::Path) -> Vec<String> {
 }
 
 #[derive(Clone)]
-pub struct Kanzo {
+pub struct Brokan {
     ctx: Arc<Ctx>,
     tool_router: ToolRouter<Self>,
 }
@@ -150,12 +152,11 @@ impl TaskKey {
 }
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct CreateProjectArgs {
     /// Short lowercase id, like api.
     slug: String,
     name: Option<String>,
-    /// GitHub owner/repo.
-    repo: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -186,6 +187,12 @@ struct CreateTaskArgs {
     status: Option<String>,
     /// For the user, not for agents.
     human: Option<bool>,
+    /// none, low, medium, high or urgent.
+    priority: Option<String>,
+    /// Optional planned start, UTC YYYY-MM-DDTHH:MM:SSZ.
+    start_at: Option<String>,
+    /// Optional UTC deadline, YYYY-MM-DDTHH:MM:SSZ.
+    deadline_at: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -202,6 +209,14 @@ struct UpdateTaskArgs {
     tags: Option<String>,
     /// For the user, not for agents.
     human: Option<bool>,
+    /// none, low, medium, high or urgent.
+    priority: Option<String>,
+    /// UTC YYYY-MM-DDTHH:MM:SSZ; null clears, omit to keep current start.
+    #[serde(default, deserialize_with = "store::nullable_string")]
+    start_at: Option<Option<String>>,
+    /// UTC YYYY-MM-DDTHH:MM:SSZ; null clears, omit to keep current deadline.
+    #[serde(default, deserialize_with = "store::nullable_string")]
+    deadline_at: Option<Option<String>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -216,31 +231,27 @@ struct AddCommentArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
-struct LinkRepoArgs {
-    /// Slug.
-    project: String,
-    /// GitHub owner/repo.
-    repo: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
 struct NextTaskArgs {
     /// Slug, or "all".
     project: Option<String>,
 }
 
-impl Kanzo {
+impl Brokan {
     /// The tool list without the `$schema` line rmcp puts in every input schema, nor the
     /// `null` of optional fields: agents read this list in every session, so each byte counts.
     fn tools() -> ToolRouter<Self> {
         let mut router = Self::tool_router();
-        for route in router.map.values_mut() {
+        for (name, route) in &mut router.map {
             let mut schema = (*route.attr.input_schema).clone();
             schema.remove("$schema");
             // Optional fields are typed `["string", "null"]`; leaving them out of
             // `required` already says they're optional.
             if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
-                for prop in props.values_mut() {
+                for (field, prop) in props {
+                    // Unlike other optional fields, an explicit null clears a scheduled date.
+                    if name == "update_task" && (field == "start_at" || field == "deadline_at") {
+                        continue;
+                    }
                     if let Some(kind) = prop.get_mut("type")
                         && let Some(first) = kind.as_array().and_then(|k| k.first()).cloned()
                     {
@@ -255,14 +266,24 @@ impl Kanzo {
 }
 
 #[tool_router]
-impl Kanzo {
+impl Brokan {
     /// Runs `f` with a fresh connection on a blocking thread and turns the
     /// outcome into text; errors go back to the agent as tool errors it can read.
     async fn run(&self, f: impl FnOnce(&Ctx, &Store) -> store::Result<String> + Send + 'static) -> CallToolResult {
         let ctx = self.ctx.clone();
+        let start = Instant::now();
         let outcome = tokio::task::spawn_blocking(move || {
-            let store = ctx.home.store().map_err(|e| e.to_string())?;
-            f(&ctx, &store).map_err(|e| e.to_string())
+            let result = (|| {
+                let store = ctx.home.store().map_err(|e| e.to_string())?;
+                f(&ctx, &store).map_err(|e| e.to_string())
+            })();
+            // Both stdio and HTTP tools share this path. Telemetry errors never
+            // change a tool's result and no arguments, outputs or names are saved.
+            if let Err(error) = mcp_metrics::record(&ctx.home.mcp_metrics_path, start.elapsed()) {
+                static WARN: Once = Once::new();
+                WARN.call_once(|| eprintln!("brokan: cannot record MCP metrics: {error}"));
+            }
+            result
         })
         .await
         .unwrap_or_else(|e| Err(format!("internal error: {e}")));
@@ -272,27 +293,23 @@ impl Kanzo {
         }
     }
 
-    #[tool(description = "List projects with their repos and open task counts.")]
+    #[tool(description = "List active and archived projects with their open task counts.")]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         Ok(self
-            .run(|ctx, store| {
+            .run(|_, store| {
                 let projects = store.list_projects()?;
                 if projects.is_empty() {
                     return Ok("No projects yet. Create one with create_project.".into());
                 }
-                let here = projects.iter().find(|p| p.repos.iter().any(|r| ctx.repos.contains(r)));
                 let mut out = String::new();
                 for p in &projects {
                     out.push_str(&p.slug);
                     if p.name != p.slug {
                         let _ = write!(out, " \"{}\"", p.name);
                     }
-                    if !p.repos.is_empty() {
-                        let _ = write!(out, " ({})", p.repos.join(", "));
-                    }
                     let _ = write!(out, ": {} open of {}", p.open, p.total);
-                    if here.is_some_and(|h| h.id == p.id) {
-                        out.push_str(" <- current repo");
+                    if p.archived {
+                        out.push_str(" [archived]");
                     }
                     out.push('\n');
                 }
@@ -309,19 +326,8 @@ impl Kanzo {
     ) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |_, store| {
-                let p = store.create_project(&args.slug, args.name.as_deref().unwrap_or(""), args.repo.as_deref())?;
-                let repo = p.repos.first().map(|r| format!(", linked to {r}")).unwrap_or_default();
-                Ok(format!("Created project {} ({}){repo}.", p.slug, p.name))
-            })
-            .await)
-    }
-
-    #[tool(description = "Link another GitHub repo to a project.")]
-    async fn link_repo(&self, Parameters(args): Parameters<LinkRepoArgs>) -> Result<CallToolResult, ErrorData> {
-        Ok(self
-            .run(move |_, store| {
-                let p = store.link_repo(&args.project, &args.repo)?;
-                Ok(format!("Project {} is linked to {}.", p.slug, p.repos.join(", ")))
+                let p = store.create_project(&args.slug, args.name.as_deref().unwrap_or(""), None)?;
+                Ok(format!("Created project {} ({}).", p.slug, p.name))
             })
             .await)
     }
@@ -396,7 +402,15 @@ impl Kanzo {
                 let project = ctx.project(store, args.project.as_deref())?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let description = args.description.as_deref().unwrap_or("");
-                let mut t = store.create_task_in(project.id, status.as_deref(), &args.title, description)?;
+                let priority = args.priority.map(|p| p.trim().to_ascii_lowercase());
+                let mut t = store.create_task_with_schedule(
+                    project.id,
+                    status.as_deref(),
+                    &args.title,
+                    description,
+                    priority.as_deref(),
+                    store::Schedule { start_at: args.start_at.as_deref(), deadline_at: args.deadline_at.as_deref() },
+                )?;
                 if args.tags.is_some() || args.human.is_some() {
                     t = store
                         .update_task(t.id, TaskPatch { tags: args.tags, human: args.human, ..Default::default() })?;
@@ -421,6 +435,9 @@ impl Kanzo {
                         tags: args.tags,
                         project_id: None,
                         human: args.human,
+                        priority: args.priority.map(|p| p.trim().to_ascii_lowercase()),
+                        start_at: args.start_at,
+                        deadline_at: args.deadline_at,
                     },
                 )?;
                 let moved = if before.status != after.status {
@@ -450,7 +467,7 @@ impl Kanzo {
             .await)
     }
 
-    #[tool(description = "Take the top todo task, move it to doing and show it.")]
+    #[tool(description = "Take the highest-priority todo task (ties by board order), move it to doing and show it.")]
     async fn next_task(&self, Parameters(args): Parameters<NextTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
             .run(move |ctx, store| {
@@ -487,10 +504,10 @@ impl Kanzo {
 // Serve the router built once in `tools()`; by default the macro builds a new,
 // untrimmed one for every request.
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for Kanzo {
+impl ServerHandler for Brokan {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("kanzo", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new("brokan", env!("CARGO_PKG_VERSION")))
             .with_instructions(if self.ctx.cwd.is_some() { INSTRUCTIONS } else { HTTP_INSTRUCTIONS })
     }
 }
@@ -498,6 +515,15 @@ impl ServerHandler for Kanzo {
 /// `api#12 [todo] Fix login {bug} (2 comments)`.
 fn task_line(out: &mut String, t: &Task) {
     let _ = write!(out, "{}#{} [{}] {}", t.project, t.id, t.status, t.title);
+    if t.priority != "none" {
+        let _ = write!(out, " [priority: {}]", t.priority);
+    }
+    if let Some(start) = &t.start_at {
+        let _ = write!(out, " [start: {start}]");
+    }
+    if let Some(deadline) = &t.deadline_at {
+        let _ = write!(out, " [deadline: {deadline}]");
+    }
     write_tags(out, t);
     match t.comments {
         0 => {}
@@ -526,7 +552,13 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     let (created, updated) = (short_time(&t.created_at), short_time(&t.updated_at));
     let mut out = format!("{}#{} {}", t.project, t.id, t.title);
     write_tags(&mut out, t);
-    let _ = write!(out, "\nstatus: {}", t.status);
+    let _ = write!(out, "\nstatus: {}, priority: {}", t.status, t.priority);
+    if let Some(start) = &t.start_at {
+        let _ = write!(out, ", start: {start}");
+    }
+    if let Some(deadline) = &t.deadline_at {
+        let _ = write!(out, ", deadline: {deadline}");
+    }
     if t.human {
         out.push_str(", human: for the user, not for agents");
     }
@@ -557,4 +589,23 @@ fn task_detail(ctx: &Ctx, store: &Store, t: &Task) -> store::Result<String> {
     }
     out.truncate(out.trim_end().len());
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tool_runner_records_success_and_failure_without_changing_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut home = Home::open(temp.path().join("board")).unwrap();
+        home.mcp_metrics_path = temp.path().join("private/metrics.sqlite");
+        let path = home.mcp_metrics_path.clone();
+        let server = Brokan { ctx: Arc::new(Ctx { home, cwd: None, repos: Vec::new() }), tool_router: Brokan::tools() };
+        let success = server.run(|_, _| Ok("done".into())).await;
+        let failure = server.run(|_, _| Err(Error::NotFound("missing".into()))).await;
+        assert_eq!(success.is_error, Some(false));
+        assert_eq!(failure.is_error, Some(true));
+        assert_eq!(mcp_metrics::snapshot(&path).unwrap().total_calls, 2);
+    }
 }

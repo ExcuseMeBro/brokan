@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Kanzo does not work as it should.
+description: Something in Brokan does not work as it should.
 labels: [bug]
 body:
   - type: textarea
@@ -14,14 +14,14 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. kanzo --home /tmp/k
+        1. brokan --home /tmp/k
         2. ...
   - type: input
     id: version
     attributes:
-      label: Kanzo version
-      description: The output of `kanzo --version`.
-      placeholder: kanzo 0.1.0
+      label: Brokan version
+      description: The output of `brokan --version`.
+      placeholder: brokan 0.1.0
     validations:
       required: true
   - type: input

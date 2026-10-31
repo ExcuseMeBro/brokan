@@ -1,4 +1,4 @@
--- Kanzo schema, version 1.
+-- Brokan schema, version 1.
 -- Later changes go in new numbered migrations in store.rs; never edit this one after release.
 
 CREATE TABLE projects (
@@ -34,7 +34,7 @@ CREATE TABLE comments (
 CREATE INDEX comments_by_task ON comments(task_id);
 
 -- The change counter the board polls. Every write to any table bumps it, so
--- changes made by agents through `kanzo mcp` show up on the board.
+-- changes made by agents through `brokan mcp` show up on the board.
 INSERT INTO meta (key, value) VALUES ('changes', '0');
 
 CREATE TRIGGER projects_insert AFTER INSERT ON projects BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;

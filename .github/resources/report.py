@@ -13,7 +13,7 @@ import os
 import re
 import sys
 
-MARKER = "<!-- kanzo-resources -->"
+MARKER = "<!-- brokan-resources -->"
 MODEL = "claude-opus-5-5"
 
 
@@ -108,7 +108,7 @@ def main():
         ("Memory", "Idle board", "idle_rss_bytes", "bytes", 5),
         ("Memory", f"Board with {data['tasks']:,} tasks loaded", "loaded_rss_bytes", "bytes", 5),
         ("Memory", "Peak of the board", "peak_rss_bytes", "bytes", 5),
-        ("Memory", "`kanzo mcp` after a session", "mcp_rss_bytes", "bytes", 5),
+        ("Memory", "`brokan mcp` after a session", "mcp_rss_bytes", "bytes", 5),
         ("Memory", "Threads when idle", "idle_threads", "", 0),
         ("Speed", "Start", "start_ms", "ms", 15),
         ("Speed", f"`/api/board` with {data['tasks']:,} tasks", "board_ms", "ms", 15),

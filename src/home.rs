@@ -11,38 +11,39 @@ use serde::Deserialize;
 
 use crate::store::{self, ImagesOf, Store};
 
-const DEFAULT_PORT: u16 = 4242;
+const DEFAULT_PORT: u16 = 1317;
 
-const CONFIG_TEMPLATE: &str = r#"# Kanzo settings.
+const CONFIG_TEMPLATE: &str = r#"# Brokan settings.
 
 # Port for the board at http://localhost:<port>.
-port = 4242
+port = 1317
 
 # Address the board listens on. 127.0.0.1 keeps it on this machine. Use
-# "0.0.0.0" to open it from other devices, for example when Kanzo runs on a
+# "0.0.0.0" to open it from other devices, for example when Brokan runs on a
 # Raspberry Pi with no screen. There are no logins: anyone who can reach the
 # port can read and change the board, and use its MCP endpoint.
 listen = "127.0.0.1"
 
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
-# that cannot start `kanzo mcp` themselves.
+# that cannot start `brokan mcp` themselves.
 mcp_http = true
+
 "#;
 
 const GITIGNORE: &str = "\
-# SQLite temporary files; kanzo sync makes sure kanzo.db is complete without them.
-kanzo.db-journal
-kanzo.db-wal
-kanzo.db-shm
+# SQLite temporary files; brokan sync makes sure brokan.db is complete without them.
+brokan.db-journal
+brokan.db-wal
+brokan.db-shm
 # Local to this machine.
-kanzo.lock
+brokan.lock
 *.bak
 # macOS metadata (AppleDouble files appear on exFAT drives).
 ._*
 .DS_Store
 ";
 
-/// How long an operation waits for `kanzo sync` before giving up with "busy".
+/// How long an operation waits for `brokan sync` before giving up with "busy".
 const LOCK_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
 
 pub const NO_LOCKS: &str = "This folder doesn't support file locks: don't sync while agents are working.";
@@ -70,23 +71,40 @@ impl Default for Config {
 pub struct Home {
     pub dir: PathBuf,
     pub config: Config,
+    /// Machine-local, outside the Sync repository's tracked config.toml.
+    pub git_root: Option<PathBuf>,
+    /// Private, machine-local aggregates; never inside the synced board folder.
+    pub mcp_metrics_path: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitOverviewConfig {
+    git_root: PathBuf,
 }
 
 impl Home {
-    /// `--home`, then `KANZO_HOME`, then `~/kanzo`.
+    /// `--home`, then `BROKAN_HOME`, then `~/brokan`.
     pub fn resolve(flag: Option<PathBuf>) -> Result<PathBuf> {
         if let Some(dir) = flag {
             return Ok(dir);
         }
-        if let Some(dir) = std::env::var_os("KANZO_HOME").filter(|v| !v.is_empty()) {
+        if let Some(dir) = std::env::var_os("BROKAN_HOME").filter(|v| !v.is_empty()) {
             return Ok(PathBuf::from(dir));
         }
-        let home = dirs::home_dir().context("cannot find your home folder; set KANZO_HOME")?;
-        Ok(home.join("kanzo"))
+        let home = dirs::home_dir().context("cannot find your home folder; set BROKAN_HOME")?;
+        Ok(home.join("brokan"))
     }
 
     /// Opens the data folder, creating it and its files on first use.
     pub fn open(dir: PathBuf) -> Result<Self> {
+        let private = dirs::home_dir()
+            .context("cannot find your home folder for local Git overview settings")?
+            .join(".config/brokan/git-overview.toml");
+        Self::open_with_local_config(dir, &private)
+    }
+
+    fn open_with_local_config(dir: PathBuf, private: &Path) -> Result<Self> {
         fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
         let dir = dir.canonicalize().unwrap_or(dir);
         write_if_missing(&dir.join("config.toml"), CONFIG_TEMPLATE)?;
@@ -96,16 +114,35 @@ impl Home {
         let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let config: Config = toml::from_str(&text).with_context(|| format!("{} is not valid", path.display()))?;
 
-        let home = Self { dir, config };
+        // Sync stages the entire board data folder, including config.toml. Never
+        // read a machine-local repo path from there or accidentally publish it.
+        let git_root = match fs::read_to_string(private) {
+            Ok(text) => Some(
+                toml::from_str::<GitOverviewConfig>(&text)
+                    .with_context(|| format!("{} is not valid", private.display()))?
+                    .git_root,
+            ),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", private.display())),
+        };
+        // Stable per-board identity without persisting the private folder path in Sync.
+        let mut id = 0xcbf29ce484222325_u64;
+        for byte in dir.to_string_lossy().as_bytes() {
+            id = (id ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
+        let mcp_metrics_path = dirs::home_dir()
+            .context("cannot find your home folder for local MCP metrics")?
+            .join(format!(".local/state/brokan/mcp-metrics-{id:016x}.sqlite"));
+        let home = Self { dir, config, git_root, mcp_metrics_path };
         home.store()?.migrate()?;
         Ok(home)
     }
 
     pub fn db_path(&self) -> PathBuf {
-        self.dir.join("kanzo.db")
+        self.dir.join("brokan.db")
     }
 
-    /// Changes when the database file itself is replaced, as `kanzo sync` does
+    /// Changes when the database file itself is replaced, as `brokan sync` does
     /// when it pulls, so the board reloads even if the pulled change counter
     /// happens to equal the old one.
     pub fn db_identity(&self) -> u64 {
@@ -121,8 +158,8 @@ impl Home {
     }
 
     /// Opens a fresh connection. Callers keep it for one operation only, so a
-    /// database replaced by `kanzo sync` is picked up on the next one. It holds
-    /// a shared lock on `kanzo.lock`, so sync can wait for it to finish; while
+    /// database replaced by `brokan sync` is picked up on the next one. It holds
+    /// a shared lock on `brokan.lock`, so sync can wait for it to finish; while
     /// sync holds the lock, this waits up to `LOCK_WAIT` and then reports busy.
     pub fn store(&self) -> store::Result<Store> {
         let lock = self.lock_file().map_err(|e| store::Error::Invalid(format!("{e:#}")))?;
@@ -134,15 +171,15 @@ impl Home {
                     std::thread::sleep(Duration::from_millis(25))
                 }
                 Err(TryLockError::WouldBlock) => {
-                    return Err(store::Error::Busy("kanzo sync is updating the board; try again in a moment".into()));
+                    return Err(store::Error::Busy("brokan sync is updating the board; try again in a moment".into()));
                 }
                 Err(TryLockError::Error(e)) if unsupported(&e) => {
                     static WARN: std::sync::Once = std::sync::Once::new();
-                    WARN.call_once(|| eprintln!("kanzo: {NO_LOCKS}"));
+                    WARN.call_once(|| eprintln!("brokan: {NO_LOCKS}"));
                     break None;
                 }
                 Err(TryLockError::Error(e)) => {
-                    return Err(store::Error::Invalid(format!("cannot lock kanzo.lock: {e}")));
+                    return Err(store::Error::Invalid(format!("cannot lock brokan.lock: {e}")));
                 }
             }
         };
@@ -172,12 +209,12 @@ impl Home {
         match lock.lock() {
             Ok(()) => Ok(Some(lock)),
             Err(e) if unsupported(&e) => Ok(None),
-            Err(e) => Err(e).context("cannot lock kanzo.lock"),
+            Err(e) => Err(e).context("cannot lock brokan.lock"),
         }
     }
 
     fn lock_file(&self) -> Result<File> {
-        let path = self.dir.join("kanzo.lock");
+        let path = self.dir.join("brokan.lock");
         OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -187,7 +224,7 @@ impl Home {
     }
 }
 
-/// Some filesystems (exFAT, network shares) have no file locks: Kanzo goes on without.
+/// Some filesystems (exFAT, network shares) have no file locks: Brokan goes on without.
 fn unsupported(e: &io::Error) -> bool {
     #[cfg(unix)]
     if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::ENOLCK)) {
@@ -214,10 +251,33 @@ mod tests {
         let home = Home::open(dir.clone()).unwrap();
         assert!(dir.join("config.toml").exists());
         assert!(dir.join(".gitignore").exists());
-        assert!(dir.join("kanzo.db").exists());
+        assert!(dir.join("brokan.db").exists());
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());
+        assert!(!home.mcp_metrics_path.starts_with(&dir));
+        assert_eq!(home.mcp_metrics_path, Home::open(dir.clone()).unwrap().mcp_metrics_path);
+        assert_ne!(home.mcp_metrics_path, Home::open(tmp.path().join("other")).unwrap().mcp_metrics_path);
+    }
+
+    #[test]
+    fn git_root_is_opt_in_and_loaded_only_from_private_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("synced-board");
+        let private = tmp.path().join("private/git-overview.toml");
+        let home = Home::open_with_local_config(data.clone(), &private).unwrap();
+        assert!(home.git_root.is_none());
+        assert!(!fs::read_to_string(data.join("config.toml")).unwrap().contains("git_root"));
+        fs::create_dir(private.parent().unwrap()).unwrap();
+        fs::write(&private, "git_root = \"/tmp/projects\"\n").unwrap();
+        let home = Home::open_with_local_config(data.clone(), &private).unwrap();
+        assert_eq!(home.git_root.as_deref(), Some(Path::new("/tmp/projects")));
+        assert!(!fs::read_to_string(data.join("config.toml")).unwrap().contains("git_root"));
+        fs::write(&private, "git_root = [\"not a path\"]\n").unwrap();
+        assert!(Home::open_with_local_config(data.clone(), &private).is_err());
+        fs::write(&private, "git_root = \"/tmp/projects\"\n").unwrap();
+        fs::write(data.join("config.toml"), "git_root = \"/tmp/unsafe-sync-path\"\n").unwrap();
+        assert!(Home::open_with_local_config(data, &private).is_err());
     }
 
     #[test]

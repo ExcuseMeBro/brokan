@@ -1,6 +1,9 @@
+mod background;
 mod export;
+mod git_overview;
 mod home;
 mod mcp;
+mod mcp_metrics;
 mod service;
 mod store;
 mod sync;
@@ -16,11 +19,11 @@ use crate::home::Home;
 
 /// Self-hosted kanban for humans and agents.
 ///
-/// Run `kanzo` to open the board. Agents connect with `kanzo mcp`.
+/// Run `brokan` to start the board in the background. Agents connect with `brokan mcp`.
 #[derive(Parser)]
-#[command(name = "kanzo", version)]
+#[command(name = "brokan", version)]
 struct Cli {
-    /// Data folder [default: $KANZO_HOME, then ~/kanzo]
+    /// Data folder [default: $BROKAN_HOME, then ~/brokan]
     #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
 
@@ -31,6 +34,10 @@ struct Cli {
     /// Start the board without opening the browser
     #[arg(long)]
     no_open: bool,
+
+    /// Keep the board attached to this terminal (for service managers and debugging)
+    #[arg(long)]
+    foreground: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -47,7 +54,7 @@ enum Command {
     },
     /// Commit the data folder and pull or push it with its git remote
     Sync {
-        /// Sync with this git repo from now on, like https://github.com/you/kanzo-data or you/kanzo-data
+        /// Sync with this git repo from now on, like https://github.com/you/brokan-data or you/brokan-data
         #[arg(long, value_name = "URL")]
         repo: Option<String>,
         /// When both sides changed, keep this machine's board and overwrite the remote
@@ -69,7 +76,7 @@ enum Command {
         #[arg(long, short, value_name = "FILE")]
         output: Option<PathBuf>,
     },
-    /// Install the latest release over this Kanzo, and restart the board's service
+    /// Install the latest release over this Brokan, and restart the board's service
     Update,
     /// Start the board automatically at login (macOS and Linux)
     Service {
@@ -89,8 +96,8 @@ enum ServiceAction {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // One thread runs all the async work: the board serves one person, and each
-    // agent starts its own `kanzo mcp`. Database calls run on a few blocking
-    // threads that exit when idle. This keeps kanzo light on small boards.
+    // agent starts its own `brokan mcp`. Database calls run on a few blocking
+    // threads that exit when idle. This keeps brokan light on small boards.
     let outcome = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(8)
@@ -100,7 +107,7 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("kanzo: {e:#}");
+            eprintln!("brokan: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -109,7 +116,7 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     // Before opening the data folder: it may be the reason to update.
     if let Some(Command::Update) = cli.command {
-        return update_kanzo();
+        return update_brokan();
     }
     let dir = match &cli.command {
         Some(Command::Init { folder: Some(folder) }) => folder.clone(),
@@ -117,10 +124,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let home = Home::open(dir)?;
     match cli.command {
-        None => web::serve(home, cli.port, !cli.no_open).await,
+        None if cli.foreground => web::serve(home, cli.port, !cli.no_open).await,
+        None => background::start(home, cli.port, !cli.no_open).await,
         Some(Command::Mcp) => mcp::serve(home).await,
         Some(Command::Init { .. }) => {
-            println!("Kanzo data folder ready at {}", home.dir.display());
+            println!("Brokan data folder ready at {}", home.dir.display());
             Ok(())
         }
         Some(Command::Sync { repo, keep_local, keep_remote }) => {
@@ -144,17 +152,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
-/// `kanzo update`: installs the latest release over this program, then restarts the
+/// `brokan update`: installs the latest release over this program, then restarts the
 /// board's service, if there is one, so it runs the new version too.
-fn update_kanzo() -> anyhow::Result<()> {
+fn update_brokan() -> anyhow::Result<()> {
     let Some(latest) = update::latest(true) else {
         anyhow::bail!("can't reach GitHub to check for updates");
     };
     if !update::newer(&latest) {
-        println!("Kanzo is up to date ({}).", update::CURRENT);
+        println!("Brokan is up to date ({}).", update::CURRENT);
         return Ok(());
     }
-    println!("Installing Kanzo {latest} (you have {})…", update::CURRENT);
+    println!("Installing Brokan {latest} (you have {})…", update::CURRENT);
     update::install().map_err(anyhow::Error::msg)?;
     if service::restart()? {
         println!("Updated to {latest}, and restarted the board.");

@@ -1,4 +1,4 @@
-//! `kanzo export`: the whole board as Markdown or JSON, readable without Kanzo.
+//! `brokan export`: the whole board as Markdown or JSON, readable without Brokan.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -39,6 +39,9 @@ struct TaskOut {
     tags: Vec<String>,
     /// Work for a person, which agents leave alone.
     human: bool,
+    priority: String,
+    start_at: Option<String>,
+    deadline_at: Option<String>,
     /// Paths of the images attached to the task and its comments.
     images: Vec<String>,
     status: String,
@@ -56,6 +59,9 @@ impl TaskOut {
             description: task.description,
             tags: task.tags,
             human: task.human,
+            priority: task.priority,
+            start_at: task.start_at,
+            deadline_at: task.deadline_at,
             images,
             status: task.status,
             created_at: task.created_at,
@@ -102,7 +108,7 @@ fn collect(store: &Store, only: Option<&str>, images: &Path) -> Result<Board> {
 }
 
 fn markdown(board: &Board) -> String {
-    let mut md = format!("# Kanzo board\n\nExported {}.\n", short_time(&board.exported_at));
+    let mut md = format!("# Brokan board\n\nExported {}.\n", short_time(&board.exported_at));
     for p in &board.projects {
         let links: Vec<String> = p.project.repos.iter().map(|r| format!("[{r}](https://github.com/{r})")).collect();
         let repo = if links.is_empty() { String::new() } else { format!(" ({})", links.join(", ")) };
@@ -115,6 +121,9 @@ fn markdown(board: &Board) -> String {
             p.project.total,
             if p.project.total == 1 { "task" } else { "tasks" }
         );
+        if p.project.archived {
+            md.push_str("Archived project.\n");
+        }
         // Columns in board order, then any status no longer in the config.
         let mut statuses = board.statuses.clone();
         for t in &p.tasks {
@@ -139,6 +148,15 @@ fn markdown(board: &Board) -> String {
                 );
                 if t.human {
                     md.push_str("Human task.\n");
+                }
+                if t.priority != "none" {
+                    let _ = writeln!(md, "Priority: {}.", t.priority);
+                }
+                if let Some(start) = &t.start_at {
+                    let _ = writeln!(md, "Planned start: {start} (UTC).");
+                }
+                if let Some(deadline) = &t.deadline_at {
+                    let _ = writeln!(md, "Deadline: {deadline} (UTC).");
                 }
                 if !t.tags.is_empty() {
                     let _ = writeln!(md, "Tags: {}.", t.tags.join(", "));
@@ -176,6 +194,17 @@ mod tests {
         store.create_project("web", "Web", None).unwrap();
         let t = store.create_task(api.id, "Fix login", "Steps:\n1. log in").unwrap();
         store.add_comment(t.id, "claude-code", "Found it\nin auth.rs", &[]).unwrap();
+        store
+            .update_task(
+                t.id,
+                crate::store::TaskPatch {
+                    priority: Some("high".into()),
+                    start_at: Some(Some("2030-01-01T03:04:05Z".into())),
+                    deadline_at: Some(Some("2030-01-02T03:04:05Z".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         let done = store.create_task(api.id, "Old work", "").unwrap();
         store.move_task(done.id, "done", None).unwrap();
 
@@ -184,6 +213,9 @@ mod tests {
         assert!(md.contains("## API `api` ([me/api](https://github.com/me/api))"), "{md}");
         assert!(md.contains("### todo\n\n#### api#1 Fix login"), "{md}");
         assert!(md.contains("Steps:\n1. log in"), "{md}");
+        assert!(md.contains("Priority: high."), "{md}");
+        assert!(md.contains("Planned start: 2030-01-01T03:04:05Z (UTC)."), "{md}");
+        assert!(md.contains("Deadline: 2030-01-02T03:04:05Z (UTC)."), "{md}");
         assert!(md.contains("- **claude-code**, ") && md.contains("Found it\n  in auth.rs"), "{md}");
         assert!(md.contains("### done\n\n#### api#2 Old work"), "{md}");
         assert!(md.contains("## Web `web`"), "{md}");
@@ -192,6 +224,10 @@ mod tests {
         assert_eq!(json["statuses"][0], "todo");
         assert_eq!(json["projects"][0]["slug"], "api");
         assert_eq!(json["projects"][0]["tasks"][0]["key"], "api#1");
+        assert_eq!(json["projects"][0]["tasks"][0]["priority"], "high");
+        assert_eq!(json["projects"][0]["tasks"][0]["start_at"], "2030-01-01T03:04:05Z");
+        assert_eq!(json["projects"][0]["tasks"][0]["deadline_at"], "2030-01-02T03:04:05Z");
+        assert!(json["projects"][0]["tasks"][1]["deadline_at"].is_null());
         assert_eq!(json["projects"][0]["tasks"][0]["comments"][0]["author"], "claude-code");
 
         let only = collect(&store, Some("web"), Path::new("/k/images")).unwrap();
