@@ -23,8 +23,10 @@ function setup(api = async () => git) {
   const state = { dashboard: true, dashboardData: { statuses: [{ status: 'todo', count: 2 }], tasks: 2,
     projects: [{ name: 'Site', slug: 'site', seconds: 5 }], days: [{ day: '2026-10-30', seconds: 5 }],
     total_seconds: 5, running_seconds: 0, deadlines: [],
-    mcp: { total_calls: 3, fastest_us: 500, average_us: 550000, slowest_us: 1100000,
-      days: [{ day: '2026-10-29', calls: 1 }, { day: '2026-10-30', calls: 2 }] } },
+    mcp: { total_calls: 3, average_per_hour: 0.004, fastest_us: 500, average_us: 550000, slowest_us: 1100000,
+      days: Array.from({ length: 30 }, (_, i) => ({ day: `2026-10-${String(i + 1).padStart(2, '0')}`,
+        calls: i === 28 ? 1 : i === 29 ? 2 : 0,
+        fastest_ms: i >= 28 ? 1 : null, slowest_ms: i === 29 ? 1100 : i === 28 ? 500 : null })) } },
     dashboardGitData: git, dashboardGitError: null, board: { statuses: ['todo', 'done'] } };
   const context = { state, el, document: { createElementNS: (_ns, tag) => ({ ...el(tag),
     setAttribute(name, value) { this.attrs[name] = value; } }) }, api, STATUS_COLORS: ['red', 'blue'],
@@ -34,7 +36,7 @@ function setup(api = async () => git) {
   return { ...methods, state, root };
 }
 
-test('status is a donut; daily MCP bars and min/mean/max are rendered without raw calls', () => {
+test('status is a donut; 30-day MCP counts and min/mean/max render without raw calls', () => {
   const ctx = setup();
   ctx.renderDashboard();
   const nodes = ctx.root.nodes;
@@ -42,9 +44,12 @@ test('status is a donut; daily MCP bars and min/mean/max are rendered without ra
   const svg = walk(status, (x) => x.tag === 'svg')[0];
   assert.ok(walk(svg, (x) => x.tag === 'circle' && x.attrs.r === '43').length);
   assert.equal(walk(svg, (x) => x.tag === 'text')[0].textContent, '2');
-  const bars = walk(nodes, (x) => x.attrs?.['aria-label']?.startsWith('MCP calls by UTC day:'))[0];
-  assert.match(bars.attrs['aria-label'], /2026-10-30: 2/);
-  assert.equal(walk(bars, (x) => x.attrs?.class === 'bar-day').length, 2);
+  const charts = walk(nodes, (x) => x.attrs?.class === 'mcp-scroll');
+  assert.equal(charts.length, 2);
+  assert.equal(walk(charts[0], (x) => x.attrs?.class === 'mcp-day').length, 30);
+  assert.equal(walk(charts[1], (x) => x.attrs?.class === 'mcp-day').length, 30);
+  assert.match(charts[0].attrs['aria-label'], /last 30 UTC days/);
+  assert.match(walk(charts[0], (x) => x.attrs?.role === 'img').at(-1).attrs['aria-label'], /2026-10-30: 2 calls/);
   const timing = walk(nodes, (x) => x.attrs?.class === 'mcp-latencies')[0];
   assert.ok(timing);
   assert.deepEqual(walk(timing, (x) => x.tag === 'dd').map((x) => x.children[0]), ['500 µs', '550.0 ms', '1.10 s']);
@@ -82,7 +87,7 @@ test('no MCP samples do not invent historical calls or zero latency', () => {
   const ctx = setup();
   ctx.state.dashboardData.mcp = { days: [], total_calls: 0, fastest_us: null, average_us: null, slowest_us: null };
   ctx.renderDashboard();
-  assert.match(JSON.stringify(ctx.root.nodes), /No measured MCP tool calls yet/);
+  assert.match(JSON.stringify(ctx.root.nodes), /No MCP tool calls recorded yet/);
   assert.match(JSON.stringify(ctx.root.nodes), /Waiting for the first measured MCP tool call/);
   assert.equal(ctx.mcpDuration(null), '—');
 });

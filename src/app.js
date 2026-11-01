@@ -683,6 +683,31 @@ function mcpDuration(micros) {
   return `${(micros / 1000).toFixed(micros < 10000 ? 2 : 1)} ms`;
 }
 
+function mcpLatency(ms) {
+  if (ms == null) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${ms} ms`;
+}
+
+function mcpDayChart(days, latency) {
+  const max = Math.max(1, ...days.map((d) => latency ? d.slowest_ms || 0 : d.calls));
+  const label = latency ? "Daily fastest and slowest MCP response time" : "Daily MCP tool calls";
+  const bar = (value, type, day) => el("span", {
+    class: `mcp-bar ${type}`, style: `height:${value ? Math.max(3, value / max * 100) : 0}%`,
+    title: `${day}: ${latency ? mcpLatency(value) : `${value} calls`}`,
+  });
+  return el("div", { class: "mcp-scroll", tabindex: "0", role: "region", "aria-label": `${label}, last 30 UTC days` },
+    el("div", { class: "mcp-chart" }, ...days.map((d, i) => {
+      const details = latency
+        ? (d.calls ? `fastest ${mcpLatency(d.fastest_ms)}, slowest ${mcpLatency(d.slowest_ms)}` : "no calls")
+        : `${d.calls} calls`;
+      return el("div", { class: "mcp-day", role: "img", "aria-label": `${d.day}: ${details}` },
+        el("div", { class: "mcp-tracks" }, ...(latency
+          ? [bar(d.fastest_ms, "fast", d.day), bar(d.slowest_ms, "slow", d.day)]
+          : [bar(d.calls, "calls", d.day)])),
+        el("span", { class: "mcp-tick", title: d.day }, i % 5 === 0 || i === days.length - 1 ? d.day.slice(5) : "·"));
+    })));
+}
+
 function dashboardGit() {
   const data = state.dashboardGitData;
   if (state.dashboardGitError) return el("p", { class: "chart-empty", role: "alert" },
@@ -755,6 +780,7 @@ function renderDashboard() {
   const days = data.days || [];
   const mcp = data.mcp;
   const mcpDays = mcp?.days || [];
+  const mcpHasCalls = mcp?.total_calls > 0;
   const open = data.tasks - (data.statuses.find((s) => s.status === "done")?.count || 0);
   const now = new Date();
   const deadlines = (data.deadlines || []).filter((d) => deadlineDaysLeft(d.deadline_at, now) <= 7);
@@ -777,11 +803,28 @@ function renderDashboard() {
       stat("Tracked time", duration(data.total_seconds), data.running_seconds ? `${duration(data.running_seconds)} running now` : "All time"),
       stat("Tasks", String(data.tasks), `${open} open`),
       stat("Projects", String(data.projects.length), `${projectRows.length} with tracked time`)),
+    el("div", { class: "dashboard-stats" },
+      stat("MCP tool calls", String(mcp?.total_calls || 0), "Last 30 UTC days"),
+      stat("Average calls / hour", mcp?.average_per_hour > 0 && mcp.average_per_hour < .01
+        ? "<0.01" : (mcp?.average_per_hour || 0).toFixed(2), "Elapsed clock hours in this 30-day window"),
+      el("div", { class: "dashboard-stat mcp-range" }, el("span", { class: "label" }, "Fastest / slowest"),
+        el("strong", {}, `${mcpDuration(mcp?.fastest_us)} / ${mcpDuration(mcp?.slowest_us)}`),
+        el("small", {}, "MCP tool response · last 30 UTC days"))),
     chart("LOCAL GIT", "Repositories & branches", dashboardGit(),
       "Read-only snapshot of direct child repositories. Flags: uncommitted, unpushed, unmerged or unavailable; stashes are per repository.", true),
     chart("NEXT UP", "Deadlines · next 7 days", deadlineList,
       "Local calendar days. Shows up to 12 nearest upcoming and 5 recently overdue tasks; completed and archived work is excluded.", true),
     el("div", { class: "dashboard-charts" },
+      chart("MCP / 30 DAYS", "Tool calls by UTC day",
+        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
+          : mcpHasCalls ? mcpDayChart(mcpDays, false) : el("p", { class: "chart-empty" }, "No MCP tool calls recorded yet."),
+        "Counts successful tools and tool-returned errors. Earlier calls, before instrumentation, are not available.", true),
+      chart("MCP / RESPONSE TIME", "Daily fastest and slowest",
+        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
+          : mcpHasCalls ? el("div", {}, el("p", { class: "mcp-legend" },
+            el("span", { class: "mcp-key fast" }, "Fastest"), el("span", { class: "mcp-key slow" }, "Slowest")),
+            mcpDayChart(mcpDays, true)) : el("p", { class: "chart-empty" }, "No MCP response times recorded yet."),
+        "Server-side elapsed time; UTC days. Only bounded daily counts and duration aggregates are stored locally.", true),
       chart("01 / ACTIVITY", "Time logged · last 7 days",
         days.some((d) => d.seconds > 0) ? dayBars(days, "seconds", duration, "Time by day") : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),
         "Entries are grouped by start date in UTC. Running time is included.", true),
@@ -791,19 +834,13 @@ function renderDashboard() {
       chart("03 / TIME", "Time by project",
         circular(projectRows, duration(data.total_seconds), data.total_seconds, duration, "No tracked time yet. Start a task timer or log minutes."),
         "All-time logged and currently running time."),
-      chart("04 / MCP", "Tool calls · last 7 days",
+      chart("04 / LATENCY", "MCP tool duration",
         data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
-          : mcpDays.some((d) => d.calls > 0) ? dayBars(mcpDays, "calls", (n) => String(n), "MCP calls by UTC day")
-          : el("p", { class: "chart-empty" }, "No measured MCP tool calls yet. Metrics start when this version handles a call."),
-        "Completed MCP tool calls on this machine, grouped by UTC day. No historical calls are inferred.", true),
-      chart("05 / LATENCY", "MCP tool duration",
-        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
-          : mcp?.total_calls ? el("dl", { class: "mcp-latencies" },
+          : mcpHasCalls ? el("dl", { class: "mcp-latencies" },
             ...[["Fastest", mcp.fastest_us], ["Average", mcp.average_us], ["Slowest", mcp.slowest_us]]
               .flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, mcpDuration(value))]))
             : el("p", { class: "chart-empty" }, "Waiting for the first measured MCP tool call."),
-        `${mcp?.total_calls || 0} measured calls, all time. Includes processing time, not metrics writes.`)));
-
+        `${mcp?.total_calls || 0} measured calls in the 30-day UTC window. Includes processing time, not metrics writes.`)));
 }
 
 // ---------- project menu ----------

@@ -606,6 +606,17 @@ mod tests {
         let failure = server.run(|_, _| Err(Error::NotFound("missing".into()))).await;
         assert_eq!(success.is_error, Some(false));
         assert_eq!(failure.is_error, Some(true));
-        assert_eq!(mcp_metrics::snapshot(&path).unwrap().total_calls, 2);
+        let metrics = mcp_metrics::snapshot(&path).unwrap();
+        assert_eq!(metrics.total_calls, 2);
+        assert_eq!(metrics.days.len(), 30);
+        assert!(!path.starts_with(&server.ctx.home.dir));
+        let board = rusqlite::Connection::open(server.ctx.home.db_path()).unwrap();
+        assert_eq!(
+            board
+                .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'mcp_daily_stats'", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }
