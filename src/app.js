@@ -1131,6 +1131,9 @@ function sortTableTasks(tasks, sort, statuses, projects) {
   }).map((row) => row.task);
 }
 
+// Keep one status write per task in flight, including across polling redraws.
+const pendingTableStatuses = new Set();
+
 function renderTable() {
   const root = $("#table-view");
   root.hidden = state.gitOverview || state.dashboard || state.view !== "table";
@@ -1152,6 +1155,7 @@ function renderTable() {
   }
   const focusedSort = document.activeElement?.closest("#table-view th button")?.dataset.sort;
   const focusedTask = document.activeElement?.closest("#table-view a[data-task-id]")?.dataset.taskId;
+  const focusedStatus = document.activeElement?.closest("#table-view select[data-task-id]")?.dataset.taskId;
   const previousScroll = root.querySelector(".table-scroll");
   const scrollTop = previousScroll?.scrollTop || 0;
   const scrollLeft = previousScroll?.scrollLeft || 0;
@@ -1172,6 +1176,26 @@ function renderTable() {
   const projectNames = new Map(projects.map((p) => [p.slug, p.name]));
   const rows = sorted.map((t) => {
     const deadline = t.deadline_at && new Date(t.deadline_at);
+    const statusSelect = el("select", { class: "field table-status-select", "data-task-id": t.id,
+      "aria-label": `Status for ${key(t)}`, onchange: async (e) => {
+        const select = e.currentTarget;
+        const status = select.value;
+        if (pendingTableStatuses.has(t.id)) { select.value = t.status; return; }
+        if (status === t.status) return;
+        pendingTableStatuses.add(t.id);
+        try {
+          await api("PATCH", `/tasks/${t.id}`, { status });
+          await loadBoard();
+          if (state.task === t.id) await refreshTask();
+        } catch (err) {
+          select.value = t.status;
+          toast(err.message);
+        } finally {
+          pendingTableStatuses.delete(t.id);
+        }
+      } }, ...[...statuses, ...(!statuses.includes(t.status) ? [t.status] : [])]
+      .map((status) => el("option", { value: status }, status)));
+    statusSelect.value = t.status;
     return el("tr", { class: state.task === t.id ? "selected" : null },
       el("th", { scope: "row" }, el("a", { href: `#${state.project}/${t.id}`, "data-task-id": t.id,
         onclick: (e) => { e.preventDefault(); openTask(t.id).then(() => {
@@ -1179,7 +1203,7 @@ function renderTable() {
         }); } }, t.title),
       el("span", { class: "task-key mono" }, key(t), t.human ? " · Human" : "")),
       el("td", {}, projectGlyph(t.project), projectNames.get(t.project) || t.project),
-      el("td", {}, statusIcon(t.status), t.status),
+      el("td", {}, statusIcon(t.status), statusSelect),
       el("td", {}, t.priority && t.priority !== "none" ? t.priority[0].toUpperCase() + t.priority.slice(1) : "—"),
       el("td", { class: deadlineOverdue(t) ? "overdue" : null }, deadline
         ? el("time", { datetime: t.deadline_at, title: deadline.toLocaleString() },
@@ -1193,6 +1217,7 @@ function renderTable() {
   nextScroll.scrollLeft = scrollLeft;
   if (focusedSort) root.querySelector(`th button[data-sort="${focusedSort}"]`)?.focus({ preventScroll: true });
   if (focusedTask) root.querySelector(`a[data-task-id="${focusedTask}"]`)?.focus({ preventScroll: true });
+  if (focusedStatus) root.querySelector(`select[data-task-id="${focusedStatus}"]`)?.focus({ preventScroll: true });
 }
 
 // Display calendar dates using the user's zone, but compare day ordinals instead of

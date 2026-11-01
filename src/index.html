@@ -263,7 +263,7 @@ header .sub { color: var(--muted); }
 .task-table thead button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; margin: -3px -6px;
   background: none; border: 0; border-radius: 6px; color: inherit; white-space: nowrap; }
 .task-table thead button:hover { color: var(--text); background: var(--hover); }
-.task-table thead button:focus-visible, .task-table a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.task-table thead button:focus-visible, .task-table a:focus-visible, .task-table select:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .task-table .sort-arrow { color: var(--link); font-size: 14px; }
 .task-table tbody th a { display: block; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
 .task-table tbody th a:hover { text-decoration: underline; }
@@ -271,6 +271,7 @@ header .sub { color: var(--muted); }
 .task-table td { white-space: nowrap; color: var(--muted); }
 .task-table td:nth-child(2), .task-table td:nth-child(3) { color: var(--text); }
 .task-table td .icon, .task-table td .status-icon { vertical-align: middle; margin-right: 7px; }
+.task-table select.field.table-status-select { width: auto; min-width: 116px; max-width: 180px; padding: 5px 28px 5px 8px; border-radius: 8px; color: var(--text); font: inherit; }
 .task-table td.overdue { color: var(--danger); font-weight: 600; }
 .task-table td time { font-variant-numeric: tabular-nums; }
 /* Calendar and Gantt share one local-month navigator and the board's task/project colors. */
