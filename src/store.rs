@@ -100,15 +100,44 @@ const MIGRATIONS: &[&str] = &[
        UPDATE time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
          WHERE task_id = NEW.id AND ended_at IS NULL AND NEW.status = 'doing';
        INSERT INTO automatic_time_entries (task_id, started_at)
-         SELECT NEW.id, unixepoch() WHERE NEW.status = 'doing';
+         SELECT NEW.id, unixepoch() WHERE NEW.status = 'doing'
+           AND EXISTS (SELECT 1 FROM projects WHERE id = NEW.project_id AND archived = 0);
      END;
      CREATE TRIGGER automatic_time_no_manual BEFORE INSERT ON time_entries
        WHEN (SELECT status FROM tasks WHERE id = NEW.task_id) = 'doing'
        BEGIN SELECT RAISE(ABORT, 'time is tracked automatically while this task is doing'); END;
      UPDATE time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
-       WHERE ended_at IS NULL AND task_id IN (SELECT id FROM tasks WHERE status = 'doing');
+       WHERE ended_at IS NULL AND task_id IN (
+         SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id
+         WHERE t.status = 'doing' AND p.archived = 0);
      INSERT INTO automatic_time_entries (task_id, started_at)
-       SELECT id, unixepoch() FROM tasks WHERE status = 'doing';",
+       SELECT t.id, unixepoch() FROM tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.status = 'doing' AND p.archived = 0;",
+    // 14: archive transitions pause doing wall time; older schema-13 installs may
+    // already have a running interval for an archived project, so freeze it now.
+    "DROP TRIGGER automatic_time_status;
+     CREATE TRIGGER automatic_time_status AFTER UPDATE OF status ON tasks WHEN OLD.status <> NEW.status BEGIN
+       UPDATE automatic_time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+         WHERE task_id = NEW.id AND ended_at IS NULL AND OLD.status = 'doing';
+       UPDATE time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+         WHERE task_id = NEW.id AND ended_at IS NULL AND NEW.status = 'doing';
+       INSERT INTO automatic_time_entries (task_id, started_at)
+         SELECT NEW.id, unixepoch() WHERE NEW.status = 'doing'
+           AND EXISTS (SELECT 1 FROM projects WHERE id = NEW.project_id AND archived = 0);
+     END;
+     CREATE TRIGGER automatic_time_project_archive AFTER UPDATE OF archived ON projects
+       WHEN OLD.archived <> NEW.archived BEGIN
+       UPDATE automatic_time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+         WHERE ended_at IS NULL AND NEW.archived = 1
+           AND task_id IN (SELECT id FROM tasks WHERE project_id = NEW.id AND status = 'doing');
+       INSERT INTO automatic_time_entries (task_id, started_at)
+         SELECT t.id, unixepoch() FROM tasks t WHERE t.project_id = NEW.id AND t.status = 'doing'
+           AND NEW.archived = 0 AND NOT EXISTS (
+             SELECT 1 FROM automatic_time_entries a WHERE a.task_id = t.id AND a.ended_at IS NULL);
+     END;
+     UPDATE automatic_time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+       WHERE ended_at IS NULL AND task_id IN (
+         SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.archived = 1);",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -1969,6 +1998,7 @@ mod tests {
         s.conn
             .execute_batch(
                 "DROP TRIGGER automatic_time_status;
+                 DROP TRIGGER automatic_time_project_archive;
                  DROP TRIGGER automatic_time_no_manual;
                  DROP TABLE automatic_time_entries;
                  UPDATE meta SET value = '12' WHERE key = 'schema_version';",
@@ -1990,6 +2020,88 @@ mod tests {
         let reopened = Store::open(&dir.path().join("brokan.db"), None).unwrap();
         reopened.migrate().unwrap();
         assert_eq!(reopened.time_report(task.id).unwrap().running_since, Some(automatic.started_at));
+    }
+
+    #[test]
+    fn migration_from_schema_12_starts_only_active_doing_tasks() {
+        let (_dir, s) = store();
+        let active = s.create_project("active", "", None).unwrap();
+        let archived = s.create_project("archived", "", None).unwrap();
+        let active_task = s.create_task(active.id, "Active", "").unwrap();
+        let archived_task = s.create_task(archived.id, "Archived", "").unwrap();
+        s.set_project_archived("archived", true).unwrap();
+        s.conn
+            .execute_batch(
+                "DROP TRIGGER automatic_time_status;
+                 DROP TRIGGER automatic_time_project_archive;
+                 DROP TRIGGER automatic_time_no_manual;
+                 DROP TABLE automatic_time_entries;
+                 UPDATE meta SET value = '12' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "UPDATE tasks SET status = 'doing' WHERE id IN (?1, ?2)",
+                params![active_task.id, archived_task.id],
+            )
+            .unwrap();
+        s.migrate().unwrap();
+        assert!(s.time_report(active_task.id).unwrap().running_since.is_some());
+        assert!(s.time_report(archived_task.id).unwrap().entries.is_empty());
+        s.set_project_archived("archived", false).unwrap();
+        assert!(s.time_report(archived_task.id).unwrap().running_since.is_some());
+    }
+
+    #[test]
+    fn archiving_pauses_doing_time_and_restoring_resumes_once() {
+        let (_dir, s) = store();
+        let p = s.create_project("api", "", None).unwrap();
+        let task = s.create_task(p.id, "Working", "").unwrap();
+        s.move_task(task.id, "doing", None).unwrap();
+        s.conn
+            .execute("UPDATE automatic_time_entries SET started_at = unixepoch() - 120 WHERE task_id = ?1", [task.id])
+            .unwrap();
+        s.set_project_archived("api", true).unwrap();
+        let paused = s.time_report(task.id).unwrap();
+        assert!(paused.running_since.is_none());
+        assert_eq!(paused.entries.len(), 1);
+        assert!(paused.total_seconds >= 120);
+        assert_eq!(s.dashboard().unwrap().running_seconds, 0);
+        s.set_project_archived("api", true).unwrap();
+        s.move_task(task.id, "todo", None).unwrap();
+        s.move_task(task.id, "doing", None).unwrap();
+        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 1);
+        s.set_project_archived("api", false).unwrap();
+        let resumed = s.time_report(task.id).unwrap();
+        assert_eq!(resumed.entries.len(), 2);
+        assert!(resumed.running_since.is_some());
+        s.set_project_archived("api", false).unwrap();
+        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
+        s.set_project_archived("api", true).unwrap();
+        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
+        assert!(s.time_report(task.id).unwrap().running_since.is_none());
+    }
+
+    #[test]
+    fn migration_from_schema_13_freezes_existing_archived_doing_intervals() {
+        let (_dir, s) = store();
+        let p = s.create_project("old", "", None).unwrap();
+        let task = s.create_task(p.id, "Old", "").unwrap();
+        s.move_task(task.id, "doing", None).unwrap();
+        s.conn
+            .execute("UPDATE automatic_time_entries SET started_at = unixepoch() - 120 WHERE task_id = ?1", [task.id])
+            .unwrap();
+        // A schema-13 client had no archive trigger and could leave this running.
+        s.conn.execute_batch("DROP TRIGGER automatic_time_project_archive; UPDATE meta SET value = '13' WHERE key = 'schema_version';").unwrap();
+        s.set_project_archived("old", true).unwrap();
+        s.migrate().unwrap();
+        let paused = s.time_report(task.id).unwrap();
+        assert!(paused.running_since.is_none());
+        assert!(paused.entries[0].seconds >= 120);
+        s.migrate().unwrap();
+        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 1);
+        s.set_project_archived("old", false).unwrap();
+        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
     }
 
     #[test]
