@@ -93,6 +93,7 @@ const ICONS = {
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v12h14V8M10 12h4"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   human: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/>',
+  agent: '<rect x="4" y="7" width="16" height="13" rx="3"/><path d="M12 7V4m-2 0h4M4 13H2m20 0h-2M9 13h.01M15 13h.01M9 17h6"/>',
   sync: '<path d="M12 13v8"/><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="m8 17 4-4 4 4"/>',
   collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
@@ -1353,12 +1354,14 @@ function plainText(md) {
 }
 
 function card(t, showProject) {
+  const ownerName = t.human === true ? "Human task: agents skip it" : t.human === false ? "Agent task" : null;
   const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: "true", "data-id": t.id,
                            onclick: () => openTask(t.id) },
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       // On "All projects" a dot in the project's colour tells the projects apart.
-      t.human ? el("span", { class: "human-mark", title: "Human task: agents skip it" }, icon("human")) : null,
+      ownerName ? el("span", { class: "owner-mark", title: ownerName, role: "img", "aria-label": ownerName },
+        icon(t.human ? "human" : "agent")) : null,
       el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
