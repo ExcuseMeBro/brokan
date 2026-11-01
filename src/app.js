@@ -1614,18 +1614,22 @@ async function refreshTime() {
 
 function renderTime(report) {
   timeReport = report;
-  $("#p-timer").disabled = false;
+  const doing = panelTask?.id === state.task && panelTask.status === "doing";
+  $("#p-timer").disabled = doing;
+  $("#p-minutes").disabled = doing;
+  $("#p-time-form button").disabled = doing;
   $("#p-time-total").textContent = `${duration(report.total_seconds)} tracked`;
-  $("#p-timer").textContent = report.running_since == null ? "Start timer" : "Stop timer";
-  $("#p-timer").setAttribute("aria-label", report.running_since == null ? "Start task timer" : "Stop task timer");
+  $("#p-timer").textContent = doing ? "Auto tracking" : report.running_since == null ? "Start timer" : "Stop timer";
+  $("#p-timer").setAttribute("aria-label", doing ? "Time is tracked automatically while doing" :
+    report.running_since == null ? "Start task timer" : "Stop task timer");
   $("#p-time-running").hidden = report.running_since == null;
   if (report.running_since != null) updateRunningTime();
   $("#p-time-list").replaceChildren(...report.entries.map((entry) =>
     el("li", { class: "time-entry" },
-      el("span", { class: "mono" }, entry.ended_at == null ? "Running" : duration(entry.seconds)),
+      el("span", { class: "mono" }, `${entry.automatic ? "Auto · " : ""}${entry.ended_at == null ? "Running" : duration(entry.seconds)}`),
       el("time", { datetime: new Date(entry.started_at * 1000).toISOString() },
         new Date(entry.started_at * 1000).toLocaleString()),
-      entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
+      !entry.automatic && entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
         "aria-label": `Remove ${duration(entry.seconds)} time entry`, onclick: async () => {
           if (!confirm(`Remove this ${duration(entry.seconds)} time entry?`)) return;
           try {
@@ -1639,7 +1643,8 @@ function renderTime(report) {
 function updateRunningTime() {
   if (timeReport?.running_since == null || !state.task) return;
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timeReport.running_since);
-  $("#p-time-running").textContent = `Timer running · ${duration(elapsed)} elapsed`;
+  const automatic = timeReport.entries.some((entry) => entry.automatic && entry.ended_at == null);
+  $("#p-time-running").textContent = `${automatic ? "Auto tracking" : "Timer running"} · ${duration(elapsed)} elapsed`;
   $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, Math.floor(Date.now() / 1000) - timeReport.as_of))} tracked`;
 }
 setInterval(updateRunningTime, 1000);
@@ -1654,7 +1659,7 @@ $("#p-timer").addEventListener("click", async (e) => {
     if (state.task === id) renderTime(result);
     if (state.dashboard) loadDashboard();
   } catch (err) { toast(err.message); }
-  e.currentTarget.disabled = false;
+  e.currentTarget.disabled = panelTask?.status === "doing";
 });
 
 $("#p-time-form").addEventListener("submit", async (e) => {
@@ -1669,7 +1674,7 @@ $("#p-time-form").addEventListener("submit", async (e) => {
     if (state.task === id) { renderTime(report); $("#p-minutes").value = ""; }
     if (state.dashboard) loadDashboard();
   } catch (err) { toast(err.message); }
-  button.disabled = false;
+  button.disabled = panelTask?.status === "doing";
 });
 
 async function deleteComment(c) {
