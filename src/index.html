@@ -204,8 +204,8 @@ header .sub { color: var(--muted); }
 #p-key { cursor: copy; }
 .card .num .dot { width: 6px; height: 6px; }
 .card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.card .human-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
-.card .human-mark .icon svg { width: 15px; height: 15px; }
+.card .owner-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
+.card .owner-mark .icon svg { width: 15px; height: 15px; }
 .card .priority { display: inline-flex; margin-top: 6px; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
 .card .priority.low { color: var(--muted); background: var(--hover); }
 .card .priority.medium { color: #725400; background: #fff4d6; }
@@ -263,7 +263,7 @@ header .sub { color: var(--muted); }
 .task-table thead button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; margin: -3px -6px;
   background: none; border: 0; border-radius: 6px; color: inherit; white-space: nowrap; }
 .task-table thead button:hover { color: var(--text); background: var(--hover); }
-.task-table thead button:focus-visible, .task-table a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.task-table thead button:focus-visible, .task-table a:focus-visible, .task-table select:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .task-table .sort-arrow { color: var(--link); font-size: 14px; }
 .task-table tbody th a { display: block; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
 .task-table tbody th a:hover { text-decoration: underline; }
@@ -271,6 +271,7 @@ header .sub { color: var(--muted); }
 .task-table td { white-space: nowrap; color: var(--muted); }
 .task-table td:nth-child(2), .task-table td:nth-child(3) { color: var(--text); }
 .task-table td .icon, .task-table td .status-icon { vertical-align: middle; margin-right: 7px; }
+.task-table select.field.table-status-select { width: auto; min-width: 116px; max-width: 180px; padding: 5px 28px 5px 8px; border-radius: 8px; color: var(--text); font: inherit; }
 .task-table td.overdue { color: var(--danger); font-weight: 600; }
 .task-table td time { font-variant-numeric: tabular-nums; }
 /* Calendar and Gantt share one local-month navigator and the board's task/project colors. */
@@ -343,6 +344,21 @@ header .sub { color: var(--muted); }
 .bar-day .track { width: min(100%, 42px); flex: 1; border-radius: 7px 7px 3px 3px; display: flex; align-items: end; background: var(--hover); overflow: hidden; }
 .bar-day .fill { width: 100%; min-height: 0; background: var(--link); border-radius: inherit; }
 .bar-day .day { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.mcp-range strong { font-size: 20px; overflow-wrap: anywhere; }
+.mcp-scroll { max-width: 100%; overflow-x: auto; padding: 4px 2px 9px; }
+.mcp-scroll:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.mcp-chart { min-width: 900px; height: 170px; display: flex; align-items: end; gap: 5px; }
+.mcp-day { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.mcp-tracks { flex: 1; width: 100%; border-bottom: 1px solid var(--border); display: flex; gap: 2px; align-items: end; justify-content: center; }
+.mcp-bar { width: 45%; max-width: 18px; border-radius: 3px 3px 0 0; background: var(--link); }
+.mcp-bar.fast { background: #15877b; }
+.mcp-bar.slow { background: #b85f24; }
+.mcp-tick { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mcp-legend { display: flex; gap: 16px; margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.mcp-key { display: inline-flex; gap: 6px; align-items: center; }
+.mcp-key::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--link); }
+.mcp-key.fast::before { background: #15877b; }
+.mcp-key.slow::before { background: #b85f24; }
 .chart-content { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
 .chart-svg { width: 154px; height: 154px; flex: none; }
 .chart-legend { list-style: none; padding: 0; margin: 0; min-width: 140px; flex: 1; }

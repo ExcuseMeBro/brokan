@@ -93,6 +93,7 @@ const ICONS = {
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v12h14V8M10 12h4"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   human: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/>',
+  agent: '<rect x="4" y="7" width="16" height="13" rx="3"/><path d="M12 7V4m-2 0h4M4 13H2m20 0h-2M9 13h.01M15 13h.01M9 17h6"/>',
   sync: '<path d="M12 13v8"/><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="m8 17 4-4 4 4"/>',
   collapse: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
@@ -683,6 +684,31 @@ function mcpDuration(micros) {
   return `${(micros / 1000).toFixed(micros < 10000 ? 2 : 1)} ms`;
 }
 
+function mcpLatency(ms) {
+  if (ms == null) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${ms} ms`;
+}
+
+function mcpDayChart(days, latency) {
+  const max = Math.max(1, ...days.map((d) => latency ? d.slowest_ms || 0 : d.calls));
+  const label = latency ? "Daily fastest and slowest MCP response time" : "Daily MCP tool calls";
+  const bar = (value, type, day) => el("span", {
+    class: `mcp-bar ${type}`, style: `height:${value ? Math.max(3, value / max * 100) : 0}%`,
+    title: `${day}: ${latency ? mcpLatency(value) : `${value} calls`}`,
+  });
+  return el("div", { class: "mcp-scroll", tabindex: "0", role: "region", "aria-label": `${label}, last 30 UTC days` },
+    el("div", { class: "mcp-chart" }, ...days.map((d, i) => {
+      const details = latency
+        ? (d.calls ? `fastest ${mcpLatency(d.fastest_ms)}, slowest ${mcpLatency(d.slowest_ms)}` : "no calls")
+        : `${d.calls} calls`;
+      return el("div", { class: "mcp-day", role: "img", "aria-label": `${d.day}: ${details}` },
+        el("div", { class: "mcp-tracks" }, ...(latency
+          ? [bar(d.fastest_ms, "fast", d.day), bar(d.slowest_ms, "slow", d.day)]
+          : [bar(d.calls, "calls", d.day)])),
+        el("span", { class: "mcp-tick", title: d.day }, i % 5 === 0 || i === days.length - 1 ? d.day.slice(5) : "·"));
+    })));
+}
+
 function dashboardGit() {
   const data = state.dashboardGitData;
   if (state.dashboardGitError) return el("p", { class: "chart-empty", role: "alert" },
@@ -755,6 +781,7 @@ function renderDashboard() {
   const days = data.days || [];
   const mcp = data.mcp;
   const mcpDays = mcp?.days || [];
+  const mcpHasCalls = mcp?.total_calls > 0;
   const open = data.tasks - (data.statuses.find((s) => s.status === "done")?.count || 0);
   const now = new Date();
   const deadlines = (data.deadlines || []).filter((d) => deadlineDaysLeft(d.deadline_at, now) <= 7);
@@ -777,11 +804,28 @@ function renderDashboard() {
       stat("Tracked time", duration(data.total_seconds), data.running_seconds ? `${duration(data.running_seconds)} running now` : "All time"),
       stat("Tasks", String(data.tasks), `${open} open`),
       stat("Projects", String(data.projects.length), `${projectRows.length} with tracked time`)),
+    el("div", { class: "dashboard-stats" },
+      stat("MCP tool calls", String(mcp?.total_calls || 0), "Last 30 UTC days"),
+      stat("Average calls / hour", mcp?.average_per_hour > 0 && mcp.average_per_hour < .01
+        ? "<0.01" : (mcp?.average_per_hour || 0).toFixed(2), "Elapsed clock hours in this 30-day window"),
+      el("div", { class: "dashboard-stat mcp-range" }, el("span", { class: "label" }, "Fastest / slowest"),
+        el("strong", {}, `${mcpDuration(mcp?.fastest_us)} / ${mcpDuration(mcp?.slowest_us)}`),
+        el("small", {}, "MCP tool response · last 30 UTC days"))),
     chart("LOCAL GIT", "Repositories & branches", dashboardGit(),
       "Read-only snapshot of direct child repositories. Flags: uncommitted, unpushed, unmerged or unavailable; stashes are per repository.", true),
     chart("NEXT UP", "Deadlines · next 7 days", deadlineList,
       "Local calendar days. Shows up to 12 nearest upcoming and 5 recently overdue tasks; completed and archived work is excluded.", true),
     el("div", { class: "dashboard-charts" },
+      chart("MCP / 30 DAYS", "Tool calls by UTC day",
+        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
+          : mcpHasCalls ? mcpDayChart(mcpDays, false) : el("p", { class: "chart-empty" }, "No MCP tool calls recorded yet."),
+        "Counts successful tools and tool-returned errors. Earlier calls, before instrumentation, are not available.", true),
+      chart("MCP / RESPONSE TIME", "Daily fastest and slowest",
+        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
+          : mcpHasCalls ? el("div", {}, el("p", { class: "mcp-legend" },
+            el("span", { class: "mcp-key fast" }, "Fastest"), el("span", { class: "mcp-key slow" }, "Slowest")),
+            mcpDayChart(mcpDays, true)) : el("p", { class: "chart-empty" }, "No MCP response times recorded yet."),
+        "Server-side elapsed time; UTC days. Only bounded daily counts and duration aggregates are stored locally.", true),
       chart("01 / ACTIVITY", "Time logged · last 7 days",
         days.some((d) => d.seconds > 0) ? dayBars(days, "seconds", duration, "Time by day") : el("p", { class: "chart-empty" }, "No time logged yet. Start a task timer or log minutes."),
         "Entries are grouped by start date in UTC. Running time is included.", true),
@@ -791,19 +835,13 @@ function renderDashboard() {
       chart("03 / TIME", "Time by project",
         circular(projectRows, duration(data.total_seconds), data.total_seconds, duration, "No tracked time yet. Start a task timer or log minutes."),
         "All-time logged and currently running time."),
-      chart("04 / MCP", "Tool calls · last 7 days",
+      chart("04 / LATENCY", "MCP tool duration",
         data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
-          : mcpDays.some((d) => d.calls > 0) ? dayBars(mcpDays, "calls", (n) => String(n), "MCP calls by UTC day")
-          : el("p", { class: "chart-empty" }, "No measured MCP tool calls yet. Metrics start when this version handles a call."),
-        "Completed MCP tool calls on this machine, grouped by UTC day. No historical calls are inferred.", true),
-      chart("05 / LATENCY", "MCP tool duration",
-        data.mcp_error ? el("p", { class: "chart-empty", role: "alert" }, data.mcp_error)
-          : mcp?.total_calls ? el("dl", { class: "mcp-latencies" },
+          : mcpHasCalls ? el("dl", { class: "mcp-latencies" },
             ...[["Fastest", mcp.fastest_us], ["Average", mcp.average_us], ["Slowest", mcp.slowest_us]]
               .flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, mcpDuration(value))]))
             : el("p", { class: "chart-empty" }, "Waiting for the first measured MCP tool call."),
-        `${mcp?.total_calls || 0} measured calls, all time. Includes processing time, not metrics writes.`)));
-
+        `${mcp?.total_calls || 0} measured calls in the 30-day UTC window. Includes processing time, not metrics writes.`)));
 }
 
 // ---------- project menu ----------
@@ -1093,6 +1131,9 @@ function sortTableTasks(tasks, sort, statuses, projects) {
   }).map((row) => row.task);
 }
 
+// Keep one status write per task in flight, including across polling redraws.
+const pendingTableStatuses = new Set();
+
 function renderTable() {
   const root = $("#table-view");
   root.hidden = state.gitOverview || state.dashboard || state.view !== "table";
@@ -1114,6 +1155,7 @@ function renderTable() {
   }
   const focusedSort = document.activeElement?.closest("#table-view th button")?.dataset.sort;
   const focusedTask = document.activeElement?.closest("#table-view a[data-task-id]")?.dataset.taskId;
+  const focusedStatus = document.activeElement?.closest("#table-view select[data-task-id]")?.dataset.taskId;
   const previousScroll = root.querySelector(".table-scroll");
   const scrollTop = previousScroll?.scrollTop || 0;
   const scrollLeft = previousScroll?.scrollLeft || 0;
@@ -1134,6 +1176,26 @@ function renderTable() {
   const projectNames = new Map(projects.map((p) => [p.slug, p.name]));
   const rows = sorted.map((t) => {
     const deadline = t.deadline_at && new Date(t.deadline_at);
+    const statusSelect = el("select", { class: "field table-status-select", "data-task-id": t.id,
+      "aria-label": `Status for ${key(t)}`, onchange: async (e) => {
+        const select = e.currentTarget;
+        const status = select.value;
+        if (pendingTableStatuses.has(t.id)) { select.value = t.status; return; }
+        if (status === t.status) return;
+        pendingTableStatuses.add(t.id);
+        try {
+          await api("PATCH", `/tasks/${t.id}`, { status });
+          await loadBoard();
+          if (state.task === t.id) await refreshTask();
+        } catch (err) {
+          select.value = t.status;
+          toast(err.message);
+        } finally {
+          pendingTableStatuses.delete(t.id);
+        }
+      } }, ...[...statuses, ...(!statuses.includes(t.status) ? [t.status] : [])]
+      .map((status) => el("option", { value: status }, status)));
+    statusSelect.value = t.status;
     return el("tr", { class: state.task === t.id ? "selected" : null },
       el("th", { scope: "row" }, el("a", { href: `#${state.project}/${t.id}`, "data-task-id": t.id,
         onclick: (e) => { e.preventDefault(); openTask(t.id).then(() => {
@@ -1141,7 +1203,7 @@ function renderTable() {
         }); } }, t.title),
       el("span", { class: "task-key mono" }, key(t), t.human ? " · Human" : "")),
       el("td", {}, projectGlyph(t.project), projectNames.get(t.project) || t.project),
-      el("td", {}, statusIcon(t.status), t.status),
+      el("td", {}, statusIcon(t.status), statusSelect),
       el("td", {}, t.priority && t.priority !== "none" ? t.priority[0].toUpperCase() + t.priority.slice(1) : "—"),
       el("td", { class: deadlineOverdue(t) ? "overdue" : null }, deadline
         ? el("time", { datetime: t.deadline_at, title: deadline.toLocaleString() },
@@ -1155,6 +1217,7 @@ function renderTable() {
   nextScroll.scrollLeft = scrollLeft;
   if (focusedSort) root.querySelector(`th button[data-sort="${focusedSort}"]`)?.focus({ preventScroll: true });
   if (focusedTask) root.querySelector(`a[data-task-id="${focusedTask}"]`)?.focus({ preventScroll: true });
+  if (focusedStatus) root.querySelector(`select[data-task-id="${focusedStatus}"]`)?.focus({ preventScroll: true });
 }
 
 // Display calendar dates using the user's zone, but compare day ordinals instead of
@@ -1316,12 +1379,14 @@ function plainText(md) {
 }
 
 function card(t, showProject) {
+  const ownerName = t.human === true ? "Human task: agents skip it" : t.human === false ? "Agent task" : null;
   const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: "true", "data-id": t.id,
                            onclick: () => openTask(t.id) },
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       // On "All projects" a dot in the project's colour tells the projects apart.
-      t.human ? el("span", { class: "human-mark", title: "Human task: agents skip it" }, icon("human")) : null,
+      ownerName ? el("span", { class: "owner-mark", title: ownerName, role: "img", "aria-label": ownerName },
+        icon(t.human ? "human" : "agent")) : null,
       el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     t.description ? el("div", { class: "desc" }, plainText(t.description)) : null,
@@ -1574,18 +1639,22 @@ async function refreshTime() {
 
 function renderTime(report) {
   timeReport = report;
-  $("#p-timer").disabled = false;
+  const doing = panelTask?.id === state.task && panelTask.status === "doing";
+  $("#p-timer").disabled = doing;
+  $("#p-minutes").disabled = doing;
+  $("#p-time-form button").disabled = doing;
   $("#p-time-total").textContent = `${duration(report.total_seconds)} tracked`;
-  $("#p-timer").textContent = report.running_since == null ? "Start timer" : "Stop timer";
-  $("#p-timer").setAttribute("aria-label", report.running_since == null ? "Start task timer" : "Stop task timer");
+  $("#p-timer").textContent = doing ? "Auto tracking" : report.running_since == null ? "Start timer" : "Stop timer";
+  $("#p-timer").setAttribute("aria-label", doing ? "Time is tracked automatically while doing" :
+    report.running_since == null ? "Start task timer" : "Stop task timer");
   $("#p-time-running").hidden = report.running_since == null;
   if (report.running_since != null) updateRunningTime();
   $("#p-time-list").replaceChildren(...report.entries.map((entry) =>
     el("li", { class: "time-entry" },
-      el("span", { class: "mono" }, entry.ended_at == null ? "Running" : duration(entry.seconds)),
+      el("span", { class: "mono" }, `${entry.automatic ? "Auto · " : ""}${entry.ended_at == null ? "Running" : duration(entry.seconds)}`),
       el("time", { datetime: new Date(entry.started_at * 1000).toISOString() },
         new Date(entry.started_at * 1000).toLocaleString()),
-      entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
+      !entry.automatic && entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
         "aria-label": `Remove ${duration(entry.seconds)} time entry`, onclick: async () => {
           if (!confirm(`Remove this ${duration(entry.seconds)} time entry?`)) return;
           try {
@@ -1599,7 +1668,8 @@ function renderTime(report) {
 function updateRunningTime() {
   if (timeReport?.running_since == null || !state.task) return;
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timeReport.running_since);
-  $("#p-time-running").textContent = `Timer running · ${duration(elapsed)} elapsed`;
+  const automatic = timeReport.entries.some((entry) => entry.automatic && entry.ended_at == null);
+  $("#p-time-running").textContent = `${automatic ? "Auto tracking" : "Timer running"} · ${duration(elapsed)} elapsed`;
   $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, Math.floor(Date.now() / 1000) - timeReport.as_of))} tracked`;
 }
 setInterval(updateRunningTime, 1000);
@@ -1614,7 +1684,7 @@ $("#p-timer").addEventListener("click", async (e) => {
     if (state.task === id) renderTime(result);
     if (state.dashboard) loadDashboard();
   } catch (err) { toast(err.message); }
-  e.currentTarget.disabled = false;
+  e.currentTarget.disabled = panelTask?.status === "doing";
 });
 
 $("#p-time-form").addEventListener("submit", async (e) => {
@@ -1629,7 +1699,7 @@ $("#p-time-form").addEventListener("submit", async (e) => {
     if (state.task === id) { renderTime(report); $("#p-minutes").value = ""; }
     if (state.dashboard) loadDashboard();
   } catch (err) { toast(err.message); }
-  button.disabled = false;
+  button.disabled = panelTask?.status === "doing";
 });
 
 async function deleteComment(c) {

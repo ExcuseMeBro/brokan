@@ -72,6 +72,86 @@ test('table renders semantic sortable headers, all supplied rows and task links'
   assert.equal(walk(root.node, (n) => n.tag === 'table').length, 0);
 });
 
+test('inline status updates persist, prevent duplicate writes and keep keyboard focus after sorting', async () => {
+  let activeElement = null;
+  const root = { hidden: true, replaceChildren(node) { this.node = node; },
+    querySelector(selector) {
+      if (selector === '.table-scroll') return { scrollTop: 0, scrollLeft: 0 };
+      const id = selector.match(/^select\[data-task-id="(\d+)"\]$/)?.[1];
+      if (!id) return null;
+      const control = walk(this.node, (n) => n.tag === 'select' && String(n.attrs['data-task-id']) === id)[0];
+      return control && { focus() { focused = id; } };
+    } };
+  const walk = (node, match) => (!node || typeof node !== 'object') ? []
+    : [...(match(node) ? [node] : []), ...(node.children || []).flatMap((child) => walk(child, match))];
+  const state = { dashboard: false, view: 'table', project: 'all', task: null,
+    tableSort: { key: 'status', direction: 'asc' }, board: { statuses, projects, tasks: tasks.map((t) => ({ ...t })) } };
+  const el = (tag, attrs = {}, ...children) => ({ tag, attrs, children: children.flat().filter((v) => v != null && v !== false) });
+  let resolveWrite, writes = 0, reloads = 0, focused = null;
+  const api = (method, url, payload) => {
+    assert.equal(method, 'PATCH'); assert.equal(url, '/tasks/1'); assert.equal(payload.status, 'doing');
+    writes++;
+    return new Promise((resolve) => { resolveWrite = resolve; });
+  };
+  let render;
+  const loadBoard = async () => { reloads++; state.board.tasks[0].status = 'doing'; render(); };
+  render = vm.runInNewContext(`(${body('renderTable', 'localDayNumber')})`, {
+    state, $: () => root, el, sortTableTasks, isHumanOnly: () => false,
+    document: { get activeElement() { return activeElement; } }, showNewProject() {}, openTask: async () => {},
+    projectGlyph: () => '', statusIcon: () => '', deadlineOverdue: () => false,
+    timeEl: (ts) => ts, key: (task) => `${task.project}#${task.id}`,
+    pendingTableStatuses: new Set(), api, loadBoard, refreshTask: async () => {}, toast: () => {},
+  });
+  render();
+  const controls = walk(root.node, (n) => n.tag === 'select');
+  assert.equal(controls.length, 4);
+  assert.equal(controls[0].attrs['aria-label'], 'Status for a#1');
+  assert.equal(controls[0].value, 'todo');
+  assert.equal(controls[0].children.map((option) => option.attrs.value).join(','), statuses.join(','));
+  const select = controls[0];
+  activeElement = { closest: (selector) => selector === '#table-view select[data-task-id]'
+    ? { dataset: { taskId: '1' } } : null };
+  select.value = 'doing';
+  const updating = select.attrs.onchange({ currentTarget: select });
+  select.value = 'done';
+  await select.attrs.onchange({ currentTarget: select });
+  assert.equal(select.value, 'todo');
+  assert.equal(writes, 1);
+  resolveWrite();
+  await updating;
+  assert.equal(reloads, 1);
+  assert.equal(focused, '1');
+  assert.equal(walk(root.node, (n) => n.tag === 'select' && n.value === 'doing').length, 1);
+  assert.equal(walk(root.node, (n) => n.tag === 'a').map((link) => link.attrs.href).join(','), '#all/2,#all/4,#all/1,#all/3');
+});
+
+test('inline status failures restore the original value and report the error', async () => {
+  const root = { hidden: true, replaceChildren(node) { this.node = node; },
+    querySelector(selector) { return selector === '.table-scroll' ? { scrollTop: 0, scrollLeft: 0 } : null; } };
+  const state = { dashboard: false, view: 'table', project: 'a', task: null,
+    tableSort: { key: 'status', direction: 'asc' }, board: { statuses: ['todo', 'doing', 'done'], projects,
+      tasks: [{ ...tasks[0], status: 'legacy' }] } };
+  const el = (tag, attrs = {}, ...children) => ({ tag, attrs, children: children.flat().filter((v) => v != null && v !== false) });
+  let error = null, reloads = 0;
+  const render = vm.runInNewContext(`(${body('renderTable', 'localDayNumber')})`, {
+    state, $: () => root, el, sortTableTasks, isHumanOnly: () => false,
+    document: { activeElement: null }, showNewProject() {}, openTask: async () => {},
+    projectGlyph: () => '', statusIcon: () => '', deadlineOverdue: () => false,
+    timeEl: (ts) => ts, key: (task) => `${task.project}#${task.id}`,
+    pendingTableStatuses: new Set(), api: async () => { throw new Error('Update failed'); },
+    loadBoard: async () => { reloads++; }, refreshTask: async () => {}, toast: (message) => { error = message; },
+  });
+  render();
+  const select = root.node.children[0].children[1].children[0].children[2].children[1];
+  assert.equal(select.value, 'legacy');
+  assert.equal(select.children.map((option) => option.attrs.value).join(','), 'todo,doing,done,legacy');
+  select.value = 'doing';
+  await select.attrs.onchange({ currentTarget: select });
+  assert.equal(select.value, 'legacy');
+  assert.equal(error, 'Update failed');
+  assert.equal(reloads, 0);
+});
+
 test('table view shows filtered human tasks, archived projects and hides for dashboard', () => {
   const root = { hidden: true, replaceChildren(node) { this.node = node; },
     querySelector(selector) { return selector === '.table-scroll' ? { scrollTop: 0, scrollLeft: 0 } : null; } };
