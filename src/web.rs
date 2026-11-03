@@ -383,15 +383,25 @@ struct ProjectPatch {
     color: Option<String>,
     icon: Option<String>,
     archived: Option<bool>,
+    pinned: Option<bool>,
 }
 
 async fn update_project(State(home): Shared, Path(slug): Path<String>, Json(p): Json<ProjectPatch>) -> Response {
     with_store(home, move |_, s| {
+        let appearance = p.name.is_some() || p.color.is_some() || p.icon.is_some();
         if let Some(archived) = p.archived {
-            if p.name.is_some() || p.color.is_some() || p.icon.is_some() {
+            if appearance {
                 return Err(Error::Invalid("archive separately from project appearance changes".into()));
             }
+            if p.pinned.is_some() {
+                return Err(Error::Invalid("archive separately from pin changes".into()));
+            }
             s.set_project_archived(&slug, archived)
+        } else if let Some(pinned) = p.pinned {
+            if appearance {
+                return Err(Error::Invalid("pin separately from project appearance changes".into()));
+            }
+            s.set_project_pinned(&slug, pinned)
         } else {
             s.update_project(&slug, p.name.as_deref(), p.color.as_deref(), p.icon.as_deref())
         }
@@ -768,6 +778,44 @@ mod tests {
         let project: NewProject = serde_json::from_str(r#"{"slug":"api","name":"API"}"#).unwrap();
         assert_eq!(project.slug, "api");
         assert!(serde_json::from_str::<NewProject>(r#"{"slug":"api","repo":"me/api"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn pin_project_patch_persists_and_appears_on_board() {
+        async fn json_body(response: Response) -> serde_json::Value {
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = Arc::new(Home::open(dir.path().to_path_buf()).unwrap());
+        home.store().unwrap().create_project("api", "API", None).unwrap();
+        let get_board = || board(State(home.clone()), Query(BoardQuery { project: None, done: None }));
+        let before = json_body(get_board().await).await;
+        assert_eq!(before["projects"][0]["pinned"], false);
+        let patch = |json: &str| serde_json::from_str::<ProjectPatch>(json).unwrap();
+        let reply = update_project(State(home.clone()), Path("api".into()), Json(patch(r#"{"pinned":true}"#))).await;
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert_eq!(json_body(reply).await["pinned"], true);
+        let after = json_body(get_board().await).await;
+        assert_eq!(after["projects"][0]["pinned"], true);
+        assert_ne!(before["changes"], after["changes"]);
+        let bad =
+            update_project(State(home.clone()), Path("api".into()), Json(patch(r#"{"pinned":false,"name":"Wrong"}"#)))
+                .await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let bad =
+            update_project(State(home.clone()), Path("api".into()), Json(patch(r#"{"pinned":false,"archived":true}"#)))
+                .await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let unchanged = home.store().unwrap().find_project("api").unwrap();
+        assert!(unchanged.pinned && !unchanged.archived);
+        assert_eq!(unchanged.name, "API");
+        let missing =
+            update_project(State(home.clone()), Path("missing".into()), Json(patch(r#"{"pinned":true}"#))).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert!(serde_json::from_str::<ProjectPatch>(r#"{"pinned":"true"}"#).is_err());
+        let reply = update_project(State(home.clone()), Path("api".into()), Json(patch(r#"{"pinned":false}"#))).await;
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert_eq!(json_body(get_board().await).await["projects"][0]["pinned"], false);
     }
 
     #[test]

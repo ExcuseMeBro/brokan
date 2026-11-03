@@ -99,6 +99,7 @@ const ICONS = {
   expand: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   update: '<circle cx="12" cy="12" r="9"/><path d="M12 7v9M8 12l4 4 4-4"/>',
+  pin: '<path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/>',
   chart: '<path d="M3 3v18h18M7 16v-5M12 16V7M17 16v-9"/>',
   branch: '<circle cx="6" cy="3" r="2"/><circle cx="6" cy="21" r="2"/><circle cx="18" cy="6" r="2"/><path d="M6 5v14M18 8a6 6 0 0 1-6 6H6"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
@@ -502,19 +503,22 @@ function renderNav() {
   if (renaming && document.contains(renaming.input)) return;
   const { projects } = state.board;
   const active = projects.filter((p) => !p.archived);
+  // Keep the board's existing order within each group; archived projects stay separate.
+  const ordered = [...active.filter((p) => p.pinned), ...active.filter((p) => !p.pinned)];
   const archived = projects.filter((p) => p.archived);
   const open = active.reduce((n, p) => n + p.open, 0);
-  const link = (slug, name, count, glyph) =>
+  const link = (slug, name, count, glyph, pinned = false) =>
     el("a", { href: "#" + slug, class: !state.dashboard && !state.gitOverview && state.project === slug ? "active" : null,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph,
       el("span", { class: "name" }, name),
+      pinned ? el("span", { class: "pin-state", role: "img", "aria-label": "Pinned project", title: "Pinned project" }, icon("pin")) : null,
       el("span", { class: "count" }, String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
     ? el("div", { class: "item renaming" }, projectGlyph(p.slug), renaming.input)
     : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
-    link(p.slug, p.name, p.open, projectGlyph(p.slug)),
-    el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`,
+    link(p.slug, p.name, p.open, projectGlyph(p.slug), p.pinned),
+    el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "data-project-slug": p.slug,
                    "aria-expanded": String(state.menu === p.slug),
                    "aria-controls": state.menu === p.slug ? "project-settings-menu" : null,
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
@@ -539,7 +543,7 @@ function renderNav() {
     gitLink,
     link("all", "All projects", open, icon("board")),
     ...(active.length ? [el("div", { class: "label" }, "Projects")] : []),
-    ...active.map(item),
+    ...ordered.map(item),
     ...(archivedGroup ? [archivedGroup] : []),
   );
 }
@@ -882,6 +886,8 @@ function toggleProjectMenu(p, button) {
       icon(name, projectColor(p.slug)))));
   drawIcons();
   const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), "Rename");
+  const pin = el("button", { type: "button", onclick: () => pinProject(p, !p.pinned, button) }, icon("pin"),
+    p.pinned ? "Unpin project" : "Pin project");
   const archive = el("button", { onclick: () => archiveProject(p, !p.archived) }, icon("archive"),
     p.archived ? "Restore project" : "Archive project");
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
@@ -889,7 +895,7 @@ function toggleProjectMenu(p, button) {
   const menu = el("div", { id: "project-settings-menu", class: "menu project-menu", role: "group", "aria-label": `Project settings for ${p.name}`, tabindex: "-1" },
     el("div", { class: "label" }, "Color"), swatches,
     el("div", { class: "label" }, "Icon"), icons,
-    el("div", { class: "sep" }), rename, archive, remove);
+    el("div", { class: "sep" }), rename, pin, archive, remove);
   document.body.append(menu);
   menu.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -942,6 +948,23 @@ async function pickColor(slug, color) {
   try {
     await api("PATCH", `/projects/${encodeURIComponent(slug)}`, { color });
     await loadBoard();
+  } catch (err) { toast(err.message); }
+}
+
+async function pinProject(project, pinned, button) {
+  // Polling may already have redrawn the row while its menu stayed open.
+  const trigger = button.isConnected ? button : [...document.querySelectorAll("#nav .more")]
+    .find((b) => b.dataset.projectSlug === project.slug);
+  trigger?.focus();
+  closeMenu();
+  try {
+    await api("PATCH", `/projects/${encodeURIComponent(project.slug)}`, { pinned });
+    const restoreFocus = trigger && document.activeElement === trigger;
+    await loadBoard();
+    if (restoreFocus && (document.activeElement === document.body || document.activeElement === trigger)) {
+      [...document.querySelectorAll("#nav .more")].find((b) => b.dataset.projectSlug === project.slug)?.focus();
+    }
+    toast(`${project.name} ${pinned ? "pinned" : "unpinned"}.`);
   } catch (err) { toast(err.message); }
 }
 
