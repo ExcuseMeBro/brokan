@@ -138,6 +138,8 @@ const MIGRATIONS: &[&str] = &[
      UPDATE automatic_time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
        WHERE ended_at IS NULL AND task_id IN (
          SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.archived = 1);",
+    // 15: pinned projects appear first in the sidebar; older clients can ignore this column.
+    "ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -206,6 +208,8 @@ pub struct Project {
     /// One of `PROJECT_ICONS`, or `None` for the default folder.
     pub icon: Option<String>,
     pub archived: bool,
+    /// Pinned projects appear above other active projects in the sidebar.
+    pub pinned: bool,
     pub created_at: String,
     /// Tasks not in the last (done) column.
     pub open: i64,
@@ -553,7 +557,7 @@ impl Store {
             (SELECT group_concat(repo, ',' ORDER BY r.rowid) FROM project_repos r WHERE r.project_id = p.id),
             p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
-            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id), p.icon, p.archived
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id), p.icon, p.archived, p.pinned
         FROM projects p";
 
     fn project_row(r: &Row) -> rusqlite::Result<Project> {
@@ -568,6 +572,7 @@ impl Store {
             total: r.get(7)?,
             icon: r.get(8)?,
             archived: r.get(9)?,
+            pinned: r.get(10)?,
         })
     }
 
@@ -732,6 +737,14 @@ impl Store {
             "UPDATE projects SET archived = ?1 WHERE id = ?2 AND archived <> ?1",
             params![archived, project.id],
         )?;
+        self.find_project(&project.slug)
+    }
+
+    /// Pins or unpins a project without changing its contents or archive state.
+    pub fn set_project_pinned(&self, slug: &str, pinned: bool) -> Result<Project> {
+        let project = self.find_project(slug)?;
+        self.conn
+            .execute("UPDATE projects SET pinned = ?1 WHERE id = ?2 AND pinned <> ?1", params![pinned, project.id])?;
         self.find_project(&project.slug)
     }
 
@@ -1563,6 +1576,53 @@ mod tests {
     }
 
     #[test]
+    fn pin_migrates_existing_projects_and_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brokan.db");
+        {
+            let s = Store::open(&path, None).unwrap();
+            s.conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+            for sql in &MIGRATIONS[..14] {
+                s.conn.execute_batch(sql).unwrap();
+            }
+            s.conn
+                .execute_batch(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', '14'), ('compatible', '10');
+                 INSERT INTO projects (slug, name) VALUES ('old', 'Old');
+                 INSERT INTO project_repos (repo, project_id) VALUES ('me/old', 1);
+                 INSERT INTO tasks (project_id, title, status, position) VALUES (1, 'Saved', 'todo', 1);",
+                )
+                .unwrap();
+        }
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        s.migrate().unwrap();
+        let project = s.find_project("old").unwrap();
+        assert!(!project.pinned);
+        assert_eq!(project.repos, ["me/old"]);
+        assert_eq!(titles(&s.list_tasks(Some(project.id), None).unwrap()), ["Saved"]);
+        assert_eq!(
+            s.conn.query_row("SELECT value FROM meta WHERE key = 'compatible'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "10"
+        );
+        let before = s.changes().unwrap();
+        assert!(s.set_project_pinned("old", true).unwrap().pinned);
+        let after = s.changes().unwrap();
+        assert!(after > before);
+        s.set_project_pinned("old", true).unwrap();
+        assert_eq!(s.changes().unwrap(), after, "idempotent pin should not trigger a reload");
+        let reopened = Store::open(&path, None).unwrap();
+        assert!(reopened.list_projects().unwrap()[0].pinned);
+        assert!(reopened.set_project_archived("old", true).unwrap().pinned);
+        assert!(reopened.set_project_archived("old", false).unwrap().pinned);
+        assert!(!reopened.set_project_pinned("old", false).unwrap().pinned);
+        assert!(!s.find_project("old").unwrap().pinned);
+        assert!(matches!(s.set_project_pinned("missing", true), Err(Error::NotFound(_))));
+        assert!(s.conn.execute("UPDATE projects SET pinned = 2", []).is_err());
+        assert_eq!(s.find_project("old").unwrap().total, 1);
+    }
+
+    #[test]
     fn keeps_only_the_newest_done_tasks() {
         let (_dir, s) = store();
         let p = s.create_project("api", "", None).unwrap();
@@ -2001,6 +2061,7 @@ mod tests {
                  DROP TRIGGER automatic_time_project_archive;
                  DROP TRIGGER automatic_time_no_manual;
                  DROP TABLE automatic_time_entries;
+                 ALTER TABLE projects DROP COLUMN pinned;
                  UPDATE meta SET value = '12' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -2036,6 +2097,7 @@ mod tests {
                  DROP TRIGGER automatic_time_project_archive;
                  DROP TRIGGER automatic_time_no_manual;
                  DROP TABLE automatic_time_entries;
+                 ALTER TABLE projects DROP COLUMN pinned;
                  UPDATE meta SET value = '12' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -2092,8 +2154,13 @@ mod tests {
             .execute("UPDATE automatic_time_entries SET started_at = unixepoch() - 120 WHERE task_id = ?1", [task.id])
             .unwrap();
         // A schema-13 client had no archive trigger and could leave this running.
-        s.conn.execute_batch("DROP TRIGGER automatic_time_project_archive; UPDATE meta SET value = '13' WHERE key = 'schema_version';").unwrap();
+        s.conn.execute_batch("DROP TRIGGER automatic_time_project_archive;").unwrap();
         s.set_project_archived("old", true).unwrap();
+        s.conn
+            .execute_batch(
+                "ALTER TABLE projects DROP COLUMN pinned; UPDATE meta SET value = '13' WHERE key = 'schema_version';",
+            )
+            .unwrap();
         s.migrate().unwrap();
         let paused = s.time_report(task.id).unwrap();
         assert!(paused.running_since.is_none());
