@@ -28,12 +28,14 @@ const DONE_LISTED: usize = 20;
 const INSTRUCTIONS: &str = "The user's kanban board, on this machine, for all their projects. Tasks look like \
 api#12. Pass `project` for multi-project boards; existing GitHub repo associations still work. Keep it current unasked: \
 doing when you start a task, comments on what you did, review when you finish or get stuck. Leave done and \
-human tasks to the user.";
+human tasks to the user. Tracked time follows your activity, not the column: while a doing task is yours, call \
+get_task now and then so its time stays credited.";
 
 const HTTP_INSTRUCTIONS: &str = "The user's kanban board, on their machine, for all their projects. Tasks look \
 like api#12. Over HTTP Brokan can't see your folder, so pass `project` (see list_projects). Keep it current \
 unasked: doing when you start a task, comments on what you did, review when you finish or get stuck. Leave \
-done and human tasks to the user.";
+done and human tasks to the user. Tracked time follows your activity, not the column: while a doing task is \
+yours, call get_task now and then so its time stays credited.";
 
 /// `brokan mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
@@ -390,6 +392,9 @@ impl Brokan {
         Ok(self
             .run(move |ctx, store| {
                 let task = args.id.find(store)?;
+                // Reading a doing task is the agent reporting it is still on it, which is
+                // the only activity signal Brokan has.
+                let _ = store.record_activity(task.id);
                 task_detail(ctx, store, &task)
             })
             .await)
@@ -440,6 +445,7 @@ impl Brokan {
                         deadline_at: args.deadline_at,
                     },
                 )?;
+                let _ = store.record_activity(after.id);
                 let moved = if before.status != after.status {
                     format!(", {} -> {}", before.status, after.status)
                 } else {
@@ -462,6 +468,7 @@ impl Brokan {
             .run(move |_, store| {
                 let task = args.id.find(store)?;
                 store.add_comment(task.id, &author, &args.body, &[])?;
+                let _ = store.record_activity(task.id);
                 Ok(format!("Comment added to {} as {author}.", task.key()))
             })
             .await)
@@ -474,7 +481,10 @@ impl Brokan {
                 let all = args.project.as_deref().is_some_and(|p| p.trim().eq_ignore_ascii_case("all"));
                 let project = if all { None } else { Some(ctx.project(store, args.project.as_deref())?) };
                 match store.next_task(project.as_ref().map(|p| p.id))? {
-                    Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
+                    Some(task) => {
+                        let _ = store.record_activity(task.id);
+                        Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?))
+                    }
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
                         Ok(format!("Nothing in todo for {scope}."))

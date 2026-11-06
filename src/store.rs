@@ -140,6 +140,37 @@ const MIGRATIONS: &[&str] = &[
          SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.archived = 1);",
     // 15: pinned projects appear first in the sidebar; older clients can ignore this column.
     "ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1));",
+    // 16: tracked time follows agent activity, not the wall-clock of the doing column.
+    // A doing task nobody was watching used to accrue days of phantom time, so verdict
+    // is now evidence: an interval extends only while an agent keeps reporting activity
+    // on the task, and stops after ACTIVITY_IDLE_GAP seconds of silence. The old rows
+    // were machine-generated wall-clock with no record of real work in them, so they are
+    // dropped; manual entries, which the user typed, are untouched.
+    "ALTER TABLE automatic_time_entries ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0;
+     UPDATE automatic_time_entries SET last_seen_at = coalesce(ended_at, started_at);
+     DELETE FROM automatic_time_entries;
+     UPDATE time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+       WHERE ended_at IS NULL AND task_id IN (
+         SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id
+         WHERE t.status = 'doing' AND p.archived = 0);
+     DROP TRIGGER automatic_time_status;
+     DROP TRIGGER automatic_time_project_archive;
+     DROP TRIGGER automatic_time_update;
+     CREATE TRIGGER automatic_time_update AFTER UPDATE ON automatic_time_entries
+       WHEN OLD.started_at <> NEW.started_at OR OLD.ended_at IS NOT NEW.ended_at OR OLD.seconds <> NEW.seconds
+       BEGIN UPDATE meta SET value = value + 1 WHERE key = 'changes'; END;
+     CREATE TRIGGER automatic_time_status AFTER UPDATE OF status ON tasks WHEN OLD.status <> NEW.status BEGIN
+       UPDATE automatic_time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+         WHERE task_id = NEW.id AND ended_at IS NULL;
+       UPDATE time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+         WHERE task_id = NEW.id AND ended_at IS NULL AND NEW.status = 'doing';
+     END;
+     CREATE TRIGGER automatic_time_project_archive AFTER UPDATE OF archived ON projects
+       WHEN OLD.archived <> NEW.archived BEGIN
+       UPDATE automatic_time_entries SET ended_at = unixepoch(), seconds = max(1, unixepoch() - started_at)
+         WHERE ended_at IS NULL AND NEW.archived = 1
+           AND task_id IN (SELECT id FROM tasks WHERE project_id = NEW.id);
+     END;",
 ];
 
 /// The colours and icons a project can be given; the board maps each name to a shade or SVG.
@@ -160,6 +191,15 @@ const PROJECT_ICONS: &[&str] = &[
 ];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
+/// How long a task keeps counting time after the last activity on it. An agent working
+/// on a task reports something at least this often; a longer silence means it moved on,
+/// so the interval ends there instead of running up wall-clock days.
+pub const ACTIVITY_IDLE_GAP: i64 = 300;
+
+/// Activity arrives with every tool call; skipping repeats inside this many seconds keeps
+/// the same second from being rewritten while the interval stays accurate to a few seconds.
+const ACTIVITY_STEP: i64 = 15;
 
 #[derive(Debug)]
 pub enum Error {
@@ -282,6 +322,9 @@ pub struct TimeReport {
     /// Includes the elapsed time of a running timer as of the response.
     pub total_seconds: i64,
     pub running_since: Option<i64>,
+    /// When an activity interval stops counting without new activity; `None` for a
+    /// manual timer, which runs until it is stopped.
+    pub running_until: Option<i64>,
     /// Snapshot time, so the client can display the running total between requests.
     pub as_of: i64,
 }
@@ -1032,6 +1075,9 @@ impl Store {
                     params![s, position, id],
                 )?;
             }
+            if patch.status.as_deref() == Some("doing") {
+                Self::touch_activity(c, id, Self::unix_now(c)?)?;
+            }
             Ok(())
         })?;
         self.get_task(id)
@@ -1081,6 +1127,9 @@ impl Store {
                 &format!("UPDATE tasks SET status = ?1, position = ?2{touched} WHERE id = ?3"),
                 params![status, position, id],
             )?;
+            if status == "doing" {
+                Self::touch_activity(c, id, Self::unix_now(c)?)?;
+            }
             Ok(())
         })?;
         self.get_task(id)
@@ -1119,6 +1168,7 @@ impl Store {
                     &format!("UPDATE tasks SET status = ?1, position = ?2, updated_at = {NOW} WHERE id = ?3"),
                     params![to, position, id],
                 )?;
+                Self::touch_activity(c, id, Self::unix_now(c)?)?;
             }
             Ok(id)
         })?;
@@ -1144,27 +1194,128 @@ impl Store {
         self.get_task(task_id)?;
         let now = Self::unix_now(&self.conn)?;
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, task_id, started_at, ended_at, seconds, 0 FROM time_entries WHERE task_id = ?1
+            "SELECT id, task_id, started_at, ended_at, seconds, 0, started_at FROM time_entries WHERE task_id = ?1
              UNION ALL
-             SELECT -id, task_id, started_at, ended_at, seconds, 1 FROM automatic_time_entries WHERE task_id = ?1
+             SELECT -id, task_id, started_at, ended_at, seconds, 1, last_seen_at FROM automatic_time_entries
+               WHERE task_id = ?1
              ORDER BY started_at DESC, id DESC",
         )?;
-        let entries: Vec<TimeEntry> = stmt
+        let rows: Vec<(TimeEntry, i64)> = stmt
             .query_map([task_id], |r| {
-                Ok(TimeEntry {
-                    id: r.get(0)?,
-                    task_id: r.get(1)?,
-                    started_at: r.get(2)?,
-                    ended_at: r.get(3)?,
-                    seconds: r.get(4)?,
-                    automatic: r.get(5)?,
-                })
+                Ok((
+                    TimeEntry {
+                        id: r.get(0)?,
+                        task_id: r.get(1)?,
+                        started_at: r.get(2)?,
+                        ended_at: r.get(3)?,
+                        seconds: r.get(4)?,
+                        automatic: r.get(5)?,
+                    },
+                    r.get(6)?,
+                ))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let total_seconds =
-            entries.iter().map(|e| e.ended_at.map_or_else(|| (now - e.started_at).max(0), |_| e.seconds)).sum();
-        let running_since = entries.iter().find(|e| e.ended_at.is_none()).map(|e| e.started_at);
-        Ok(TimeReport { entries, total_seconds, running_since, as_of: now })
+        let mut total_seconds = 0;
+        let mut running_since = None;
+        let mut running_until = None;
+        for (entry, last_seen) in &rows {
+            match entry.ended_at {
+                Some(_) => total_seconds += entry.seconds,
+                None if !entry.automatic => {
+                    total_seconds += (now - entry.started_at).max(0);
+                    running_since = Some(entry.started_at);
+                }
+                None => {
+                    // Agent activity: the interval covers the span between reports, so
+                    // silence past the idle gap is not counted as work.
+                    let end = (last_seen + ACTIVITY_IDLE_GAP).min(now);
+                    total_seconds += (end - entry.started_at).max(0);
+                    if now - last_seen <= ACTIVITY_IDLE_GAP {
+                        running_since = Some(entry.started_at);
+                        running_until = Some(last_seen + ACTIVITY_IDLE_GAP);
+                    }
+                }
+            }
+        }
+        Ok(TimeReport {
+            entries: rows.into_iter().map(|(entry, _)| entry).collect(),
+            total_seconds,
+            running_since,
+            running_until,
+            as_of: now,
+        })
+    }
+
+    /// Records that an agent is working on `task_id` right now. Activity is the only
+    /// honest signal Brokan has: the doing column alone can sit untouched for days.
+    /// A no-op outside doing, for a human task, or in an archived project.
+    pub fn record_activity(&self, task_id: i64) -> Result<()> {
+        let now = Self::unix_now(&self.conn)?;
+        // Tool calls often come in bursts; a repeat inside ACTIVITY_STEP changes nothing.
+        let fresh: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM automatic_time_entries
+                            WHERE task_id = ?1 AND ended_at IS NULL AND last_seen_at > ?2)",
+            params![task_id, now - ACTIVITY_STEP],
+            |r| r.get(0),
+        )?;
+        if fresh {
+            return Ok(());
+        }
+        self.write(|c| Self::touch_activity(c, task_id, now))
+    }
+
+    /// Extends a doing task's activity interval, or opens a new one after a quiet gap.
+    /// Runs inside the caller's transaction so a status move and its clock are one write.
+    fn touch_activity(c: &Connection, task_id: i64, now: i64) -> Result<()> {
+        if !Self::activity_tracked(c, task_id)? {
+            return Ok(());
+        }
+        let open: Option<(i64, i64)> = c
+            .query_row(
+                "SELECT id, last_seen_at FROM automatic_time_entries WHERE task_id = ?1 AND ended_at IS NULL",
+                [task_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match open {
+            Some((id, seen)) if now - seen <= ACTIVITY_IDLE_GAP => {
+                c.execute("UPDATE automatic_time_entries SET last_seen_at = ?1 WHERE id = ?2", params![now, id])?;
+                Ok(())
+            }
+            Some((id, seen)) => {
+                // The agent went quiet: end that interval where its work stopped, then
+                // start a fresh one, so the silence between them is not counted.
+                let ended = seen + ACTIVITY_IDLE_GAP;
+                c.execute(
+                    "UPDATE automatic_time_entries SET ended_at = ?1, seconds = max(1, ?1 - started_at),
+                       last_seen_at = ?1 WHERE id = ?2",
+                    params![ended, id],
+                )?;
+                c.execute(
+                    "INSERT INTO automatic_time_entries (task_id, started_at, last_seen_at) VALUES (?1, ?2, ?2)",
+                    params![task_id, now],
+                )?;
+                Ok(())
+            }
+            None => {
+                c.execute(
+                    "INSERT INTO automatic_time_entries (task_id, started_at, last_seen_at) VALUES (?1, ?2, ?2)",
+                    params![task_id, now],
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    /// True when this task's time should follow agent activity: doing, not for a person,
+    /// and in an active project. Archived work is never attributed.
+    fn activity_tracked(c: &Connection, task_id: i64) -> Result<bool> {
+        Ok(c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id
+                            WHERE t.id = ?1 AND t.status = 'doing' AND p.archived = 0 AND t.human = 0)",
+            [task_id],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn start_timer(&self, task_id: i64) -> Result<TimeReport> {
@@ -1239,9 +1390,16 @@ impl Store {
     /// the day they were logged. Active elapsed time is included at query time.
     pub fn dashboard(&self) -> Result<Dashboard> {
         let now = Self::unix_now(&self.conn)?;
-        let seconds = "CASE WHEN e.ended_at IS NULL THEN max(0, ?1 - e.started_at) ELSE e.seconds END";
-        let work = "SELECT task_id, started_at, ended_at, seconds FROM time_entries UNION ALL
-                    SELECT task_id, started_at, ended_at, seconds FROM automatic_time_entries";
+        // A closed interval keeps the seconds it froze at. An open one counts up to the
+        // activity it last saw, so an agent that went quiet stops the clock instead of
+        // running up wall-clock days; a manual timer is the user's own, so it keeps going.
+        let seconds = "CASE WHEN e.ended_at IS NOT NULL THEN e.seconds
+                       WHEN e.automatic = 1 THEN max(0, min(?1, e.last_seen_at + ?2) - e.started_at)
+                       ELSE max(0, ?1 - e.started_at) END";
+        let work = "SELECT task_id, started_at, ended_at, seconds, 0 AS automatic, started_at AS last_seen_at
+                      FROM time_entries
+                    UNION ALL
+                    SELECT task_id, started_at, ended_at, seconds, 1, last_seen_at FROM automatic_time_entries";
         let mut stmt = self.conn.prepare("SELECT status, count(*) FROM tasks GROUP BY status")?;
         let statuses: Vec<StatusCount> = stmt
             .query_map([], |r| Ok(StatusCount { status: r.get(0)?, count: r.get(1)? }))?
@@ -1255,14 +1413,17 @@ impl Store {
              GROUP BY p.id ORDER BY p.slug"
         ))?;
         let projects: Vec<ProjectTime> = stmt
-            .query_map([now], |r| {
+            .query_map([now, ACTIVITY_IDLE_GAP], |r| {
                 Ok(ProjectTime { slug: r.get(0)?, name: r.get(1)?, color: r.get(2)?, seconds: r.get(3)? })
             })?
             .collect::<rusqlite::Result<_>>()?;
         let total_seconds = projects.iter().map(|p| p.seconds).sum();
         let running_seconds: i64 = self.conn.query_row(
-            &format!("SELECT coalesce(sum(max(0, ?1 - started_at)), 0) FROM ({work}) WHERE ended_at IS NULL"),
-            [now],
+            &format!(
+                "SELECT coalesce(sum({seconds}), 0) FROM ({work}) e
+                 WHERE e.ended_at IS NULL AND (e.automatic = 0 OR ?1 - e.last_seen_at <= ?2)"
+            ),
+            [now, ACTIVITY_IDLE_GAP],
             |r| r.get(0),
         )?;
         let mut stmt = self.conn.prepare(&format!(
@@ -1274,7 +1435,7 @@ impl Store {
              GROUP BY days.day ORDER BY days.day"
         ))?;
         let days: Vec<DayTime> = stmt
-            .query_map([now], |r| Ok(DayTime { day: r.get(0)?, seconds: r.get(1)? }))?
+            .query_map([now, ACTIVITY_IDLE_GAP], |r| Ok(DayTime { day: r.get(0)?, seconds: r.get(1)? }))?
             .collect::<rusqlite::Result<_>>()?;
         // Bound each side separately so old overdue work never hides upcoming deadlines.
         // The client filters upcoming tasks to its local seven-day calendar window.
@@ -2048,7 +2209,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_starts_existing_doing_tasks_now_without_inventing_past_time() {
+    fn migration_from_schema_12_drops_wall_clock_time_and_keeps_manual_intervals() {
         let (dir, s) = store();
         let p = s.create_project("api", "", None).unwrap();
         let task = s.create_task(p.id, "Existing doing", "").unwrap();
@@ -2060,6 +2221,7 @@ mod tests {
                 "DROP TRIGGER automatic_time_status;
                  DROP TRIGGER automatic_time_project_archive;
                  DROP TRIGGER automatic_time_no_manual;
+                 DROP TRIGGER automatic_time_update;
                  DROP TABLE automatic_time_entries;
                  ALTER TABLE projects DROP COLUMN pinned;
                  UPDATE meta SET value = '12' WHERE key = 'schema_version';",
@@ -2067,61 +2229,64 @@ mod tests {
             .unwrap();
         s.conn.execute("UPDATE tasks SET status = 'doing' WHERE id = ?1", [task.id]).unwrap();
         s.migrate().unwrap();
+        // The manual timer overlapped doing, so it is closed; no time is invented.
         let report = s.time_report(task.id).unwrap();
-        assert_eq!(report.entries.len(), 2);
-        let manual = report.entries.iter().find(|e| !e.automatic).unwrap();
-        let automatic = report.entries.iter().find(|e| e.automatic).unwrap();
-        assert!(manual.seconds >= 90 && manual.ended_at.is_some());
-        assert!(automatic.ended_at.is_none());
-        assert!(automatic.started_at >= manual.ended_at.unwrap());
+        assert_eq!(report.entries.len(), 1);
+        assert!(report.entries[0].ended_at.is_some());
         assert!(report.total_seconds >= 90);
         assert!(report.total_seconds < 120, "migration must not invent time before installation");
+        assert!(report.running_since.is_none());
+        // Tracking starts with the first activity, not with the upgrade.
+        s.record_activity(task.id).unwrap();
+        let report = s.time_report(task.id).unwrap();
+        assert_eq!(report.entries.iter().filter(|e| e.automatic).count(), 1);
+        assert!(report.running_since.is_some());
+        assert!(report.running_until.is_some());
         s.migrate().unwrap();
         assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
         let reopened = Store::open(&dir.path().join("brokan.db"), None).unwrap();
-        reopened.migrate().unwrap();
-        assert_eq!(reopened.time_report(task.id).unwrap().running_since, Some(automatic.started_at));
+        assert_eq!(reopened.time_report(task.id).unwrap().entries.len(), 2);
     }
 
     #[test]
-    fn migration_from_schema_12_starts_only_active_doing_tasks() {
+    fn activity_tracking_skips_archived_projects_human_tasks_and_idle_columns() {
         let (_dir, s) = store();
         let active = s.create_project("active", "", None).unwrap();
         let archived = s.create_project("archived", "", None).unwrap();
         let active_task = s.create_task(active.id, "Active", "").unwrap();
         let archived_task = s.create_task(archived.id, "Archived", "").unwrap();
+        let human = s.create_task(active.id, "Human", "").unwrap();
+        s.update_task(human.id, TaskPatch { human: Some(true), status: Some("doing".into()), ..Default::default() })
+            .unwrap();
         s.set_project_archived("archived", true).unwrap();
-        s.conn
-            .execute_batch(
-                "DROP TRIGGER automatic_time_status;
-                 DROP TRIGGER automatic_time_project_archive;
-                 DROP TRIGGER automatic_time_no_manual;
-                 DROP TABLE automatic_time_entries;
-                 ALTER TABLE projects DROP COLUMN pinned;
-                 UPDATE meta SET value = '12' WHERE key = 'schema_version';",
-            )
-            .unwrap();
-        s.conn
-            .execute(
-                "UPDATE tasks SET status = 'doing' WHERE id IN (?1, ?2)",
-                params![active_task.id, archived_task.id],
-            )
-            .unwrap();
-        s.migrate().unwrap();
+        s.move_task(archived_task.id, "doing", None).unwrap();
+        // Activity on todo work, on a person's task and in an archived project counts nothing.
+        s.record_activity(active_task.id).unwrap();
+        s.record_activity(archived_task.id).unwrap();
+        s.record_activity(human.id).unwrap();
+        for id in [active_task.id, archived_task.id, human.id] {
+            assert!(s.time_report(id).unwrap().entries.is_empty());
+        }
+        // The move into doing is itself a sign of work, so the clock starts there.
+        s.move_task(active_task.id, "doing", None).unwrap();
         assert!(s.time_report(active_task.id).unwrap().running_since.is_some());
-        assert!(s.time_report(archived_task.id).unwrap().entries.is_empty());
         s.set_project_archived("archived", false).unwrap();
-        assert!(s.time_report(archived_task.id).unwrap().running_since.is_some());
+        s.record_activity(archived_task.id).unwrap();
+        assert_eq!(s.time_report(archived_task.id).unwrap().entries.len(), 1);
     }
 
     #[test]
-    fn archiving_pauses_doing_time_and_restoring_resumes_once() {
+    fn archiving_pauses_activity_time_and_restoring_resumes_on_new_activity() {
         let (_dir, s) = store();
         let p = s.create_project("api", "", None).unwrap();
         let task = s.create_task(p.id, "Working", "").unwrap();
         s.move_task(task.id, "doing", None).unwrap();
         s.conn
-            .execute("UPDATE automatic_time_entries SET started_at = unixepoch() - 120 WHERE task_id = ?1", [task.id])
+            .execute(
+                "UPDATE automatic_time_entries SET started_at = unixepoch() - 120, last_seen_at = unixepoch() - 120
+                 WHERE task_id = ?1",
+                [task.id],
+            )
             .unwrap();
         s.set_project_archived("api", true).unwrap();
         let paused = s.time_report(task.id).unwrap();
@@ -2129,50 +2294,49 @@ mod tests {
         assert_eq!(paused.entries.len(), 1);
         assert!(paused.total_seconds >= 120);
         assert_eq!(s.dashboard().unwrap().running_seconds, 0);
-        s.set_project_archived("api", true).unwrap();
-        s.move_task(task.id, "todo", None).unwrap();
-        s.move_task(task.id, "doing", None).unwrap();
-        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 1);
         s.set_project_archived("api", false).unwrap();
+        s.move_task(task.id, "todo", None).unwrap();
+        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 1);
+        s.move_task(task.id, "doing", None).unwrap();
         let resumed = s.time_report(task.id).unwrap();
         assert_eq!(resumed.entries.len(), 2);
         assert!(resumed.running_since.is_some());
-        s.set_project_archived("api", false).unwrap();
-        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
-        s.set_project_archived("api", true).unwrap();
-        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
-        assert!(s.time_report(task.id).unwrap().running_since.is_none());
     }
 
     #[test]
-    fn migration_from_schema_13_freezes_existing_archived_doing_intervals() {
+    fn migration_from_schema_15_drops_wall_clock_rows_and_starts_clean() {
         let (_dir, s) = store();
         let p = s.create_project("old", "", None).unwrap();
         let task = s.create_task(p.id, "Old", "").unwrap();
         s.move_task(task.id, "doing", None).unwrap();
-        s.conn
-            .execute("UPDATE automatic_time_entries SET started_at = unixepoch() - 120 WHERE task_id = ?1", [task.id])
-            .unwrap();
-        // A schema-13 client had no archive trigger and could leave this running.
-        s.conn.execute_batch("DROP TRIGGER automatic_time_project_archive;").unwrap();
-        s.set_project_archived("old", true).unwrap();
+        // Emulate a schema-15 board: wall-clock intervals, no activity column yet.
         s.conn
             .execute_batch(
-                "ALTER TABLE projects DROP COLUMN pinned; UPDATE meta SET value = '13' WHERE key = 'schema_version';",
+                "DELETE FROM automatic_time_entries;
+                 ALTER TABLE automatic_time_entries DROP COLUMN last_seen_at;
+                 UPDATE meta SET value = '15' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO automatic_time_entries (task_id, started_at) VALUES (?1, unixepoch() - 86400)",
+                [task.id],
             )
             .unwrap();
         s.migrate().unwrap();
-        let paused = s.time_report(task.id).unwrap();
-        assert!(paused.running_since.is_none());
-        assert!(paused.entries[0].seconds >= 120);
+        // Wall-clock time nobody worked cannot be reconstructed, so the upgrade drops it.
+        let cleared = s.time_report(task.id).unwrap();
+        assert!(cleared.entries.is_empty());
+        assert_eq!(cleared.total_seconds, 0);
+        assert_eq!(s.dashboard().unwrap().total_seconds, 0);
         s.migrate().unwrap();
-        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 1);
-        s.set_project_archived("old", false).unwrap();
-        assert_eq!(s.time_report(task.id).unwrap().entries.len(), 2);
+        assert!(s.time_report(task.id).unwrap().entries.is_empty());
+        s.record_activity(task.id).unwrap();
+        assert!(s.time_report(task.id).unwrap().total_seconds < 5);
     }
 
     #[test]
-    fn doing_time_tracks_every_transition_without_double_counting_manual_timers() {
+    fn activity_time_ignores_idle_gaps_and_keeps_manual_and_automatic_apart() {
         let (_dir, s) = store();
         let p = s.create_project("api", "", None).unwrap();
         let first = s.create_task(p.id, "First", "").unwrap();
@@ -2196,15 +2360,39 @@ mod tests {
         s.move_task(second.id, "doing", None).unwrap();
         assert_eq!(s.next_task(None).unwrap().unwrap().id, claimed.id);
         for id in [first.id, second.id, claimed.id] {
-            s.conn.execute(
-                "UPDATE automatic_time_entries SET started_at = unixepoch() - 120 WHERE task_id = ?1 AND ended_at IS NULL",
-                [id],
-            ).unwrap();
+            s.conn
+                .execute(
+                    "UPDATE automatic_time_entries SET started_at = unixepoch() - 120, last_seen_at = unixepoch() - 120
+                     WHERE task_id = ?1 AND ended_at IS NULL",
+                    [id],
+                )
+                .unwrap();
         }
         let dashboard = s.dashboard().unwrap();
         assert!(dashboard.running_seconds >= 360);
         assert!(dashboard.total_seconds >= 120 + 90 + 360);
         assert_eq!(dashboard.days.iter().map(|d| d.seconds).sum::<i64>(), dashboard.total_seconds);
+        // Quiet for longer than the idle gap: the clock stops where activity stopped.
+        s.conn
+            .execute(
+                "UPDATE automatic_time_entries SET started_at = unixepoch() - 900, last_seen_at = unixepoch() - 900
+                 WHERE task_id = ?1 AND ended_at IS NULL",
+                [claimed.id],
+            )
+            .unwrap();
+        let idle = s.time_report(claimed.id).unwrap();
+        assert!(idle.running_since.is_none());
+        assert!(idle.running_until.is_none());
+        assert_eq!(idle.entries.iter().filter(|e| e.automatic).count(), 1);
+        assert!(idle.total_seconds >= 300);
+        assert!(idle.total_seconds < 400, "idle silence past the gap is not work");
+        s.record_activity(claimed.id).unwrap();
+        let after = s.time_report(claimed.id).unwrap();
+        assert_eq!(after.entries.iter().filter(|e| e.automatic).count(), 2);
+        assert_eq!(after.entries.iter().filter(|e| e.automatic && e.ended_at.is_some()).count(), 1);
+        assert!(after.running_since.is_some());
+        assert!(after.total_seconds >= 300);
+        assert!(after.total_seconds < 400);
         let before = s.time_report(first.id).unwrap().entries.len();
         s.move_task(first.id, "doing", None).unwrap();
         s.update_task(first.id, TaskPatch { status: Some("doing".into()), ..Default::default() }).unwrap();
@@ -2212,7 +2400,7 @@ mod tests {
         s.update_task(first.id, TaskPatch { status: Some("review".into()), ..Default::default() }).unwrap();
         let stopped = s.time_report(first.id).unwrap();
         assert!(stopped.running_since.is_none());
-        assert!(stopped.entries.iter().any(|e| e.automatic && e.seconds >= 120));
+        assert!(stopped.entries.iter().any(|e| e.automatic && e.ended_at.is_some()));
         let frozen = stopped.total_seconds;
         s.move_task(second.id, "done", None).unwrap();
         s.move_task(claimed.id, "done", None).unwrap();
@@ -2236,13 +2424,11 @@ mod tests {
     }
 
     #[test]
-    fn failed_auto_interval_insert_rolls_back_the_whole_status_patch() {
+    fn failed_activity_write_rolls_back_the_whole_status_patch() {
         let (_dir, s) = store();
         let p = s.create_project("api", "", None).unwrap();
         let task = s.create_task(p.id, "Before", "").unwrap();
-        s.conn
-            .execute("INSERT INTO automatic_time_entries (task_id, started_at) VALUES (?1, unixepoch())", [task.id])
-            .unwrap();
+        s.conn.execute_batch("DROP TABLE automatic_time_entries;").unwrap();
         let patch = TaskPatch { title: Some("After".into()), status: Some("doing".into()), ..Default::default() };
         assert!(s.update_task(task.id, patch).is_err());
         let unchanged = s.get_task(task.id).unwrap();
@@ -2252,23 +2438,28 @@ mod tests {
     }
 
     #[test]
-    fn older_clients_status_writes_trigger_tracking_and_cannot_start_manual_overlap() {
+    fn older_clients_status_writes_stop_time_and_cannot_start_manual_overlap() {
         let (_dir, s) = store();
         let p = s.create_project("api", "", None).unwrap();
         let task = s.create_task(p.id, "Legacy writer", "").unwrap();
         s.start_timer(task.id).unwrap();
         s.conn.execute("UPDATE time_entries SET started_at = unixepoch() - 30 WHERE task_id = ?1", [task.id]).unwrap();
         s.conn.execute("UPDATE tasks SET status = 'doing' WHERE id = ?1", [task.id]).unwrap();
+        // A raw status write closes the manual timer but never invents activity time.
         let doing = s.time_report(task.id).unwrap();
-        assert_eq!(doing.entries.len(), 2);
-        assert!(doing.entries.iter().any(|e| !e.automatic && e.ended_at.is_some() && e.seconds >= 30));
-        assert!(doing.entries.iter().any(|e| e.automatic && e.ended_at.is_none()));
+        assert_eq!(doing.entries.len(), 1);
+        assert!(doing.entries.iter().all(|e| !e.automatic));
+        assert!(doing.entries[0].ended_at.is_some());
+        assert!(doing.entries[0].seconds >= 30);
+        assert!(doing.running_since.is_none());
         assert!(
             s.conn
                 .execute("INSERT INTO time_entries (task_id, started_at) VALUES (?1, unixepoch())", [task.id])
                 .is_err()
         );
         assert!(s.conn.execute("INSERT INTO time_entries (task_id, started_at, ended_at, seconds) VALUES (?1, unixepoch(), unixepoch(), 60)", [task.id]).is_err());
+        s.record_activity(task.id).unwrap();
+        assert!(s.time_report(task.id).unwrap().running_since.is_some());
         s.conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?1", [task.id]).unwrap();
         assert!(s.time_report(task.id).unwrap().running_since.is_none());
     }

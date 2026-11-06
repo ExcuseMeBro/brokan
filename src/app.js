@@ -1667,14 +1667,16 @@ function renderTime(report) {
   $("#p-minutes").disabled = doing;
   $("#p-time-form button").disabled = doing;
   $("#p-time-total").textContent = `${duration(report.total_seconds)} tracked`;
-  $("#p-timer").textContent = doing ? "Auto tracking" : report.running_since == null ? "Start timer" : "Stop timer";
-  $("#p-timer").setAttribute("aria-label", doing ? "Time is tracked automatically while doing" :
+  $("#p-timer").textContent = doing ? "Agent activity" : report.running_since == null ? "Start timer" : "Stop timer";
+  $("#p-timer").setAttribute("aria-label", doing ? "Time follows agent activity while doing" :
     report.running_since == null ? "Start task timer" : "Stop task timer");
   $("#p-time-running").hidden = report.running_since == null;
   if (report.running_since != null) updateRunningTime();
   $("#p-time-list").replaceChildren(...report.entries.map((entry) =>
     el("li", { class: "time-entry" },
-      el("span", { class: "mono" }, `${entry.automatic ? "Auto · " : ""}${entry.ended_at == null ? "Running" : duration(entry.seconds)}`),
+      el("span", { class: "mono" }, `${entry.automatic ? "Agent · " : ""}${
+        entry.ended_at != null ? duration(entry.seconds) :
+          entry.automatic ? (report.running_since === entry.started_at ? "Active now" : "Idle") : "Running"}`),
       el("time", { datetime: new Date(entry.started_at * 1000).toISOString() },
         new Date(entry.started_at * 1000).toLocaleString()),
       !entry.automatic && entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
@@ -1690,10 +1692,14 @@ function renderTime(report) {
 
 function updateRunningTime() {
   if (timeReport?.running_since == null || !state.task) return;
-  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timeReport.running_since);
+  const now = Math.floor(Date.now() / 1000);
+  // Activity time stops at the idle gap after the agent's last report, so the live
+  // counter freezes there instead of running up hours nobody worked.
+  const live = timeReport.running_until == null ? now : Math.min(now, timeReport.running_until);
+  const elapsed = Math.max(0, live - timeReport.running_since);
   const automatic = timeReport.entries.some((entry) => entry.automatic && entry.ended_at == null);
-  $("#p-time-running").textContent = `${automatic ? "Auto tracking" : "Timer running"} · ${duration(elapsed)} elapsed`;
-  $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, Math.floor(Date.now() / 1000) - timeReport.as_of))} tracked`;
+  $("#p-time-running").textContent = `${automatic ? "Agent activity" : "Timer running"} · ${duration(elapsed)} elapsed`;
+  $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, live - timeReport.as_of))} tracked`;
 }
 setInterval(updateRunningTime, 1000);
 
