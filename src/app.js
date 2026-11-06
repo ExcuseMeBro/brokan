@@ -2134,9 +2134,25 @@ function repoName(url) {
 }
 
 async function loadSyncRemote() {
-  try { syncRemote = (await api("GET", "/sync")).remote; } catch {}
+  try {
+    const status = await api("GET", "/sync");
+    syncRemote = status.remote;
+    $("#sync-automatic").checked = status.automatic;
+    $("#sync-automatic-status").textContent = status.automatic_status || "";
+  } catch {}
   return syncRemote;
 }
+
+$("#sync-automatic").addEventListener("change", async (e) => {
+  const input = e.target;
+  input.disabled = true;
+  try {
+    await api("PUT", "/sync/automatic", { enabled: input.checked });
+  } catch (err) {
+    input.checked = !input.checked;
+    toast(err.message);
+  } finally { input.disabled = false; }
+});
 
 // Sync asks for a repo, in Settings, the first time.
 async function sync() {
@@ -2201,6 +2217,12 @@ function openSettings(section = "board") {
   closeMenu();
   $("#settings-backlog").checked = state.board?.statuses.includes("backlog") ?? false;
   $("#sync-url").value = syncRemote || "";
+  const initialUrl = $("#sync-url").value;
+  loadSyncRemote().then(() => {
+    if ($("#settings-dialog").hidden) return;
+    if ($("#sync-url").value === initialUrl) $("#sync-url").value = syncRemote || "";
+    $("#sync-create").hidden = !!syncRemote;
+  });
   $("#sync-create").hidden = !!syncRemote;
   $("#sync-error").hidden = true;
   $("#settings-version").textContent = state.board ? `Brokan ${state.board.version}` : "";

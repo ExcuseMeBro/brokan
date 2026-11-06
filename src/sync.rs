@@ -1,5 +1,7 @@
 //! `brokan sync`: keep the data folder in step with its git remote, one machine at a time.
 
+use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 
@@ -7,6 +9,61 @@ use anyhow::{Context, Result, bail};
 
 use crate::home::{Home, NO_LOCKS};
 use crate::store::Store;
+
+/// Local preferences and lock live outside the repository, per board and machine.
+fn local_path(home: &Home, extension: &str) -> std::path::PathBuf {
+    home.mcp_metrics_path.with_extension(extension)
+}
+
+pub fn auto_enabled(home: &Home) -> bool {
+    match fs::read_to_string(local_path(home, "auto-sync")) {
+        Ok(s) => s.trim() == "on",
+        Err(e) => e.kind() == ErrorKind::NotFound,
+    }
+}
+
+pub fn auto_status(home: &Home) -> Option<String> {
+    fs::read_to_string(local_path(home, "auto-sync-status")).ok()
+}
+
+pub fn run_auto(home: &Home) {
+    if !auto_enabled(home) || remote_url(home).is_none() {
+        return;
+    }
+    let message = match sync(home, None, false) {
+        Ok(message) => message,
+        Err(e) if e.downcast_ref::<Diverged>().is_some() => {
+            "Both boards changed. Run Sync and choose which board to keep.".to_string()
+        }
+        Err(_) => "Automatic sync failed. Run Sync to see the error.".to_string(),
+    };
+    let path = local_path(home, "auto-sync-status");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, message);
+}
+
+pub fn set_auto_enabled(home: &Home, enabled: bool) -> Result<()> {
+    let path = local_path(home, "auto-sync");
+    fs::create_dir_all(path.parent().context("missing local state directory")?)?;
+    fs::write(path, if enabled { "on\n" } else { "off\n" })?;
+    Ok(())
+}
+
+fn operation_lock(home: &Home) -> Result<File> {
+    let path = local_path(home, "sync-lock");
+    fs::create_dir_all(path.parent().context("missing local state directory")?)?;
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+    file.try_lock().map_err(|e| match e {
+        std::fs::TryLockError::WouldBlock => anyhow::anyhow!("Another sync is already running; try again shortly"),
+        std::fs::TryLockError::Error(e) if e.kind() == ErrorKind::Unsupported => {
+            anyhow::anyhow!("Sync requires file locking")
+        }
+        std::fs::TryLockError::Error(e) => e.into(),
+    })?;
+    Ok(file)
+}
 
 pub enum Keep {
     Local,
@@ -39,6 +96,7 @@ pub fn remote_url(home: &Home) -> Option<String> {
 /// next sync asks which board to keep if the new one already holds one. `owner/repo`
 /// is short for that repo on GitHub. Returns the URL saved.
 pub fn set_remote(home: &Home, url: &str, prompt: bool) -> Result<String> {
+    let _operation = operation_lock(home)?;
     let dir = &home.dir;
     let url = url.trim().trim_end_matches('/');
     if url.is_empty() {
@@ -138,6 +196,7 @@ fn remote(dir: &Path) -> Result<Option<(String, String)>> {
 /// false, as from the board's button, git never waits for a password; a missing
 /// credential fails with git's message instead.
 pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
+    let _operation = operation_lock(home)?;
     let dir = &home.dir;
     let git = |args: &[&str]| git(dir, prompt, args);
     let git_ok = |args: &[&str]| git_ok(dir, prompt, args);
@@ -320,6 +379,33 @@ mod tests {
         b.store().unwrap().create_project("local", "", None).unwrap();
         sync(&b, Some(Keep::Remote), false).unwrap();
         (a, b)
+    }
+
+    #[test]
+    fn automatic_sync_respects_setting_and_refuses_divergence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = two_machines(tmp.path());
+        set_auto_enabled(&a, false).unwrap();
+        a.store().unwrap().create_project("first", "", None).unwrap();
+        run_auto(&a);
+        assert!(auto_status(&a).is_none());
+        set_auto_enabled(&a, true).unwrap();
+        run_auto(&a);
+        assert!(auto_status(&a).unwrap().contains("Pushed"));
+        b.store().unwrap().create_project("second", "", None).unwrap();
+        run_auto(&b);
+        assert!(auto_status(&b).unwrap().contains("Both boards changed"));
+        assert!(b.store().unwrap().list_projects().unwrap().iter().any(|p| p.slug == "second"));
+        assert!(a.store().unwrap().list_projects().unwrap().iter().any(|p| p.slug == "first"));
+    }
+
+    #[test]
+    fn sync_operations_are_serialized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().join("board")).unwrap();
+        let _lock = operation_lock(&home).unwrap();
+        assert!(sync(&home, None, false).unwrap_err().to_string().contains("already running"));
+        assert!(set_remote(&home, "elsewhere", false).unwrap_err().to_string().contains("already running"));
     }
 
     #[test]

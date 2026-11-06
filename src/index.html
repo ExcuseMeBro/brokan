@@ -759,6 +759,11 @@ label.setting { cursor: pointer; }
         <h3>Sync</h3>
         <p>Keep this board the same on all your machines through a private git repo you own. Use the same repo on each machine.</p>
         <input class="field" id="sync-url" placeholder="https://github.com/you/brokan-data" autocomplete="off" spellcheck="false" aria-label="Repository URL">
+        <label class="setting">
+          <span class="text">Automatic sync<span>Every 10 minutes while Brokan is running, on this machine</span></span>
+          <span class="switch"><input type="checkbox" id="sync-automatic" aria-label="Automatic sync"><span></span></span>
+        </label>
+        <p id="sync-automatic-status" role="status"></p>
         <p class="error" id="sync-error" hidden></p>
         <div class="row">
           <a id="sync-create" href="https://github.com/new?name=brokan-data&amp;visibility=private" target="_blank" rel="noopener">Create a private repo on GitHub</a>

@@ -9,7 +9,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -65,6 +65,19 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     }
     // Cancelling this also ends open MCP streams, which would otherwise hold up shutdown.
     let shutdown = CancellationToken::new();
+    let auto_home = home.clone();
+    let auto_stop = shutdown.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = auto_stop.cancelled() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(600)) => {
+                    let home = auto_home.clone();
+                    let _ = tokio::task::spawn_blocking(move || sync::run_auto(&home)).await;
+                }
+            }
+        }
+    });
     let app = router(home, guard, shutdown.clone());
     let serve = |listener| {
         let stop = shutdown.clone();
@@ -145,6 +158,7 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/tasks/{id}/images", post(attach_image))
         .route("/api/update", get(update_status).post(update_now))
         .route("/api/sync", get(sync_status).post(sync_now).put(sync_repo))
+        .route("/api/sync/automatic", put(sync_automatic))
         .route("/api/settings", patch(update_settings))
         .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
         .with_state(Arc::new(home))
@@ -688,8 +702,26 @@ async fn sync_now(State(home): Shared, Json(r): Json<SyncRequest>) -> Response {
 
 /// The repo the board syncs with, `null` before sync is set up.
 async fn sync_status(State(home): Shared) -> Response {
-    let remote = tokio::task::spawn_blocking(move || sync::remote_url(&home)).await.ok().flatten();
-    Json(json!({ "remote": remote })).into_response()
+    let result = tokio::task::spawn_blocking(move || {
+        json!({ "remote": sync::remote_url(&home), "automatic": sync::auto_enabled(&home), "automatic_status": sync::auto_status(&home) })
+    }).await;
+    match result {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AutomaticSync {
+    enabled: bool,
+}
+
+async fn sync_automatic(State(home): Shared, Json(r): Json<AutomaticSync>) -> Response {
+    match tokio::task::spawn_blocking(move || sync::set_auto_enabled(&home, r.enabled)).await {
+        Ok(Ok(())) => Json(json!({ "automatic": r.enabled })).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e:#}") }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
