@@ -10,6 +10,9 @@ use anyhow::{Context, Result, bail};
 use crate::home::{Home, NO_LOCKS};
 use crate::store::Store;
 
+/// How long a sync waits for a lock that is just about to be released.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Local preferences and lock live outside the repository, per board and machine.
 fn local_path(home: &Home, extension: &str) -> std::path::PathBuf {
     home.mcp_metrics_path.with_extension(extension)
@@ -54,15 +57,25 @@ pub fn set_auto_enabled(home: &Home, enabled: bool) -> Result<()> {
 fn operation_lock(home: &Home) -> Result<File> {
     let path = local_path(home, "sync-lock");
     fs::create_dir_all(path.parent().context("missing local state directory")?)?;
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
-    file.try_lock().map_err(|e| match e {
-        std::fs::TryLockError::WouldBlock => anyhow::anyhow!("Another sync is already running; try again shortly"),
-        std::fs::TryLockError::Error(e) if e.kind() == ErrorKind::Unsupported => {
-            anyhow::anyhow!("Sync requires file locking")
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
+    // A lock that was just released can still look held for a moment, so give the
+    // other sync a short, bounded chance to finish instead of failing at once.
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                bail!("Another sync is already running; try again shortly")
+            }
+            Err(std::fs::TryLockError::Error(e)) if e.kind() == ErrorKind::Unsupported => {
+                bail!("Sync requires file locking")
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
-        std::fs::TryLockError::Error(e) => e.into(),
-    })?;
-    Ok(file)
+    }
 }
 
 pub enum Keep {
