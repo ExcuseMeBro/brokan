@@ -31,6 +31,16 @@ const LOGO: &[u8] = include_bytes!("logo.png");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
                    connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/// How often automatic sync runs. Debug builds may shorten it for tests.
+fn auto_sync_interval() -> std::time::Duration {
+    let secs = if cfg!(debug_assertions) {
+        std::env::var("BROKAN_AUTO_SYNC_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600)
+    } else {
+        600
+    };
+    std::time::Duration::from_secs(secs.max(1))
+}
+
 pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
     let port = port.unwrap_or(home.config.port);
     let listen = home.config.listen;
@@ -71,7 +81,7 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
         loop {
             tokio::select! {
                 _ = auto_stop.cancelled() => break,
-                _ = tokio::time::sleep(std::time::Duration::from_secs(600)) => {
+                _ = tokio::time::sleep(auto_sync_interval()) => {
                     let home = auto_home.clone();
                     let _ = tokio::task::spawn_blocking(move || sync::run_auto(&home)).await;
                 }
