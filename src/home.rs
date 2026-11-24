@@ -20,8 +20,9 @@ port = 1317
 
 # Address the board listens on. 127.0.0.1 keeps it on this machine. Use
 # "0.0.0.0" to open it from other devices, for example when Brokan runs on a
-# Raspberry Pi with no screen. There are no logins: anyone who can reach the
-# port can read and change the board, and use its MCP endpoint.
+# Raspberry Pi with no screen. Without a BROKAN_TOKEN in the environment there
+# are no logins: anyone who can reach the port can read and change the board,
+# and use its MCP endpoint. For a server with a domain, see docs/self-hosting.md.
 listen = "127.0.0.1"
 
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents

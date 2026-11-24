@@ -45,12 +45,18 @@ const state = {
 
 // ---------- helpers ----------
 
+// A board on a server asks for its token: when the sign-in lapses, go sign in again.
+function signInIfAsked(res) {
+  if (res.status === 401) location.assign("/login");
+}
+
 async function api(method, path, body) {
   const res = await fetch("/api" + path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
+  signInIfAsked(res);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -1667,14 +1673,16 @@ function renderTime(report) {
   $("#p-minutes").disabled = doing;
   $("#p-time-form button").disabled = doing;
   $("#p-time-total").textContent = `${duration(report.total_seconds)} tracked`;
-  $("#p-timer").textContent = doing ? "Auto tracking" : report.running_since == null ? "Start timer" : "Stop timer";
-  $("#p-timer").setAttribute("aria-label", doing ? "Time is tracked automatically while doing" :
+  $("#p-timer").textContent = doing ? "Agent activity" : report.running_since == null ? "Start timer" : "Stop timer";
+  $("#p-timer").setAttribute("aria-label", doing ? "Time follows agent activity while doing" :
     report.running_since == null ? "Start task timer" : "Stop task timer");
   $("#p-time-running").hidden = report.running_since == null;
   if (report.running_since != null) updateRunningTime();
   $("#p-time-list").replaceChildren(...report.entries.map((entry) =>
     el("li", { class: "time-entry" },
-      el("span", { class: "mono" }, `${entry.automatic ? "Auto · " : ""}${entry.ended_at == null ? "Running" : duration(entry.seconds)}`),
+      el("span", { class: "mono" }, `${entry.automatic ? "Agent · " : ""}${
+        entry.ended_at != null ? duration(entry.seconds) :
+          entry.automatic ? (report.running_since === entry.started_at ? "Active now" : "Idle") : "Running"}`),
       el("time", { datetime: new Date(entry.started_at * 1000).toISOString() },
         new Date(entry.started_at * 1000).toLocaleString()),
       !entry.automatic && entry.ended_at != null ? el("button", { type: "button", title: "Remove time entry",
@@ -1690,10 +1698,14 @@ function renderTime(report) {
 
 function updateRunningTime() {
   if (timeReport?.running_since == null || !state.task) return;
-  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timeReport.running_since);
+  const now = Math.floor(Date.now() / 1000);
+  // Activity time stops at the idle gap after the agent's last report, so the live
+  // counter freezes there instead of running up hours nobody worked.
+  const live = timeReport.running_until == null ? now : Math.min(now, timeReport.running_until);
+  const elapsed = Math.max(0, live - timeReport.running_since);
   const automatic = timeReport.entries.some((entry) => entry.automatic && entry.ended_at == null);
-  $("#p-time-running").textContent = `${automatic ? "Auto tracking" : "Timer running"} · ${duration(elapsed)} elapsed`;
-  $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, Math.floor(Date.now() / 1000) - timeReport.as_of))} tracked`;
+  $("#p-time-running").textContent = `${automatic ? "Agent activity" : "Timer running"} · ${duration(elapsed)} elapsed`;
+  $("#p-time-total").textContent = `${duration(timeReport.total_seconds + Math.max(0, live - timeReport.as_of))} tracked`;
 }
 setInterval(updateRunningTime, 1000);
 
@@ -1867,6 +1879,7 @@ function imagesIn(transfer) {
 
 async function uploadImage(image) {
   const res = await fetch("/api/images", { method: "POST", headers: { "Content-Type": image.type }, body: image });
+  signInIfAsked(res);
   const reply = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(reply.error || res.statusText);
   return reply.file;
@@ -2088,35 +2101,21 @@ schedulePoll();
 // ---------- sync ----------
 
 // Sync runs `brokan sync`: it commits the board and pulls or pushes it through the data
-// folder's git remote. When both machines changed it, the board asks which to keep.
+// folder's git remote. When both machines changed it, the two boards are merged.
 let syncing = false;
 
-async function syncNow(keep) {
+async function syncNow() {
   if (syncing) return;
   syncing = true;
   toast("Syncing…");
-  let diverged = null;
   try {
-    const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep }) });
+    const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    signInIfAsked(res);
     const reply = await res.json().catch(() => ({}));
     if (res.ok) { toast(reply.message); loadBoard(); }
-    else if (reply.diverged) diverged = reply;
     else toast(reply.error || res.statusText);
   } catch (err) { toast(err.message); }
   syncing = false;
-  if (diverged) chooseSide(diverged);
-}
-
-function chooseSide({ first }) {
-  const repo = repoName(syncRemote);
-  if (first) {
-    // A repo another machine already syncs with: most likely, this machine is joining it.
-    if (confirm(`${repo} already has a board. Use it on this machine?\n\nThis machine's current board is kept in brokan.db.bak.`)) syncNow("remote");
-    else if (confirm(`Replace the board in ${repo} with this machine's board instead?`)) syncNow("local");
-    return;
-  }
-  if (confirm("This machine and another one both changed the board since the last sync, and boards can't be merged.\n\nKeep THIS machine's board, and overwrite the other one?")) syncNow("local");
-  else if (confirm("Take the other machine's board instead? This machine's board is kept in brokan.db.bak.")) syncNow("remote");
 }
 
 // The repo the board syncs with; null before it's set up.
@@ -2128,9 +2127,25 @@ function repoName(url) {
 }
 
 async function loadSyncRemote() {
-  try { syncRemote = (await api("GET", "/sync")).remote; } catch {}
+  try {
+    const status = await api("GET", "/sync");
+    syncRemote = status.remote;
+    $("#sync-automatic").checked = status.automatic;
+    $("#sync-automatic-status").textContent = status.automatic_status || "";
+  } catch {}
   return syncRemote;
 }
+
+$("#sync-automatic").addEventListener("change", async (e) => {
+  const input = e.target;
+  input.disabled = true;
+  try {
+    await api("PUT", "/sync/automatic", { enabled: input.checked });
+  } catch (err) {
+    input.checked = !input.checked;
+    toast(err.message);
+  } finally { input.disabled = false; }
+});
 
 // Sync asks for a repo, in Settings, the first time.
 async function sync() {
@@ -2147,6 +2162,7 @@ $("#sync-form").addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/api/sync", { method: "PUT", headers: { "Content-Type": "application/json" },
                                            body: JSON.stringify({ url: $("#sync-url").value }) });
+    signInIfAsked(res);
     const reply = await res.json().catch(() => ({}));
     if (res.ok) {
       syncRemote = reply.remote;
@@ -2195,6 +2211,12 @@ function openSettings(section = "board") {
   closeMenu();
   $("#settings-backlog").checked = state.board?.statuses.includes("backlog") ?? false;
   $("#sync-url").value = syncRemote || "";
+  const initialUrl = $("#sync-url").value;
+  loadSyncRemote().then(() => {
+    if ($("#settings-dialog").hidden) return;
+    if ($("#sync-url").value === initialUrl) $("#sync-url").value = syncRemote || "";
+    $("#sync-create").hidden = !!syncRemote;
+  });
   $("#sync-create").hidden = !!syncRemote;
   $("#sync-error").hidden = true;
   $("#settings-version").textContent = state.board ? `Brokan ${state.board.version}` : "";

@@ -1,0 +1,28 @@
+# Brokan as a system service, without Docker, behind a reverse proxy on the same host.
+#   sudo useradd --system --create-home --home-dir /var/lib/brokan brokan
+#   sudo install -m 0600 -o root /dev/null /etc/brokan.env   # then set the variables below
+#   sudo cp brokan.service /etc/systemd/system/ && sudo systemctl enable --now brokan
+#
+# /etc/brokan.env:
+#   BROKAN_PUBLIC_URL=https://brokan.example.com
+#   BROKAN_TOKEN=<openssl rand -hex 32>
+[Unit]
+Description=Brokan board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=brokan
+EnvironmentFile=/etc/brokan.env
+Environment=BROKAN_HOME=/var/lib/brokan/board BROKAN_LISTEN=127.0.0.1 BROKAN_PORT=1317
+ExecStart=/usr/local/bin/brokan --foreground --no-open
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/brokan
+PrivateTmp=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,7 @@ use std::time::Instant;
 use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{CallToolResult, ContentBlock, Extensions, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
@@ -28,12 +28,14 @@ const DONE_LISTED: usize = 20;
 const INSTRUCTIONS: &str = "The user's kanban board, on this machine, for all their projects. Tasks look like \
 api#12. Pass `project` for multi-project boards; existing GitHub repo associations still work. Keep it current unasked: \
 doing when you start a task, comments on what you did, review when you finish or get stuck. Leave done and \
-human tasks to the user.";
+human tasks to the user. Tracked time follows your activity, not the column: while a doing task is yours, call \
+get_task now and then so its time stays credited.";
 
 const HTTP_INSTRUCTIONS: &str = "The user's kanban board, on their machine, for all their projects. Tasks look \
-like api#12. Over HTTP Brokan can't see your folder, so pass `project` (see list_projects). Keep it current \
+like api#12. Pass `project` (see list_projects) unless your folder's repo is linked to one. Keep it current \
 unasked: doing when you start a task, comments on what you did, review when you finish or get stuck. Leave \
-done and human tasks to the user.";
+done and human tasks to the user. Tracked time follows your activity, not the column: while a doing task is \
+yours, call get_task now and then so its time stays credited.";
 
 /// `brokan mcp`: one agent on stdin and stdout, in the folder it started us in.
 pub async fn serve(home: Home) -> Result<()> {
@@ -69,13 +71,15 @@ struct Ctx {
 }
 
 impl Ctx {
-    /// The named project, or the one linked to this folder's git remote.
-    fn project(&self, store: &Store, name: Option<&str>) -> store::Result<Project> {
+    /// The named project, or the one linked to this folder's git remote. Over HTTP,
+    /// `sent` holds the repos `brokan mcp` relayed from the agent's folder.
+    fn project(&self, store: &Store, name: Option<&str>, sent: &[String]) -> store::Result<Project> {
         if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
             return store.find_project(name);
         }
         let mut archived_match = None;
-        for repo in &self.repos {
+        let repos = if self.repos.is_empty() { sent } else { &self.repos };
+        for repo in repos {
             if let Some(p) = store.project_by_repo(repo)? {
                 if !p.archived {
                     return Ok(p);
@@ -91,6 +95,10 @@ impl Ctx {
         let known: Vec<String> = store.list_projects()?.into_iter().filter(|p| !p.archived).map(|p| p.slug).collect();
         let known = known.join(", ");
         let Some(cwd) = &self.cwd else {
+            if !sent.is_empty() {
+                let msg = format!("No project is linked to {}. Pass `project` (one of: {known}).", sent.join(", "));
+                return Err(Error::NotFound(msg));
+            }
             let msg = if known.is_empty() {
                 "There are no projects yet. Create one with create_project.".to_string()
             } else {
@@ -108,7 +116,24 @@ impl Ctx {
     }
 }
 
-fn git_repos(dir: &std::path::Path) -> Vec<String> {
+/// The header `brokan mcp` uses to tell a board elsewhere which repos the agent's
+/// folder belongs to, as comma-separated `owner/repo`.
+pub const REPOS_HEADER: &str = "x-brokan-repos";
+
+/// The repos a relayed request names; anything malformed is ignored.
+fn sent_repos(extensions: &Extensions) -> Vec<String> {
+    let Some(parts) = extensions.get::<axum::http::request::Parts>() else { return Vec::new() };
+    let Some(value) = parts.headers.get(REPOS_HEADER).and_then(|v| v.to_str().ok()) else { return Vec::new() };
+    let mut repos = Vec::new();
+    for repo in value.split(',').take(16).filter_map(|r| store::repo_from_url(r.trim())) {
+        if !repos.contains(&repo) {
+            repos.push(repo);
+        }
+    }
+    repos
+}
+
+pub(crate) fn git_repos(dir: &std::path::Path) -> Vec<String> {
     let Ok(out) = Command::new("git").arg("-C").arg(dir).args(["remote", "-v"]).output() else {
         return Vec::new();
     };
@@ -333,11 +358,16 @@ impl Brokan {
     }
 
     #[tool(description = "List tasks in board order.")]
-    async fn list_tasks(&self, Parameters(args): Parameters<ListTasksArgs>) -> Result<CallToolResult, ErrorData> {
+    async fn list_tasks(
+        &self,
+        Parameters(args): Parameters<ListTasksArgs>,
+        extensions: Extensions,
+    ) -> Result<CallToolResult, ErrorData> {
+        let sent = sent_repos(&extensions);
         Ok(self
             .run(move |ctx, store| {
                 let all = args.project.as_deref().is_some_and(|p| p.trim().eq_ignore_ascii_case("all"));
-                let project = if all { None } else { Some(ctx.project(store, args.project.as_deref())?) };
+                let project = if all { None } else { Some(ctx.project(store, args.project.as_deref(), &sent)?) };
                 let status = args.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
                 let only = match status {
                     Some("all") | None => None,
@@ -390,16 +420,24 @@ impl Brokan {
         Ok(self
             .run(move |ctx, store| {
                 let task = args.id.find(store)?;
+                // Reading a doing task is the agent reporting it is still on it, which is
+                // the only activity signal Brokan has.
+                let _ = store.record_activity(task.id);
                 task_detail(ctx, store, &task)
             })
             .await)
     }
 
     #[tool(description = "Add a task, to todo unless you pass status.")]
-    async fn create_task(&self, Parameters(args): Parameters<CreateTaskArgs>) -> Result<CallToolResult, ErrorData> {
+    async fn create_task(
+        &self,
+        Parameters(args): Parameters<CreateTaskArgs>,
+        extensions: Extensions,
+    ) -> Result<CallToolResult, ErrorData> {
+        let sent = sent_repos(&extensions);
         Ok(self
             .run(move |ctx, store| {
-                let project = ctx.project(store, args.project.as_deref())?;
+                let project = ctx.project(store, args.project.as_deref(), &sent)?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let description = args.description.as_deref().unwrap_or("");
                 let priority = args.priority.map(|p| p.trim().to_ascii_lowercase());
@@ -440,6 +478,7 @@ impl Brokan {
                         deadline_at: args.deadline_at,
                     },
                 )?;
+                let _ = store.record_activity(after.id);
                 let moved = if before.status != after.status {
                     format!(", {} -> {}", before.status, after.status)
                 } else {
@@ -462,19 +501,28 @@ impl Brokan {
             .run(move |_, store| {
                 let task = args.id.find(store)?;
                 store.add_comment(task.id, &author, &args.body, &[])?;
+                let _ = store.record_activity(task.id);
                 Ok(format!("Comment added to {} as {author}.", task.key()))
             })
             .await)
     }
 
     #[tool(description = "Take the highest-priority todo task (ties by board order), move it to doing and show it.")]
-    async fn next_task(&self, Parameters(args): Parameters<NextTaskArgs>) -> Result<CallToolResult, ErrorData> {
+    async fn next_task(
+        &self,
+        Parameters(args): Parameters<NextTaskArgs>,
+        extensions: Extensions,
+    ) -> Result<CallToolResult, ErrorData> {
+        let sent = sent_repos(&extensions);
         Ok(self
             .run(move |ctx, store| {
                 let all = args.project.as_deref().is_some_and(|p| p.trim().eq_ignore_ascii_case("all"));
-                let project = if all { None } else { Some(ctx.project(store, args.project.as_deref())?) };
+                let project = if all { None } else { Some(ctx.project(store, args.project.as_deref(), &sent)?) };
                 match store.next_task(project.as_ref().map(|p| p.id))? {
-                    Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
+                    Some(task) => {
+                        let _ = store.record_activity(task.id);
+                        Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?))
+                    }
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
                         Ok(format!("Nothing in todo for {scope}."))

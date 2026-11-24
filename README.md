@@ -29,8 +29,9 @@ Run `brokan` to start the board in the background and open it in your browser. T
 | `brokan` | Starts the board in the background at http://localhost:1317 and opens it; `--port` for another port, `--no-open` to not open it |
 | `brokan --foreground` | Runs attached to the terminal until Ctrl-C; use `--no-open` to skip opening the browser |
 | `brokan service install` | Keeps the board running and starts it at login; `uninstall` removes it |
-| `brokan mcp` | The MCP server for agents: they start it, not you |
-| `brokan sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
+| `brokan mcp` | The MCP server for agents: they start it, not you. After `brokan connect` it relays to that board; `--local` uses this machine's |
+| `brokan connect <url>` | Makes `brokan mcp` on this machine use the board on your server (asks for its token); `brokan disconnect` undoes it |
+| `brokan sync` | Commits the board and pulls, merges or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` replace one whole board instead of merging |
 | `brokan export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
 | `brokan update` | Installs the latest release and restarts the board's service; the board offers new versions too |
 | `brokan init` | Creates the data folder; the first run does this too |
@@ -44,7 +45,7 @@ Set a task's Priority in its detail panel: None, Low, Medium, High or Urgent. Ca
 
 Set or clear a **Planned start** and **Deadline** in a task's detail panel using your local date and time. Start must not be later than deadline. The Calendar shows start and due events, and the Gantt shows a bar between both dates; a task with only one date is a milestone. Undated tasks stay on Board/Table but do not appear on timelines. Cards highlight overdue unfinished tasks; completed tasks keep their deadline without an overdue warning. API/MCP fields `start_at` and `deadline_at` use `YYYY-MM-DDTHH:MM:SSZ` (UTC); PATCH with `null` clears one. Dates do not reorder the board or change `next_task` priority.
 
-Time spent accrues automatically for each task in an active project while it is in **doing**, even across restarts. Entering doing starts a separate interval; leaving doing (including moving to done or review) stops it. Archiving a project pauses its doing timers; restoring it starts fresh intervals, without attributing archived time. Several doing tasks can accrue wall-clock time at once. Existing active-project doing tasks start no earlier than the schema upgrade; historical doing time cannot be reconstructed. A manual timer already running for a task is completed when it enters doing, so the same seconds are not counted twice. Outside doing, open a task to **Start timer** or **Log time** in minutes; manual time is additive, and one manual timer can run across the board at a time. Manual logging/timer controls are unavailable during doing to prevent overlap. The task shows its automatic and manual intervals; mistaken completed manual entries can be removed. The sidebar **Dashboard** shows up to twelve nearest unfinished deadlines due in the next seven local calendar days (plus up to five recently overdue tasks) with the days remaining and links to their tasks. Completed tasks and archived projects do not appear in that list. It also shows a seven-day bar chart of tracked time and donuts for task status and time by project. Running time is included; the seven-day chart groups whole entries by their start date in UTC. MCP analytics show daily tool-call counts and the fastest/slowest server response per UTC day for the last 30 days, plus an average calls/hour over elapsed hours in that window. Only executed tool calls are counted (including tool-returned errors, not MCP handshakes); no request arguments, responses, tool names or prompts are saved. Daily aggregates are stored in a private local database outside the synced board folder. The dashboard shows the latest 30 UTC calendar days; older aggregates are pruned on the next tool call. Calls before metrics instrumentation cannot be reconstructed.
+Time spent follows agent activity, not the clock. While a task is in **doing** in an active project, every MCP call that touches it (`get_task`, `update_task`, `add_comment`, `next_task`) records that an agent is on it, and the task's time covers the span from its first report to its last. After five quiet minutes the interval stops, so a card left in doing overnight no longer collects hours nobody worked; the next activity opens a new interval and the gap between them is not counted. Several doing tasks can be tracked at once, each on its own activity. The panel shows **Active now** while activity is current and **Idle** once it lapses. Time recorded by older versions came from wall-clock doing time with no record of real work in it, so the schema upgrade drops those rows and totals start over from the new activity intervals. A manual timer already running for a task is completed when it enters doing, so the same seconds are not counted twice. Outside doing, open a task to **Start timer** or **Log time** in minutes; manual time is additive, and one manual timer can run across the board at a time. Manual logging/timer controls are unavailable during doing to prevent overlap. The task shows its automatic and manual intervals; mistaken completed manual entries can be removed. The sidebar **Dashboard** shows up to twelve nearest unfinished deadlines due in the next seven local calendar days (plus up to five recently overdue tasks) with the days remaining and links to their tasks. Completed tasks and archived projects do not appear in that list. It also shows a seven-day bar chart of tracked time and donuts for task status and time by project. Running time is included; the seven-day chart groups whole entries by their start date in UTC. MCP analytics show daily tool-call counts and the fastest/slowest server response per UTC day for the last 30 days, plus an average calls/hour over elapsed hours in that window. Only executed tool calls are counted (including tool-returned errors, not MCP handshakes); no request arguments, responses, tool names or prompts are saved. Daily aggregates are stored in a private local database outside the synced board folder. The dashboard shows the latest 30 UTC calendar days; older aggregates are pruned on the next tool call. Calls before metrics instrumentation cannot be reconstructed.
 
 Use a project's ⋯ menu to **Archive project**; it moves into the sidebar **Archived** section, where you can still browse its tasks and restore it. Archived projects are excluded from All projects, search, new task choices and agents' `next_task`. Their tasks, repo links and logged time are not deleted; exports and historical Dashboard totals still include them. Restore a project to add tasks again. Older Brokan versions must be updated before opening a board with archives, so they cannot mistakenly assign archived tasks to agents.
 
@@ -82,11 +83,24 @@ A laptop, a desktop, a Raspberry Pi: they all share one board through a private 
 
 1. [Create an empty private repo](https://github.com/new?name=brokan-data&visibility=private) on GitHub, or anywhere git can push.
 2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. This is the only repo URL entered in Brokan; it syncs the whole board, not individual projects. Brokan makes `~/brokan` a git repo and pushes the board.
-3. On each other machine, do the same with the same URL: Brokan offers to use the board that's already there.
+3. On each other machine, do the same with the same URL: its board is merged with the one already there.
 
-From then on, choose Sync, or run `brokan sync`, when you switch machines. It commits the board and pulls or pushes it, and it's safe while the board and your agents are running. If both machines changed the board, Brokan asks which one to keep. To move to another repo, change it in Settings, under Sync.
+Automatic sync runs every 10 minutes while the Brokan board server is running, once a repository is configured. Enable or disable it per machine in Settings → Sync; the latest automatic result appears there. Git credentials must work without an interactive prompt. You can also choose Sync or run `brokan sync` when switching machines. To move to another repo, change it in Settings, under Sync.
 
-Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:1317/mcp`, passing the project by name.
+When both machines changed the board, sync merges them, and never stops to ask: it makes a git merge commit and merges `brokan.db` task by task and field by field. A field changed on one side takes that change; when both changed the same field of a task, the later edit wins. A task or project deleted on one machine stays deleted unless the other one changed it or added to it meanwhile (a comment, time), and then it is kept. Tasks created on both machines are all kept: the ones already in the repo keep their numbers, and if this machine used the same number, its task gets the next free one and sync says so (`api#12 is now api#14`). Joining a repo that already holds a board merges this machine's board into it, and projects with the same slug become one. If another machine pushes at the same moment, sync fetches and merges again. `brokan sync --keep-local` or `--keep-remote` still replace one whole board with the other when you want that instead.
+
+For agents on several machines at once, run one board on a server: see below.
+
+## Run it on a server
+
+One board on a VPS at your own domain, over HTTPS, with a sign-in token: `deploy/` has a Docker Compose setup with Caddy that gets the certificate by itself.
+
+```sh
+cd deploy && cp .env.example .env   # set BROKAN_DOMAIN and BROKAN_TOKEN (openssl rand -hex 32)
+docker compose up -d --build
+```
+
+Then, on each machine with agents, `brokan connect https://brokan.example.com`: every agent's existing `brokan mcp` now uses the server's board, with project detection from the agent's repo as before. HTTP MCP clients can connect to `https://brokan.example.com/mcp` directly with `Authorization: Bearer <token>`. Settings, nginx and systemd: [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Settings
 
@@ -94,7 +108,7 @@ Everything lives in `~/brokan`: the board in `brokan.db`, settings in `config.to
 
 ```toml
 port = 1317
-listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: no logins, so only on one you trust
+listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: without BROKAN_TOKEN, no logins, so only on one you trust
 mcp_http = true        # MCP at /mcp
 ```
 

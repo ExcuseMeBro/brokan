@@ -1,0 +1,8 @@
+# HTTPS for the board, with a certificate Caddy gets and renews by itself.
+{$BROKAN_DOMAIN} {
+	# Caddy passes the original Host on, which the board checks against BROKAN_PUBLIC_URL.
+	reverse_proxy brokan:1317 {
+		# MCP answers stream as server-sent events: pass them on as they come.
+		flush_interval -1
+	}
+}

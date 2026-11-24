@@ -1,9 +1,12 @@
+mod access;
 mod background;
+mod bridge;
 mod export;
 mod git_overview;
 mod home;
 mod mcp;
 mod mcp_metrics;
+mod merge;
 mod service;
 mod store;
 mod sync;
@@ -39,14 +42,33 @@ struct Cli {
     #[arg(long)]
     foreground: bool,
 
+    /// Address to listen on, like 0.0.0.0 on a server [default: $BROKAN_LISTEN, then config.toml]
+    #[arg(long, value_name = "IP")]
+    listen: Option<std::net::IpAddr>,
+
+    /// The URL the board is reached at on a server, like https://brokan.example.com; needs
+    /// $BROKAN_TOKEN or $BROKAN_TOKEN_FILE [default: $BROKAN_PUBLIC_URL]
+    #[arg(long, value_name = "URL")]
+    public_url: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the MCP server on stdio (agents launch this, not you)
-    Mcp,
+    /// Run the MCP server on stdio (agents launch this, not you). After `brokan connect`,
+    /// it relays to that board instead of using this machine's
+    Mcp {
+        /// Use this machine's board even when connected to another one
+        #[arg(long)]
+        local: bool,
+    },
+    /// Make `brokan mcp` on this machine use the board at URL, like https://brokan.example.com.
+    /// The token is read from $BROKAN_TOKEN, or asked for
+    Connect { url: String },
+    /// Make `brokan mcp` use this machine's board again
+    Disconnect,
     /// Create the data folder; the first run does this too
     Init {
         /// Folder to create [default: the data folder]
@@ -57,10 +79,10 @@ enum Command {
         /// Sync with this git repo from now on, like https://github.com/you/brokan-data or you/brokan-data
         #[arg(long, value_name = "URL")]
         repo: Option<String>,
-        /// When both sides changed, keep this machine's board and overwrite the remote
+        /// Instead of merging when both sides changed, overwrite the remote with this machine's board
         #[arg(long, conflicts_with = "keep_remote")]
         keep_local: bool,
-        /// When both sides changed, take the remote board and drop this machine's changes
+        /// Instead of merging when both sides changed, take the remote board and drop this machine's changes
         #[arg(long)]
         keep_remote: bool,
     },
@@ -118,15 +140,32 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(Command::Update) = cli.command {
         return update_brokan();
     }
+    // A machine whose agents use a board elsewhere needs no data folder of its own.
+    match &cli.command {
+        Some(Command::Mcp { local: false }) => {
+            if let Some(remote) = bridge::Remote::configured()? {
+                return tokio::task::spawn_blocking(move || bridge::run(remote)).await?;
+            }
+        }
+        Some(Command::Connect { url }) => return bridge::connect(url),
+        Some(Command::Disconnect) => return bridge::disconnect(),
+        _ => {}
+    }
     let dir = match &cli.command {
         Some(Command::Init { folder: Some(folder) }) => folder.clone(),
         _ => Home::resolve(cli.home)?,
     };
     let home = Home::open(dir)?;
     match cli.command {
-        None if cli.foreground => web::serve(home, cli.port, !cli.no_open).await,
-        None => background::start(home, cli.port, !cli.no_open).await,
-        Some(Command::Mcp) => mcp::serve(home).await,
+        None => {
+            let options = web::Options::from_env(cli.port, cli.listen, cli.public_url)?;
+            if cli.foreground {
+                web::serve(home, options, !cli.no_open).await
+            } else {
+                background::start(home, options, !cli.no_open).await
+            }
+        }
+        Some(Command::Mcp { .. }) => mcp::serve(home).await,
         Some(Command::Init { .. }) => {
             println!("Brokan data folder ready at {}", home.dir.display());
             Ok(())
@@ -148,7 +187,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Command::Service { action: ServiceAction::Install }) => service::install(&home),
         Some(Command::Service { action: ServiceAction::Uninstall }) => service::uninstall(),
-        Some(Command::Update) => unreachable!("handled above"),
+        Some(Command::Update | Command::Connect { .. } | Command::Disconnect) => unreachable!("handled above"),
     }
 }
 
