@@ -1,0 +1,56 @@
+# Brokan on a VPS with a domain and automatic HTTPS (Let's Encrypt, through Caddy).
+#
+#   cp .env.example .env     # set BROKAN_DOMAIN and BROKAN_TOKEN
+#   docker compose up -d --build
+#
+# Point the domain's A/AAAA record at this server and open ports 80 and 443 first.
+name: brokan
+
+services:
+  brokan:
+    build: ..
+    image: brokan:local
+    restart: unless-stopped
+    environment:
+      BROKAN_PUBLIC_URL: https://${BROKAN_DOMAIN:?set BROKAN_DOMAIN in .env}
+      BROKAN_TOKEN: ${BROKAN_TOKEN:?set BROKAN_TOKEN in .env}
+    volumes:
+      - brokan-data:/data
+      - brokan-state:/home/brokan/.local/state
+      # For `brokan sync` from the server, mount a deploy key (read by uid 10001):
+      # - ./ssh:/home/brokan/.ssh:ro
+    # Only Caddy reaches the board; it is never published on the host.
+    expose:
+      - "1317"
+    mem_limit: 256m
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2.10.0-alpine
+    restart: unless-stopped
+    depends_on:
+      - brokan
+    environment:
+      BROKAN_DOMAIN: ${BROKAN_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 128m
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  brokan-data:
+  brokan-state:
+  caddy-data:
+  caddy-config:

@@ -29,7 +29,8 @@ Run `brokan` to start the board in the background and open it in your browser. T
 | `brokan` | Starts the board in the background at http://localhost:1317 and opens it; `--port` for another port, `--no-open` to not open it |
 | `brokan --foreground` | Runs attached to the terminal until Ctrl-C; use `--no-open` to skip opening the browser |
 | `brokan service install` | Keeps the board running and starts it at login; `uninstall` removes it |
-| `brokan mcp` | The MCP server for agents: they start it, not you |
+| `brokan mcp` | The MCP server for agents: they start it, not you. After `brokan connect` it relays to that board; `--local` uses this machine's |
+| `brokan connect <url>` | Makes `brokan mcp` on this machine use the board on your server (asks for its token); `brokan disconnect` undoes it |
 | `brokan sync` | Commits the board and pulls, merges or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` replace one whole board instead of merging |
 | `brokan export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
 | `brokan update` | Installs the latest release and restarts the board's service; the board offers new versions too |
@@ -88,7 +89,18 @@ Automatic sync runs every 10 minutes while the Brokan board server is running, o
 
 When both machines changed the board, sync merges them, and never stops to ask: it makes a git merge commit and merges `brokan.db` task by task and field by field. A field changed on one side takes that change; when both changed the same field of a task, the later edit wins. A task or project deleted on one machine stays deleted unless the other one changed it or added to it meanwhile (a comment, time), and then it is kept. Tasks created on both machines are all kept: the ones already in the repo keep their numbers, and if this machine used the same number, its task gets the next free one and sync says so (`api#12 is now api#14`). Joining a repo that already holds a board merges this machine's board into it, and projects with the same slug become one. If another machine pushes at the same moment, sync fetches and merges again. `brokan sync --keep-local` or `--keep-remote` still replace one whole board with the other when you want that instead.
 
-Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:1317/mcp`, passing the project by name.
+For agents on several machines at once, run one board on a server: see below.
+
+## Run it on a server
+
+One board on a VPS at your own domain, over HTTPS, with a sign-in token: `deploy/` has a Docker Compose setup with Caddy that gets the certificate by itself.
+
+```sh
+cd deploy && cp .env.example .env   # set BROKAN_DOMAIN and BROKAN_TOKEN (openssl rand -hex 32)
+docker compose up -d --build
+```
+
+Then, on each machine with agents, `brokan connect https://brokan.example.com`: every agent's existing `brokan mcp` now uses the server's board, with project detection from the agent's repo as before. HTTP MCP clients can connect to `https://brokan.example.com/mcp` directly with `Authorization: Bearer <token>`. Settings, nginx and systemd: [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Settings
 
@@ -96,7 +108,7 @@ Everything lives in `~/brokan`: the board in `brokan.db`, settings in `config.to
 
 ```toml
 port = 1317
-listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: no logins, so only on one you trust
+listen = "127.0.0.1"   # "0.0.0.0" opens the board to your network: without BROKAN_TOKEN, no logins, so only on one you trust
 mcp_http = true        # MCP at /mcp
 ```
 

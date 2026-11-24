@@ -12,6 +12,12 @@ use std::time::{Duration, Instant};
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Where releases are published; `BROKAN_RELEASES_URL` points elsewhere, for tests.
+/// True when something else installs Brokan, like a container image with
+/// `BROKAN_UPDATES=off`: the board then never offers or installs updates itself.
+pub fn managed() -> bool {
+    std::env::var("BROKAN_UPDATES").is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"))
+}
+
 const RELEASES: &str = "https://github.com/ExcuseMeBro/brokan/releases/latest/download";
 
 /// How long a check for the latest version is reused: the board checks once a day.

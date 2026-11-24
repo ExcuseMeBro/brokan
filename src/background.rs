@@ -11,13 +11,13 @@ use anyhow::{Context, Result, bail};
 use crate::home::Home;
 use crate::web;
 
-pub async fn start(home: Home, port_override: Option<u16>, open: bool) -> Result<()> {
-    let port = port_override.unwrap_or(home.config.port);
+pub async fn start(home: Home, options: web::Options, open: bool) -> Result<()> {
+    let port = options.port.unwrap_or(home.config.port);
     if port == 0 {
         bail!("port 0 cannot be used for background startup; use --foreground");
     }
     let url = format!("http://localhost:{port}");
-    let listen = home.config.listen;
+    let listen = options.listen.unwrap_or(home.config.listen);
     if web::is_brokan(listen, port).await {
         println!("Brokan is already running at {url}");
         if open {
@@ -51,9 +51,7 @@ pub async fn start(home: Home, port_override: Option<u16>, open: bool) -> Result
             .with_context(|| format!("cannot open {}", log_path.display()))?;
         let mut cmd = Command::new(exe);
         cmd.arg("--foreground").arg("--no-open").arg("--home").arg(&home.dir);
-        if let Some(port) = port_override {
-            cmd.arg("--port").arg(port.to_string());
-        }
+        cmd.args(options.args());
         cmd.stdin(Stdio::null()).stdout(Stdio::from(log.try_clone()?)).stderr(Stdio::from(log));
         // A new session, plus detached standard streams, keeps the board alive
         // when the invoking terminal or its shell closes.

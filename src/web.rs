@@ -16,6 +16,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::access::{self, PublicUrl};
 use crate::home::Home;
 use crate::store::{self, Error, ImagesOf, Store, TaskPatch};
 use crate::{sync, update};
@@ -31,6 +32,64 @@ const LOGO: &[u8] = include_bytes!("logo.png");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
                    connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/// The sign-in page posts its form back to the board, and runs no script.
+const LOGIN_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; \
+                         form-action 'self'; frame-ancestors 'none'";
+
+/// How the board is served on this machine: flags, then the environment, then config.toml.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    pub port: Option<u16>,
+    pub listen: Option<IpAddr>,
+    /// Where the board is reached when it runs on a server, like https://brokan.example.com.
+    pub public_url: Option<PublicUrl>,
+    /// When set, every request must carry it (see `access`).
+    pub token: Option<String>,
+}
+
+impl Options {
+    /// Reads `BROKAN_PORT`, `BROKAN_LISTEN`, `BROKAN_PUBLIC_URL` and the token, for
+    /// what the flags left unset.
+    pub fn from_env(port: Option<u16>, listen: Option<IpAddr>, public_url: Option<String>) -> Result<Self> {
+        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let port = match port {
+            Some(p) => Some(p),
+            None => env("BROKAN_PORT").map(|p| p.trim().parse().context("BROKAN_PORT is not a port")).transpose()?,
+        };
+        let listen = match listen {
+            Some(l) => Some(l),
+            None => env("BROKAN_LISTEN")
+                .map(|l| l.trim().parse().context("BROKAN_LISTEN is not an IP address, like 0.0.0.0"))
+                .transpose()?,
+        };
+        let public_url = public_url.or_else(|| env("BROKAN_PUBLIC_URL")).map(|u| PublicUrl::parse(&u)).transpose()?;
+        let token = access::token_from_env()?;
+        if public_url.is_some() && token.is_none() {
+            bail!(
+                "a board with a public URL needs an access token: set BROKAN_TOKEN (or BROKAN_TOKEN_FILE), \
+                 for example to the output of `openssl rand -hex 32`"
+            );
+        }
+        Ok(Self { port, listen, public_url, token })
+    }
+
+    /// The arguments that give a background board these options; the token travels
+    /// in the environment, which the background board inherits, never on its command line.
+    pub fn args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(port) = self.port {
+            args.extend(["--port".into(), port.to_string()]);
+        }
+        if let Some(listen) = self.listen {
+            args.extend(["--listen".into(), listen.to_string()]);
+        }
+        if let Some(url) = &self.public_url {
+            args.extend(["--public-url".into(), url.origin.clone()]);
+        }
+        args
+    }
+}
+
 /// How often automatic sync runs. Debug builds may shorten it for tests.
 fn auto_sync_interval() -> std::time::Duration {
     let secs = if cfg!(debug_assertions) {
@@ -41,9 +100,9 @@ fn auto_sync_interval() -> std::time::Duration {
     std::time::Duration::from_secs(secs.max(1))
 }
 
-pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
-    let port = port.unwrap_or(home.config.port);
-    let listen = home.config.listen;
+pub async fn serve(home: Home, options: Options, open: bool) -> Result<()> {
+    let port = options.port.unwrap_or(home.config.port);
+    let listen = options.listen.unwrap_or(home.config.listen);
     let url = format!("http://localhost:{port}");
     let listener = match tokio::net::TcpListener::bind(SocketAddr::new(listen, port)).await {
         Ok(l) => l,
@@ -59,16 +118,27 @@ pub async fn serve(home: Home, port: Option<u16>, open: bool) -> Result<()> {
         }
         Err(e) => return Err(e).context(format!("cannot listen on {listen} port {port}")),
     };
-    let guard = Guard::new(port, !listen.is_loopback());
+    let mut guard = Guard::new(port, !listen.is_loopback());
+    guard.public = options.public_url.clone();
+    guard.token = options.token.clone();
     println!("Brokan board at {url}, data in {}", home.dir.display());
+    if let Some(public) = &guard.public {
+        println!("Public address: {}", public.origin);
+    }
     if guard.lan {
         if let Some(name) = guard.names.iter().find(|n| n.ends_with(".local")) {
             println!("On your network: http://{name}:{port} (or this machine's IP address)");
         }
-        println!("Anyone who can reach port {port} can read and change this board.");
+        if guard.token.is_none() {
+            println!("Anyone who can reach port {port} can read and change this board.");
+        }
+    }
+    if guard.token.is_some() {
+        println!("Sign-in required: browsers at /login, agents with Authorization: Bearer <token>.");
     }
     if home.config.mcp_http {
-        println!("MCP over HTTP at {url}/mcp");
+        let base = guard.public.as_ref().map_or(url.clone(), |p| p.origin.clone());
+        println!("MCP over HTTP at {base}/mcp");
     }
     if open {
         open_browser(&url);
@@ -138,6 +208,7 @@ async fn stop_signal() {
 }
 
 fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
+    let guard = Arc::new(guard);
     let mut app = Router::new();
     if home.config.mcp_http {
         app = app.nest_service("/mcp", crate::mcp::http_service(home.clone(), shutdown));
@@ -170,7 +241,25 @@ fn router(home: Home, guard: Guard, shutdown: CancellationToken) -> Router {
         .route("/api/sync", get(sync_status).post(sync_now).put(sync_repo))
         .route("/api/sync/automatic", put(sync_automatic))
         .route("/api/settings", patch(update_settings))
-        .layer(middleware::from_fn_with_state(Arc::new(guard), protect))
+        .route(
+            "/login",
+            get({
+                let guard = guard.clone();
+                move || login_form(guard)
+            })
+            .post({
+                let guard = guard.clone();
+                move |body: Bytes| login(guard, body)
+            }),
+        )
+        .route(
+            "/logout",
+            get({
+                let guard = guard.clone();
+                move || logout(guard)
+            }),
+        )
+        .layer(middleware::from_fn_with_state(guard, protect))
         .with_state(Arc::new(home))
 }
 
@@ -184,6 +273,10 @@ struct Guard {
     lan: bool,
     /// This machine's names, like `pi` and `pi.local`; filled only when `lan`.
     names: Vec<String>,
+    /// The domain the board is served at on a server, also accepted as Host and Origin.
+    public: Option<PublicUrl>,
+    /// The access token every request must carry, when set.
+    token: Option<String>,
 }
 
 impl Guard {
@@ -209,7 +302,7 @@ impl Guard {
                 }
             }
         }
-        Self { port, lan, names }
+        Self { port, lan, names, public: None, token: None }
     }
 
     fn allows(&self, host: &str) -> bool {
@@ -217,10 +310,16 @@ impl Guard {
             Some((n, p)) if !p.contains(']') => (n, Some(p)),
             _ => (host, None),
         };
+        let name = name.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
+        if let Some(public) = &self.public
+            && name.eq_ignore_ascii_case(&public.host)
+        {
+            // Through a reverse proxy the Host is the public one, with or without its port.
+            return port.is_none_or(|p| p.parse() == Ok(public.port) || p.parse() == Ok(self.port));
+        }
         if port.is_some_and(|p| p.parse() != Ok(self.port)) {
             return false;
         }
-        let name = name.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
         let ip = name.parse::<IpAddr>().ok();
         if name.eq_ignore_ascii_case("localhost") || ip.is_some_and(|ip| ip.is_loopback()) {
             return true;
@@ -230,30 +329,96 @@ impl Guard {
 }
 
 /// Refuses requests for a Host this board does not answer to, and browser
-/// requests sent from any page other than the board itself. Adds security
-/// headers to every reply.
+/// requests sent from any page other than the board itself. With a token, asks
+/// for it: a browser is sent to the sign-in page, an agent gets 401. Adds
+/// security headers to every reply.
 async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> Response {
-    let ok = {
+    let (ok, open, signed_in, page) = {
         let header = |name| req.headers().get(name).and_then(|h: &HeaderValue| h.to_str().ok());
         let host = header(header::HOST).unwrap_or("");
-        // The Origin a page from this board sends: http:// and the same host.
+        // The Origin a page from this board sends: http:// and the same host, or the
+        // public address it is served at.
         let same_origin = |o: &str| {
-            o.len() == host.len() + 7
+            (o.len() == host.len() + 7
                 && o.as_bytes()[..7].eq_ignore_ascii_case(b"http://")
-                && o.as_bytes()[7..].eq_ignore_ascii_case(host.as_bytes())
+                && o.as_bytes()[7..].eq_ignore_ascii_case(host.as_bytes()))
+                || guard.public.as_ref().is_some_and(|p| o.eq_ignore_ascii_case(&p.origin))
         };
-        guard.allows(host) && header(header::ORIGIN).is_none_or(same_origin)
+        let ok = guard.allows(host) && header(header::ORIGIN).is_none_or(same_origin);
+        let path = req.uri().path();
+        // What anyone may load: the sign-in page and what it shows, and the ping that
+        // tells a starting `brokan` the board is up.
+        let open = matches!(path, "/login" | "/logo.png" | "/api/ping");
+        let signed_in = guard.token.as_deref().is_none_or(|token| {
+            access::presented(header(header::AUTHORIZATION), header(header::COOKIE))
+                .is_some_and(|t| access::same(t, token))
+        });
+        let page = req.method() == axum::http::Method::GET && !path.starts_with("/api/") && !path.starts_with("/mcp");
+        (ok, open, signed_in, page)
     };
-    let mut res = if ok {
-        next.run(req).await
-    } else {
+    let mut res = if !ok {
         (StatusCode::FORBIDDEN, "brokan does not answer requests from other sites").into_response()
+    } else if signed_in || open {
+        next.run(req).await
+    } else if page {
+        (StatusCode::SEE_OTHER, [(header::LOCATION, "/login")]).into_response()
+    } else {
+        let mut res =
+            (StatusCode::UNAUTHORIZED, Json(json!({ "error": "sign in to this board first" }))).into_response();
+        res.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer realm=\"brokan\""));
+        res
     };
     let headers = res.headers_mut();
-    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    headers.entry(header::CONTENT_SECURITY_POLICY).or_insert(HeaderValue::from_static(CSP));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-cache"));
+    if guard.public.as_ref().is_some_and(|p| p.https) {
+        headers.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000"));
+    }
+    res
+}
+
+fn login_response(status: StatusCode, failed: bool) -> Response {
+    (status, [(header::CONTENT_SECURITY_POLICY, LOGIN_CSP)], Html(access::login_page(failed))).into_response()
+}
+
+async fn login_form(guard: Arc<Guard>) -> Response {
+    if guard.token.is_none() {
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    }
+    login_response(StatusCode::OK, false)
+}
+
+/// Checks the token from the sign-in form and keeps it in a cookie only this board
+/// reads: not from scripts, not sent by other sites, and only over HTTPS when the
+/// board is served that way.
+async fn login(guard: Arc<Guard>, body: Bytes) -> Response {
+    let Some(token) = guard.token.as_deref() else {
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    };
+    let given = access::form_field(&body, "token").unwrap_or_default();
+    if !access::same(given.trim(), token) {
+        // Slows down guessing; a token is far too long to guess anyway.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        return login_response(StatusCode::UNAUTHORIZED, true);
+    }
+    let secure = if guard.public.as_ref().is_some_and(|p| p.https) { "; Secure" } else { "" };
+    let cookie = format!("{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{secure}", access::COOKIE);
+    let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        res.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    res
+}
+
+async fn logout(guard: Arc<Guard>) -> Response {
+    let secure = if guard.public.as_ref().is_some_and(|p| p.https) { "; Secure" } else { "" };
+    let cookie = format!("{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}", access::COOKIE);
+    let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, "/login")]).into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        res.headers_mut().insert(header::SET_COOKIE, value);
+    }
     res
 }
 
@@ -753,6 +918,9 @@ struct UpdateQuery {
 /// This version, the latest release (`null` when GitHub can't be reached) and, when
 /// that one is newer, `available`.
 async fn update_status(Query(q): Query<UpdateQuery>) -> Response {
+    if update::managed() {
+        return Json(json!({ "current": update::CURRENT, "latest": null, "available": null })).into_response();
+    }
     let now = q.now.is_some();
     let latest = tokio::task::spawn_blocking(move || update::latest(now)).await.ok().flatten();
     let available = latest.clone().filter(|v| update::newer(v));
@@ -761,6 +929,10 @@ async fn update_status(Query(q): Query<UpdateQuery>) -> Response {
 
 /// Installs the latest release over this program, answers, then starts it in place.
 async fn update_now() -> Response {
+    if update::managed() {
+        let error = "this Brokan is updated with its container or package, not from the board";
+        return (StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response();
+    }
     match tokio::task::spawn_blocking(update::install).await {
         Ok(Ok(exe)) => {
             tokio::spawn(async move {
@@ -871,9 +1043,88 @@ mod tests {
         assert_eq!(set.deadline_at, Some(Some("2024-02-29T12:30:00Z".into())));
     }
 
+    /// Sends one raw HTTP/1.1 request to the board on `port` and returns the whole reply.
+    async fn raw(port: u16, request: String) -> String {
+        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(request.as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        conn.read_to_string(&mut reply).await.unwrap();
+        reply
+    }
+
+    #[tokio::test]
+    async fn a_public_board_asks_for_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::open(dir.path().to_path_buf()).unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = "t0ken-t0ken-t0ken-t0ken-t0ken";
+        let mut guard = Guard::new(port, true);
+        guard.public = Some(PublicUrl::parse("https://brokan.example.com").unwrap());
+        guard.token = Some(token.into());
+        let stop = CancellationToken::new();
+        let app = router(home, guard, stop.clone());
+        tokio::spawn(axum::serve(listener, app).with_graceful_shutdown(stop.clone().cancelled_owned()).into_future());
+
+        let get = |path: &str, host: &str, extra: &str| {
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra}\r\n")
+        };
+        let host = "brokan.example.com";
+        let status = |reply: &str| reply.split_whitespace().nth(1).unwrap_or_default().to_string();
+        let bearer = format!("Authorization: Bearer {token}\r\n");
+
+        let page = raw(port, get("/", host, "")).await;
+        assert_eq!(status(&page), "303", "{page}");
+        assert!(page.contains("location: /login"), "{page}");
+        assert_eq!(status(&raw(port, get("/api/board", host, "")).await), "401");
+        assert_eq!(
+            status(&raw(port, get("/api/board", host, "Authorization: Bearer wrong-wrong-wrong-wrong\r\n")).await),
+            "401"
+        );
+        assert_eq!(status(&raw(port, get("/api/board", host, &bearer)).await), "200");
+        assert_eq!(status(&raw(port, get("/api/board", "brokan.example.com:443", &bearer)).await), "200");
+        assert_eq!(
+            status(&raw(port, get("/api/board", host, &format!("Cookie: a=b; brokan_auth={token}\r\n"))).await),
+            "200"
+        );
+        assert_eq!(status(&raw(port, get("/api/board", "evil.example.com", &bearer)).await), "403");
+        assert_eq!(status(&raw(port, get("/api/ping", host, "")).await), "200");
+        assert_eq!(status(&raw(port, get("/login", host, "")).await), "200");
+
+        let post = |path: &str, extra: &str, body: &str| {
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n{extra}\r\n{body}",
+                body.len()
+            )
+        };
+        let form = "Content-Type: application/x-www-form-urlencoded\r\nOrigin: https://brokan.example.com\r\n";
+        assert_eq!(status(&raw(port, post("/login", form, "token=nope")).await), "401");
+        let signed = raw(port, post("/login", form, &format!("token={token}"))).await;
+        assert_eq!(status(&signed), "303", "{signed}");
+        assert!(
+            signed.contains(&format!("set-cookie: brokan_auth={token}; Path=/; HttpOnly; SameSite=Strict")),
+            "{signed}"
+        );
+        assert!(signed.contains("; Secure"), "{signed}");
+
+        let json = "Content-Type: application/json\r\n";
+        let create =
+            |origin: &str| post("/api/projects", &format!("{json}{bearer}Origin: {origin}\r\n"), r#"{"slug":"api"}"#);
+        assert_eq!(status(&raw(port, create("https://evil.example.com")).await), "403");
+        assert_eq!(status(&raw(port, create("https://brokan.example.com")).await), "200");
+
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+        let mcp = format!("{json}Accept: application/json, text/event-stream\r\n");
+        assert_eq!(status(&raw(port, post("/mcp", &mcp, init)).await), "401");
+        let opened = raw(port, post("/mcp", &format!("{mcp}{bearer}"), init)).await;
+        assert_eq!(status(&opened), "200", "{opened}");
+        assert!(opened.contains("protocolVersion"), "{opened}");
+        stop.cancel();
+    }
+
     #[test]
     fn hosts() {
-        let local = Guard { port: 1317, lan: false, names: vec![] };
+        let local = Guard { port: 1317, lan: false, names: vec![], public: None, token: None };
         for ok in ["localhost", "localhost:1317", "127.0.0.1:1317", "[::1]:1317", "LOCALHOST:1317"] {
             assert!(local.allows(ok), "{ok}");
         }
@@ -881,12 +1132,27 @@ mod tests {
             assert!(!local.allows(bad), "{bad}");
         }
 
-        let lan = Guard { port: 1317, lan: true, names: vec!["pi".into(), "pi.local".into()] };
+        let lan =
+            Guard { port: 1317, lan: true, names: vec!["pi".into(), "pi.local".into()], public: None, token: None };
         for ok in ["localhost:1317", "192.168.1.5:1317", "[fe80::1]:1317", "pi.local:1317", "pi:1317", "PI.LOCAL."] {
             assert!(lan.allows(ok), "{ok}");
         }
         for bad in ["evil.com:1317", "pi.evil.com:1317", "192.168.1.5:80"] {
             assert!(!lan.allows(bad), "{bad}");
+        }
+
+        let public = Guard {
+            port: 1317,
+            lan: true,
+            names: vec![],
+            public: Some(PublicUrl::parse("https://brokan.example.com").unwrap()),
+            token: None,
+        };
+        for ok in ["brokan.example.com", "BROKAN.example.com.", "brokan.example.com:443", "brokan.example.com:1317"] {
+            assert!(public.allows(ok), "{ok}");
+        }
+        for bad in ["brokan.example.com:80", "example.com", "x.brokan.example.com", "brokan.example.com.evil.com"] {
+            assert!(!public.allows(bad), "{bad}");
         }
     }
 }

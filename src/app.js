@@ -45,12 +45,18 @@ const state = {
 
 // ---------- helpers ----------
 
+// A board on a server asks for its token: when the sign-in lapses, go sign in again.
+function signInIfAsked(res) {
+  if (res.status === 401) location.assign("/login");
+}
+
 async function api(method, path, body) {
   const res = await fetch("/api" + path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
+  signInIfAsked(res);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -1873,6 +1879,7 @@ function imagesIn(transfer) {
 
 async function uploadImage(image) {
   const res = await fetch("/api/images", { method: "POST", headers: { "Content-Type": image.type }, body: image });
+  signInIfAsked(res);
   const reply = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(reply.error || res.statusText);
   return reply.file;
@@ -2103,6 +2110,7 @@ async function syncNow() {
   toast("Syncing…");
   try {
     const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    signInIfAsked(res);
     const reply = await res.json().catch(() => ({}));
     if (res.ok) { toast(reply.message); loadBoard(); }
     else toast(reply.error || res.statusText);
@@ -2154,6 +2162,7 @@ $("#sync-form").addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/api/sync", { method: "PUT", headers: { "Content-Type": "application/json" },
                                            body: JSON.stringify({ url: $("#sync-url").value }) });
+    signInIfAsked(res);
     const reply = await res.json().catch(() => ({}));
     if (res.ok) {
       syncRemote = reply.remote;
