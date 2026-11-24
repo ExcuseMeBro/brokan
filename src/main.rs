@@ -4,6 +4,7 @@ mod git_overview;
 mod home;
 mod mcp;
 mod mcp_metrics;
+mod merge;
 mod service;
 mod store;
 mod sync;
@@ -57,10 +58,10 @@ enum Command {
         /// Sync with this git repo from now on, like https://github.com/you/brokan-data or you/brokan-data
         #[arg(long, value_name = "URL")]
         repo: Option<String>,
-        /// When both sides changed, keep this machine's board and overwrite the remote
+        /// Instead of merging when both sides changed, overwrite the remote with this machine's board
         #[arg(long, conflicts_with = "keep_remote")]
         keep_local: bool,
-        /// When both sides changed, take the remote board and drop this machine's changes
+        /// Instead of merging when both sides changed, take the remote board and drop this machine's changes
         #[arg(long)]
         keep_remote: bool,
     },

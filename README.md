@@ -30,7 +30,7 @@ Run `brokan` to start the board in the background and open it in your browser. T
 | `brokan --foreground` | Runs attached to the terminal until Ctrl-C; use `--no-open` to skip opening the browser |
 | `brokan service install` | Keeps the board running and starts it at login; `uninstall` removes it |
 | `brokan mcp` | The MCP server for agents: they start it, not you |
-| `brokan sync` | Commits the board and pulls or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` when both sides changed |
+| `brokan sync` | Commits the board and pulls, merges or pushes it; `--repo <url>` sets the repo, `--keep-local` or `--keep-remote` replace one whole board instead of merging |
 | `brokan export` | Prints the board as Markdown; `-f json` for JSON, `-p <project>` for one project, `-o <file>` to save it |
 | `brokan update` | Installs the latest release and restarts the board's service; the board offers new versions too |
 | `brokan init` | Creates the data folder; the first run does this too |
@@ -82,9 +82,11 @@ A laptop, a desktop, a Raspberry Pi: they all share one board through a private 
 
 1. [Create an empty private repo](https://github.com/new?name=brokan-data&visibility=private) on GitHub, or anywhere git can push.
 2. Click Settings at the bottom of the sidebar, choose Sync and paste its URL. This is the only repo URL entered in Brokan; it syncs the whole board, not individual projects. Brokan makes `~/brokan` a git repo and pushes the board.
-3. On each other machine, do the same with the same URL: Brokan offers to use the board that's already there.
+3. On each other machine, do the same with the same URL: its board is merged with the one already there.
 
-Automatic sync runs every 10 minutes while the Brokan board server is running, once a repository is configured. Enable or disable it per machine in Settings → Sync; the latest automatic result appears there. Git credentials must work without an interactive prompt. You can also choose Sync or run `brokan sync` when switching machines. If both machines changed the board, automatic sync stops without choosing a side; use Sync to choose which board to keep. To move to another repo, change it in Settings, under Sync.
+Automatic sync runs every 10 minutes while the Brokan board server is running, once a repository is configured. Enable or disable it per machine in Settings → Sync; the latest automatic result appears there. Git credentials must work without an interactive prompt. You can also choose Sync or run `brokan sync` when switching machines. To move to another repo, change it in Settings, under Sync.
+
+When both machines changed the board, sync merges them, and never stops to ask: it makes a git merge commit and merges `brokan.db` task by task and field by field. A field changed on one side takes that change; when both changed the same field of a task, the later edit wins. A task or project deleted on one machine stays deleted unless the other one changed it or added to it meanwhile (a comment, time), and then it is kept. Tasks created on both machines are all kept: the ones already in the repo keep their numbers, and if this machine used the same number, its task gets the next free one and sync says so (`api#12 is now api#14`). Joining a repo that already holds a board merges this machine's board into it, and projects with the same slug become one. If another machine pushes at the same moment, sync fetches and merges again. `brokan sync --keep-local` or `--keep-remote` still replace one whole board with the other when you want that instead.
 
 Sync is for switching machines: work on one, sync, then move to the other. For agents on several machines at once, run one board with `listen = "0.0.0.0"` on a network you trust, and point every agent at `http://<host>:1317/mcp`, passing the project by name.
 

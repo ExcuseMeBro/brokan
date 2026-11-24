@@ -692,7 +692,7 @@ struct SyncRequest {
 }
 
 /// The board's sync button: the same as `brokan sync`, without git ever prompting. When
-/// both sides changed, answers 409 with `diverged`, and the board asks which side to keep.
+/// both sides changed, the boards are merged; `keep` replaces one with the other instead.
 async fn sync_now(State(home): Shared, Json(r): Json<SyncRequest>) -> Response {
     let keep = match r.keep.as_deref() {
         Some("local") => Some(sync::Keep::Local),
@@ -701,11 +701,7 @@ async fn sync_now(State(home): Shared, Json(r): Json<SyncRequest>) -> Response {
     };
     match tokio::task::spawn_blocking(move || sync::sync(&home, keep, false)).await {
         Ok(Ok(message)) => Json(json!({ "message": message })).into_response(),
-        Ok(Err(e)) => match e.downcast_ref::<sync::Diverged>() {
-            Some(d) => (StatusCode::CONFLICT, Json(json!({ "error": d.message, "diverged": true, "first": d.first })))
-                .into_response(),
-            None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e:#}") }))).into_response(),
-        },
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e:#}") }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }

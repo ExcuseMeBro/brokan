@@ -8,10 +8,14 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 use crate::home::{Home, NO_LOCKS};
+use crate::merge;
 use crate::store::Store;
 
 /// How long a sync waits for a lock that is just about to be released.
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many times sync fetches and merges again when another machine pushed first.
+const PUSH_RETRIES: usize = 5;
 
 /// Local preferences and lock live outside the repository, per board and machine.
 fn local_path(home: &Home, extension: &str) -> std::path::PathBuf {
@@ -35,9 +39,6 @@ pub fn run_auto(home: &Home) {
     }
     let message = match sync(home, None, false) {
         Ok(message) => message,
-        Err(e) if e.downcast_ref::<Diverged>().is_some() => {
-            "Both boards changed. Run Sync and choose which board to keep.".to_string()
-        }
         Err(_) => "Automatic sync failed. Run Sync to see the error.".to_string(),
     };
     let path = local_path(home, "auto-sync-status");
@@ -78,26 +79,24 @@ fn operation_lock(home: &Home) -> Result<File> {
     }
 }
 
+/// Instead of merging, when both sides changed: which whole board to keep.
+#[derive(Clone, Copy)]
 pub enum Keep {
     Local,
     Remote,
 }
 
-/// The error when both sides changed the board: the caller asks which one to keep.
-/// `first` when this is the first sync with that repo, which already holds a board.
+/// Another machine pushed between this sync's fetch and its push.
 #[derive(Debug)]
-pub struct Diverged {
-    pub message: String,
-    pub first: bool,
-}
+struct Raced;
 
-impl std::fmt::Display for Diverged {
+impl std::fmt::Display for Raced {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+        f.write_str("another machine pushed to the repo at the same time; sync again")
     }
 }
 
-impl std::error::Error for Diverged {}
+impl std::error::Error for Raced {}
 
 /// The URL of the repo the board syncs with, or `None` before it's set up.
 pub fn remote_url(home: &Home) -> Option<String> {
@@ -205,12 +204,25 @@ fn remote(dir: &Path) -> Result<Option<(String, String)>> {
     Ok(found)
 }
 
-/// Commits the board, then pulls or pushes it, and says what it did. With `prompt`
+/// Commits the board, then pulls, merges or pushes it, and says what it did. When both
+/// sides changed the board they are merged (see `merge`), so sync never stops for a
+/// choice; `keep` replaces one whole board with the other instead. With `prompt`
 /// false, as from the board's button, git never waits for a password; a missing
 /// credential fails with git's message instead.
 pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     let _operation = operation_lock(home)?;
+    let mut attempt = 0;
+    loop {
+        match sync_once(home, keep, prompt) {
+            Err(e) if e.downcast_ref::<Raced>().is_some() && attempt < PUSH_RETRIES => attempt += 1,
+            outcome => return outcome,
+        }
+    }
+}
+
+fn sync_once(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     let dir = &home.dir;
+    let push = |args: &[&str]| push(dir, prompt, args);
     let git = |args: &[&str]| git(dir, prompt, args);
     let git_ok = |args: &[&str]| git_ok(dir, prompt, args);
     let Some((remote, _)) = remote(dir)? else {
@@ -230,15 +242,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         git(&["add", "--all"])?;
         if lock.is_some() { String::new() } else { format!("\n{NO_LOCKS}") }
     };
-    if !git_ok(&["diff", "--cached", "--quiet"]) {
-        let message = format!("brokan sync from {}", hostname());
-        // A machine where git doesn't know the user yet still syncs.
-        let named = git_ok(&["config", "user.email"]);
-        let anonymous = ["-c", "user.name=Brokan", "-c", "user.email=brokan@localhost"];
-        let mut args: Vec<&str> = if named { vec![] } else { anonymous.to_vec() };
-        args.extend(["commit", "--quiet", "--message", &message]);
-        git(&args)?;
-    }
+    commit_staged(dir, prompt)?;
 
     let mut branch = git(&["symbolic-ref", "--short", "HEAD"])?;
     if !git_ok(&["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{remote}/{branch}")]) {
@@ -251,7 +255,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             .collect();
         match &others[..] {
             [] => {
-                git(&["push", "--quiet", "--set-upstream", &remote, &branch])?;
+                push(&["push", "--quiet", "--set-upstream", &remote, &branch])?;
                 return Ok(format!("Pushed the board to {remote}/{branch} for the first time.{note}"));
             }
             // The repo's board is on another branch, like master: follow it, rather than
@@ -282,7 +286,7 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
     let done = match (ahead, behind, keep) {
         (0, 0, _) => format!("Already in sync with {upstream}."),
         (_, 0, _) => {
-            git(&["push", "--quiet"])?;
+            push(&["push", "--quiet"])?;
             format!("Pushed this machine's changes to {upstream}.")
         }
         (0, _, _) => {
@@ -290,25 +294,13 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
             format!("Pulled the latest board from {upstream}.")
         }
         (_, _, None) => {
-            let what = if first {
-                format!("{upstream} already holds a board.")
-            } else {
-                format!(
-                    "This machine and {upstream} both changed the board since the last sync, and a database file can't be merged."
-                )
-            };
-            return Err(Diverged {
-                message: format!(
-                    "{what} Keep one side:\n  \
-                     brokan sync --keep-remote  use the board in {upstream} here (this machine's is kept in brokan.db.bak)\n  \
-                     brokan sync --keep-local   overwrite {upstream} with this machine's board"
-                ),
-                first,
-            }
-            .into());
+            let report = merge_upstream(home, prompt, &upstream)?;
+            push(&["push", "--quiet"])?;
+            let what = if first { "the board already in" } else { "the changes made meanwhile in" };
+            format!("Merged this machine's board with {what} {upstream}, and pushed the result.{}", report.summary())
         }
         (_, _, Some(Keep::Local)) => {
-            git(&["push", "--quiet", "--force-with-lease"])?;
+            push(&["push", "--quiet", "--force-with-lease"])?;
             format!("Overwrote {upstream} with this machine's board.")
         }
         (_, _, Some(Keep::Remote)) => {
@@ -320,6 +312,127 @@ pub fn sync(home: &Home, keep: Option<Keep>, prompt: bool) -> Result<String> {
         }
     };
     Ok(format!("{done}{note}"))
+}
+
+/// Commits what `git add` staged, if anything.
+fn commit_staged(dir: &Path, prompt: bool) -> Result<()> {
+    if git_ok(dir, prompt, &["diff", "--cached", "--quiet"]) {
+        return Ok(());
+    }
+    commit(dir, prompt, &format!("brokan sync from {}", hostname()))
+}
+
+fn commit(dir: &Path, prompt: bool, message: &str) -> Result<()> {
+    // A machine where git doesn't know the user yet still syncs.
+    let named = git_ok(dir, prompt, &["config", "user.email"]);
+    let anonymous = ["-c", "user.name=Brokan", "-c", "user.email=brokan@localhost"];
+    let mut args: Vec<&str> = if named { vec![] } else { anonymous.to_vec() };
+    // Hooks are for people's code; a board commit must not wait on them.
+    args.extend(["commit", "--quiet", "--no-verify", "--message", message]);
+    git(dir, prompt, &args)?;
+    Ok(())
+}
+
+/// Pushes, telling a push another machine beat (`Raced`) apart from other failures.
+fn push(dir: &Path, prompt: bool, args: &[&str]) -> Result<()> {
+    match git(dir, prompt, args) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let text = format!("{e:#}");
+            let raced = ["[rejected]", "non-fast-forward", "fetch first", "stale info", "[remote rejected]"]
+                .iter()
+                .any(|m| text.contains(m));
+            if raced { Err(Raced.into()) } else { Err(e) }
+        }
+    }
+}
+
+/// Merges `upstream` into this machine's board: a git merge commit for the folder,
+/// with brokan.db merged row by row (`merge::merge`). Holds the board's lock from
+/// reading this machine's board until the merged one is in place, so no write made
+/// meanwhile is lost; on any failure the merge is undone and the board left as it was.
+fn merge_upstream(home: &Home, prompt: bool, upstream: &str) -> Result<merge::Report> {
+    let dir = &home.dir;
+    let git = |args: &[&str]| git(dir, prompt, args);
+    let _lock = home.lock_exclusive()?;
+    Store::open(&home.db_path(), None)?.settle()?;
+    // Writes since sync committed belong in this merge too, and git needs a clean tree.
+    git(&["add", "--all"])?;
+    commit_staged(dir, prompt)?;
+
+    let work = dir.join(".git").join("brokan-merge");
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(&work).context("cannot make a folder for the merge")?;
+    let (base, remote, local) = (work.join("base.db"), work.join("remote.db"), work.join("local.db"));
+    merge::copy_board(&home.db_path(), &local)?;
+    let has_remote = blob(dir, prompt, &format!("{upstream}:brokan.db"), &remote)?;
+    // Two boards that never synced before share no history: merge against an empty one.
+    let has_base = match git(&["merge-base", "HEAD", upstream]) {
+        Ok(rev) => blob(dir, prompt, &format!("{rev}:brokan.db"), &base)?,
+        Err(_) => false,
+    };
+
+    let result = (|| -> Result<merge::Report> {
+        // Every other file merges as git does, this machine's side taking a clash.
+        let merged =
+            git(&["merge", "--quiet", "--no-commit", "--no-ff", "--allow-unrelated-histories", "-X", "ours", upstream]);
+        if !git_ok(dir, prompt, &["rev-parse", "--quiet", "--verify", "MERGE_HEAD"]) {
+            merged?;
+            bail!("git did not start the merge with {upstream}");
+        }
+        resolve_unmerged(dir, prompt)?;
+        let report = if has_remote {
+            if !has_base {
+                let _ = fs::remove_file(&base);
+            }
+            for db in [&base, &remote, &local] {
+                Store::open(db, None)?.migrate()?;
+            }
+            let report = merge::merge(&remote, &base, &local)?;
+            fs::rename(&remote, home.db_path()).context("cannot put the merged board in place")?;
+            report
+        } else {
+            merge::copy_board(&local, &home.db_path())?;
+            merge::Report::default()
+        };
+        git(&["add", "--all"])?;
+        commit(dir, prompt, &format!("brokan sync: merged boards on {}", hostname()))?;
+        Ok(report)
+    })();
+    if result.is_err() {
+        let _ = git(&["merge", "--abort"]);
+        let _ = merge::copy_board(&local, &home.db_path());
+    }
+    let _ = fs::remove_dir_all(&work);
+    let report = result?;
+    Store::open(&home.db_path(), None)?.migrate()?;
+    Ok(report)
+}
+
+/// Settles any path git could not merge by itself: this machine's version when it has
+/// one, otherwise the repo's, so a file is never lost to a delete on one side.
+fn resolve_unmerged(dir: &Path, prompt: bool) -> Result<()> {
+    let paths = git(dir, prompt, &["diff", "--name-only", "--diff-filter=U", "-z"])?;
+    for path in paths.split('\0').filter(|p| !p.is_empty()) {
+        let ours = git_ok(dir, prompt, &["cat-file", "-e", &format!(":2:{path}")]);
+        let side = if ours { "--ours" } else { "--theirs" };
+        git(dir, prompt, &["checkout", side, "--", path])?;
+        git(dir, prompt, &["add", "--", path])?;
+    }
+    Ok(())
+}
+
+/// Writes the file `spec` (`rev:path`) to `to`; false when that commit has no such file.
+fn blob(dir: &Path, prompt: bool, spec: &str, to: &Path) -> Result<bool> {
+    if !git_ok(dir, prompt, &["cat-file", "-e", spec]) {
+        return Ok(false);
+    }
+    let out = command(dir, prompt, &["cat-file", "blob", spec]).output().context("cannot run git")?;
+    if !out.status.success() {
+        bail!("git cat-file {spec} failed:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    fs::write(to, out.stdout).with_context(|| format!("cannot write {}", to.display()))?;
+    Ok(true)
 }
 
 /// Lets `pull` replace brokan.db while no connection is open, then brings it up to date
@@ -375,6 +488,7 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::TaskPatch;
 
     /// A machine's data folder, syncing with the bare repo `remote`.
     fn machine(dir: &Path, remote: &Path) -> Home {
@@ -395,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_sync_respects_setting_and_refuses_divergence() {
+    fn automatic_sync_respects_setting_and_merges_divergence() {
         let tmp = tempfile::tempdir().unwrap();
         let (a, b) = two_machines(tmp.path());
         set_auto_enabled(&a, false).unwrap();
@@ -407,9 +521,195 @@ mod tests {
         assert!(auto_status(&a).unwrap().contains("Pushed"));
         b.store().unwrap().create_project("second", "", None).unwrap();
         run_auto(&b);
-        assert!(auto_status(&b).unwrap().contains("Both boards changed"));
-        assert!(b.store().unwrap().list_projects().unwrap().iter().any(|p| p.slug == "second"));
-        assert!(a.store().unwrap().list_projects().unwrap().iter().any(|p| p.slug == "first"));
+        assert!(auto_status(&b).unwrap().contains("Merged"), "{:?}", auto_status(&b));
+        run_auto(&a);
+        for home in [&a, &b] {
+            let slugs: Vec<String> =
+                home.store().unwrap().list_projects().unwrap().into_iter().map(|p| p.slug).collect();
+            assert!(slugs.contains(&"first".into()) && slugs.contains(&"second".into()), "{slugs:?}");
+        }
+    }
+
+    fn patch(title: Option<&str>, description: Option<&str>) -> TaskPatch {
+        TaskPatch { title: title.map(Into::into), description: description.map(Into::into), ..Default::default() }
+    }
+
+    type Board = (Vec<(String, String, String, String)>, Vec<String>);
+
+    /// Every task of the board as (key, title, description, status), and its comment bodies.
+    fn board(home: &Home) -> Board {
+        let store = home.store().unwrap();
+        let tasks = store.list_tasks(None, None).unwrap();
+        let mut comments = Vec::new();
+        for t in &tasks {
+            comments.extend(store.list_comments(t.id).unwrap().into_iter().map(|c| format!("{}:{}", t.key(), c.body)));
+        }
+        let mut rows: Vec<_> = tasks.into_iter().map(|t| (t.key(), t.title, t.description, t.status)).collect();
+        rows.sort();
+        comments.sort();
+        (rows, comments)
+    }
+
+    #[test]
+    fn both_machines_changes_merge_field_by_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = two_machines(tmp.path());
+        let api = a.store().unwrap().create_project("api", "", None).unwrap();
+        let shared = a.store().unwrap().create_task(api.id, "shared", "").unwrap();
+        let gone = a.store().unwrap().create_task(api.id, "gone", "").unwrap();
+        let kept = a.store().unwrap().create_task(api.id, "kept", "").unwrap();
+        sync(&a, None, false).unwrap();
+        sync(&b, None, false).unwrap();
+
+        // Machine a: retitles one task, adds one, deletes two.
+        a.store().unwrap().update_task(shared.id, patch(Some("from a"), None)).unwrap();
+        let from_a = a.store().unwrap().create_task(api.id, "new on a", "").unwrap();
+        a.store().unwrap().delete_task(gone.id).unwrap();
+        a.store().unwrap().delete_task(kept.id).unwrap();
+        sync(&a, None, false).unwrap();
+
+        // Machine b, meanwhile: describes the same task, adds a task with the same id,
+        // comments on it, and comments on a task a deleted.
+        let sb = b.store().unwrap();
+        sb.update_task(shared.id, patch(None, Some("from b"))).unwrap();
+        let from_b = sb.create_task(api.id, "new on b", "").unwrap();
+        assert_eq!(from_a.id, from_b.id, "both machines picked the same id");
+        sb.add_comment(from_b.id, "b", "note on b's task", &[]).unwrap();
+        sb.add_comment(kept.id, "b", "still needed", &[]).unwrap();
+        drop(sb);
+        let message = sync(&b, None, false).unwrap();
+        assert!(message.contains("Merged"), "{message}");
+        assert!(message.contains(&format!("api#{} is now api#", from_b.id)), "{message}");
+        sync(&a, None, false).unwrap();
+
+        let (tasks, comments) = board(&b);
+        assert_eq!(board(&a), (tasks.clone(), comments.clone()), "both machines hold the same board");
+        let titles: Vec<&str> = tasks.iter().map(|t| t.1.as_str()).collect();
+        assert!(titles.contains(&"new on a") && titles.contains(&"new on b") && titles.contains(&"kept"), "{titles:?}");
+        assert!(!titles.contains(&"gone"), "an untouched delete applies: {titles:?}");
+        let merged = tasks.iter().find(|t| t.1 == "from a").unwrap();
+        assert_eq!(merged.2, "from b");
+        // a's task kept its published id; b's moved, with its comment.
+        let a_task = tasks.iter().find(|t| t.1 == "new on a").unwrap();
+        let b_task = tasks.iter().find(|t| t.1 == "new on b").unwrap();
+        assert_eq!(a_task.0, format!("api#{}", from_a.id));
+        assert!(comments.contains(&format!("{}:note on b's task", b_task.0)), "{comments:?}");
+        assert!(comments.iter().any(|c| c.ends_with(":still needed")), "{comments:?}");
+        // The merge is a real git merge: both histories are in it.
+        let merges = git(&b.dir, false, &["rev-list", "--merges", "--count", "HEAD"]).unwrap();
+        assert_eq!(merges, "1");
+    }
+
+    #[test]
+    fn same_field_takes_the_newer_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = two_machines(tmp.path());
+        let api = a.store().unwrap().create_project("api", "", None).unwrap();
+        let task = a.store().unwrap().create_task(api.id, "start", "").unwrap();
+        sync(&a, None, false).unwrap();
+        sync(&b, None, false).unwrap();
+        for (home, title, at) in [(&a, "older", "2001-01-01T00:00:00Z"), (&b, "newer", "2002-01-01T00:00:00Z")] {
+            home.store().unwrap().update_task(task.id, patch(Some(title), None)).unwrap();
+            let db = rusqlite::Connection::open(home.db_path()).unwrap();
+            db.execute("UPDATE tasks SET updated_at = ?1 WHERE id = ?2", rusqlite::params![at, task.id]).unwrap();
+        }
+        sync(&b, None, false).unwrap();
+        sync(&a, None, false).unwrap();
+        sync(&b, None, false).unwrap();
+        for home in [&a, &b] {
+            assert_eq!(home.store().unwrap().get_task(task.id).unwrap().title, "newer");
+        }
+    }
+
+    #[test]
+    fn first_sync_with_a_repo_that_has_a_board_merges_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, _) = two_machines(tmp.path());
+        let api = a.store().unwrap().create_project("api", "", None).unwrap();
+        a.store().unwrap().create_task(api.id, "from a", "").unwrap();
+        sync(&a, None, false).unwrap();
+
+        // A machine that used Brokan on its own before joining, with a project of the
+        // same name and one of its own.
+        let c = Home::open(tmp.path().join("c")).unwrap();
+        let c_api = c.store().unwrap().create_project("api", "", None).unwrap();
+        c.store().unwrap().create_task(c_api.id, "from c", "").unwrap();
+        let solo = c.store().unwrap().create_project("solo", "", None).unwrap();
+        c.store().unwrap().create_task(solo.id, "solo task", "").unwrap();
+        set_remote(&c, tmp.path().join("remote.git").to_str().unwrap(), false).unwrap();
+        let message = sync(&c, None, false).unwrap();
+        assert!(message.contains("Merged"), "{message}");
+        sync(&a, None, false).unwrap();
+
+        for home in [&a, &c] {
+            let (tasks, _) = board(home);
+            let keys: Vec<String> =
+                tasks.iter().map(|t| format!("{}:{}", t.0.split('#').next().unwrap(), t.1)).collect();
+            for want in ["api:from a", "api:from c", "solo:solo task"] {
+                assert!(keys.contains(&want.to_string()), "{want} missing from {keys:?}");
+            }
+            let projects = home.store().unwrap().list_projects().unwrap();
+            assert_eq!(projects.iter().filter(|p| p.slug == "api").count(), 1);
+        }
+    }
+
+    #[test]
+    fn merged_timers_keep_one_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = two_machines(tmp.path());
+        let api = a.store().unwrap().create_project("api", "", None).unwrap();
+        let one = a.store().unwrap().create_task(api.id, "one", "").unwrap();
+        let two = a.store().unwrap().create_task(api.id, "two", "").unwrap();
+        sync(&a, None, false).unwrap();
+        sync(&b, None, false).unwrap();
+        a.store().unwrap().start_timer(one.id).unwrap();
+        b.store().unwrap().start_timer(two.id).unwrap();
+        sync(&a, None, false).unwrap();
+        sync(&b, None, false).unwrap();
+        let store = b.store().unwrap();
+        let running =
+            [one.id, two.id].iter().filter(|id| store.time_report(**id).unwrap().running_since.is_some()).count();
+        assert_eq!(running, 1);
+    }
+
+    #[test]
+    fn a_push_raced_by_another_machine_merges_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = two_machines(tmp.path());
+        a.store().unwrap().create_project("from-a", "", None).unwrap();
+        b.store().unwrap().create_project("from-b", "", None).unwrap();
+        // A hook in the repo that lets the first push in only after a lands its own, as
+        // if a pushed between b's fetch and b's push.
+        let remote = tmp.path().join("remote.git");
+        let hook = remote.join("hooks/pre-receive");
+        let a_dir = a.dir.display().to_string();
+        let marker = tmp.path().join("raced");
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nif [ ! -e '{m}' ]; then touch '{m}'; unset $(git rev-parse --local-env-vars); \
+                 git -C '{a}' push --quiet >/dev/null 2>&1; exit 1; fi\n",
+                m = marker.display(),
+                a = a_dir
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // a commits locally first, so the hook has something to push.
+        let lock = a.lock_exclusive().unwrap();
+        git(&a.dir, false, &["add", "--all"]).unwrap();
+        drop(lock);
+        commit_staged(&a.dir, false).unwrap();
+        let message = sync(&b, None, false).unwrap();
+        assert!(message.contains("Merged"), "{message}");
+        assert!(marker.exists(), "the first push was turned away");
+        sync(&a, None, false).unwrap();
+        let slugs: Vec<String> = a.store().unwrap().list_projects().unwrap().into_iter().map(|p| p.slug).collect();
+        assert!(slugs.contains(&"from-a".into()) && slugs.contains(&"from-b".into()), "{slugs:?}");
     }
 
     #[test]

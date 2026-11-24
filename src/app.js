@@ -2094,35 +2094,20 @@ schedulePoll();
 // ---------- sync ----------
 
 // Sync runs `brokan sync`: it commits the board and pulls or pushes it through the data
-// folder's git remote. When both machines changed it, the board asks which to keep.
+// folder's git remote. When both machines changed it, the two boards are merged.
 let syncing = false;
 
-async function syncNow(keep) {
+async function syncNow() {
   if (syncing) return;
   syncing = true;
   toast("Syncing…");
-  let diverged = null;
   try {
-    const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep }) });
+    const res = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
     const reply = await res.json().catch(() => ({}));
     if (res.ok) { toast(reply.message); loadBoard(); }
-    else if (reply.diverged) diverged = reply;
     else toast(reply.error || res.statusText);
   } catch (err) { toast(err.message); }
   syncing = false;
-  if (diverged) chooseSide(diverged);
-}
-
-function chooseSide({ first }) {
-  const repo = repoName(syncRemote);
-  if (first) {
-    // A repo another machine already syncs with: most likely, this machine is joining it.
-    if (confirm(`${repo} already has a board. Use it on this machine?\n\nThis machine's current board is kept in brokan.db.bak.`)) syncNow("remote");
-    else if (confirm(`Replace the board in ${repo} with this machine's board instead?`)) syncNow("local");
-    return;
-  }
-  if (confirm("This machine and another one both changed the board since the last sync, and boards can't be merged.\n\nKeep THIS machine's board, and overwrite the other one?")) syncNow("local");
-  else if (confirm("Take the other machine's board instead? This machine's board is kept in brokan.db.bak.")) syncNow("remote");
 }
 
 // The repo the board syncs with; null before it's set up.
